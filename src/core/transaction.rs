@@ -148,24 +148,13 @@ use std::{
 };
 
 use libbitcoinkernel_sys::{
-    btck_Transaction, btck_TransactionInput, btck_TransactionOutPoint, btck_TransactionOutput,
-    btck_Txid, btck_transaction_copy, btck_transaction_count_inputs,
-    btck_transaction_count_outputs, btck_transaction_create, btck_transaction_destroy,
-    btck_transaction_get_input_at, btck_transaction_get_locktime, btck_transaction_get_output_at,
-    btck_transaction_get_txid, btck_transaction_input_copy, btck_transaction_input_destroy,
-    btck_transaction_input_get_out_point, btck_transaction_input_get_sequence,
-    btck_transaction_out_point_copy, btck_transaction_out_point_destroy,
-    btck_transaction_out_point_get_index, btck_transaction_out_point_get_txid,
-    btck_transaction_output_copy, btck_transaction_output_create, btck_transaction_output_destroy,
-    btck_transaction_output_get_amount, btck_transaction_output_get_script_pubkey,
-    btck_transaction_to_bytes, btck_txid_copy, btck_txid_destroy, btck_txid_equals,
-    btck_txid_to_bytes,
+    btck_Transaction, btck_TransactionInput, btck_TransactionOutPoint, btck_TransactionOutput, btck_Txid, btck_transaction_copy, btck_transaction_count_inputs, btck_transaction_count_outputs, btck_transaction_create, btck_transaction_destroy, btck_transaction_get_input_at, btck_transaction_get_locktime, btck_transaction_get_output_at, btck_transaction_get_txid, btck_transaction_input_copy, btck_transaction_input_destroy, btck_transaction_input_get_out_point, btck_transaction_input_get_sequence, btck_transaction_is_coinbase, btck_transaction_out_point_copy, btck_transaction_out_point_destroy, btck_transaction_out_point_get_index, btck_transaction_out_point_get_txid, btck_transaction_output_copy, btck_transaction_output_create, btck_transaction_output_destroy, btck_transaction_output_get_amount, btck_transaction_output_get_script_pubkey, btck_transaction_to_bytes, btck_txid_copy, btck_txid_destroy, btck_txid_equals, btck_txid_to_bytes
 };
 
 use crate::{
     c_serialize,
     ffi::{
-        c_helpers::present,
+        c_helpers::{self, present},
         sealed::{AsPtr, FromMutPtr, FromPtr},
     },
     KernelError, ScriptPubkeyExt,
@@ -398,6 +387,11 @@ pub trait TransactionExt: AsPtr<btck_Transaction> {
     /// ```
     fn locktime(&self) -> u32 {
         unsafe { btck_transaction_get_locktime(self.as_ptr()) }
+    }
+
+    /// Returns true if the transaction is a coinbase transaction.
+    fn is_coinbase(&self) -> bool {
+        unsafe { c_helpers::enabled(btck_transaction_is_coinbase(self.as_ptr())) }
     }
 }
 
