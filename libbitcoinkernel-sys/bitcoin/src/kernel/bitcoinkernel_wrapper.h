@@ -581,6 +581,11 @@ public:
         return btck_transaction_count_outputs(impl());
     }
 
+    bool IsCoinbase() const
+    {
+        return btck_transaction_is_coinbase(impl()) != 0;
+    }
+
     size_t CountInputs() const
     {
         return btck_transaction_count_inputs(impl());
@@ -1120,6 +1125,8 @@ public:
 class Coin : public Handle<btck_Coin, btck_coin_copy, btck_coin_destroy>, public CoinApi<Coin>
 {
 public:
+    Coin(const TransactionOutput& output, int height, bool is_coinbase) : Handle{btck_coin_create(output.get(), height, is_coinbase)} {}
+
     Coin(btck_Coin* coin) : Handle{coin} {}
 
     Coin(const CoinView& view) : Handle{view} {}
@@ -1168,7 +1175,31 @@ public:
 
 class BlockSpentOutputs : public Handle<btck_BlockSpentOutputs, btck_block_spent_outputs_copy, btck_block_spent_outputs_destroy>
 {
+    struct CallbackContext {
+        const std::vector<std::vector<Coin>>& coins;
+    };
+
+    static const btck_Coin* coin_getter_impl(void* context, size_t tx_index, size_t coin_index) {
+        auto* ctx = static_cast<CallbackContext*>(context);
+        return ctx->coins[tx_index][coin_index].get();
+    }
+
+    static size_t count_getter_impl(void* context, size_t tx_index) {
+        auto* ctx = static_cast<CallbackContext*>(context);
+        return ctx->coins[tx_index].size();
+    }
+
 public:
+    BlockSpentOutputs(const std::vector<std::vector<Coin>>& coins) : Handle{[coins]() {
+        CallbackContext ctx{coins};
+        return btck_block_spent_outputs_create(
+            &ctx,
+            coin_getter_impl,
+            count_getter_impl,
+            coins.size()
+        );
+    }()} {}
+
     BlockSpentOutputs(btck_BlockSpentOutputs* block_spent_outputs)
         : Handle{block_spent_outputs}
     {
@@ -1220,6 +1251,11 @@ public:
     bool ProcessBlockHeader(const BlockHeader& header, BlockValidationState& state)
     {
         return btck_chainstate_manager_process_block_header(get(), header.get(), state.get()) == 0;
+    }
+
+    bool ValidateBlock(const Block& block, const BlockSpentOutputs& block_spent_outputs, BlockValidationState& state)
+    {
+        return btck_chainstate_manager_validate_block(get(), block.get(), block_spent_outputs.get(), state.get()) == 0;
     }
 
     ChainView GetChain() const

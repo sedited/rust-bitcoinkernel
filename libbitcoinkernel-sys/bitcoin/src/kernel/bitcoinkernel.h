@@ -585,6 +585,15 @@ BITCOINKERNEL_API const btck_Txid* BITCOINKERNEL_WARN_UNUSED_RESULT btck_transac
     const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
 
 /**
+ * @brief Check if this is a coinbase transaction.
+ *
+ * @param[in] transaction Non-null.
+ * @return                1 if it is coinbase, 0 if it is not.
+ */
+BITCOINKERNEL_API int btck_transaction_is_coinbase(
+        const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
  * Destroy the transaction.
  */
 BITCOINKERNEL_API void btck_transaction_destroy(btck_Transaction* transaction);
@@ -1126,6 +1135,23 @@ BITCOINKERNEL_API int BITCOINKERNEL_WARN_UNUSED_RESULT btck_chainstate_manager_p
     btck_BlockValidationState* block_validation_state) BITCOINKERNEL_ARG_NONNULL(1, 2, 3);
 
 /**
+ * @brief Validated the pass in block. Requires its block header to already
+ * have been processed. Will terminate if the block header has not been
+ * processed before calling this function.
+ *
+ * @param[in] chainstate_manager      Non-null.
+ * @param[in] block                   Non-null.
+ * @param[in] block_spent_outputs     Non-null.
+ * @param[out] block_validation_state The result of the block validation.
+ * @return                            0 if validating the block was successful.
+ */
+BITCOINKERNEL_API int btck_chainstate_manager_validate_block(
+    btck_ChainstateManager* chainstate_manager,
+    const btck_Block* block,
+    const btck_BlockSpentOutputs* block_spent_outputs,
+    btck_BlockValidationState* block_validation_state) BITCOINKERNEL_ARG_NONNULL(1, 2, 3, 4);
+
+/**
  * @brief Triggers the start of a reindex if the wipe options were previously
  * set for the chainstate manager. Can also import an array of existing block
  * files selected by the user.
@@ -1396,6 +1422,32 @@ BITCOINKERNEL_API btck_BlockSpentOutputs* BITCOINKERNEL_WARN_UNUSED_RESULT btck_
     const btck_BlockTreeEntry* block_tree_entry) BITCOINKERNEL_ARG_NONNULL(1, 2);
 
 /**
+ * Callback type for getting a single coin to construct a block spent
+ * outputs. tx_index index indicates the position of a transaction within a
+ * block, coin_index indicates the position of an input within a block.
+*/
+typedef const btck_Coin* (*btck_coin_getter)(void* context, size_t tx_index, size_t coin_index);
+
+/**
+ * Callback type for getting the number of inputs (and thus number of coins
+ * consumed of a transacstion)
+ */
+typedef size_t (*btck_coins_count)(void* context, size_t block_index);
+
+/**
+ * @brief Create a block spent outputs from some coins.
+ *
+ * @param[in] context      Nullable. A user-defined data pointer that is passed through the callbacks.
+ * @param[in] coin_getter  Non-null. A callback for retrieving a coin.
+ * @param[in] count_getter Non-null. A callback for getting the expected number of coins per transaction.
+ * @param[in] num_txs      Non-null. The number of transactions in the block.
+ */
+BITCOINKERNEL_API btck_BlockSpentOutputs* BITCOINKERNEL_WARN_UNUSED_RESULT
+btck_block_spent_outputs_create(void* context, btck_coin_getter coin_getter,
+        btck_coins_count count_getter, size_t num_txs)
+    BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
  * @brief Copy a block's spent outputs.
  *
  * @param[in] block_spent_outputs Non-null.
@@ -1596,6 +1648,17 @@ BITCOINKERNEL_API void btck_txid_destroy(btck_Txid* txid);
  * Functions for working with coins.
  */
 ///@{
+
+/**
+ * @brief Create a coin.
+ *
+ * @param[in] output      Non-null.
+ * @param[in] height      The height the coin was confirmed in.
+ * @param[in] is_coinbase Set to 1 if the coin is from a coinbase output, set to 0 otherwise.
+ * @return                The coin.
+ */
+BITCOINKERNEL_API btck_Coin* BITCOINKERNEL_WARN_UNUSED_RESULT btck_coin_create(
+    const btck_TransactionOutput* output, int height, int is_coinbase) BITCOINKERNEL_ARG_NONNULL(1);
 
 /**
  * @brief Copy a coin.

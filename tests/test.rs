@@ -7,8 +7,8 @@ mod tests {
         BlockValidationStateRef, ChainParams, ChainType, ChainstateManager,
         ChainstateManagerBuilder, Coin, Context, ContextBuilder, KernelError, Log, Logger,
         PrecomputedTransactionData, ScriptPubkey, ScriptVerifyError, Transaction,
-        TransactionSpentOutputs, TxIn, TxOut, ValidationMode, VERIFY_ALL, VERIFY_ALL_PRE_TAPROOT,
-        VERIFY_TAPROOT, VERIFY_WITNESS,
+        TransactionSpentOutputs, TxIn, TxOut, TxOutPointRef, ValidationMode, VERIFY_ALL,
+        VERIFY_ALL_PRE_TAPROOT, VERIFY_TAPROOT, VERIFY_WITNESS,
     };
     use libbitcoinkernel_sys::btck_ScriptVerificationFlags;
     use std::fs::File;
@@ -382,6 +382,68 @@ mod tests {
                 }
                 _ => assert!(false),
             };
+        }
+    }
+
+    fn find_output<'a>(blocks: &'a [Block], outpoint: TxOutPointRef) -> Option<TxOut> {
+        for block in blocks.iter() {
+            for i in 0..block.transaction_count() {
+                let tx = block.transaction(i).unwrap();
+                if tx.txid() != outpoint.txid() {
+                    continue;
+                }
+                return tx
+                    .output(outpoint.index() as usize)
+                    .ok()
+                    .map(|out| out.to_owned());
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn test_block_validation() {
+        let (context, data_dir) = testing_setup();
+        let blocks_dir = data_dir.clone() + "/blocks";
+        let block_data = read_block_data();
+        let blocks: Vec<Block> = block_data
+            .iter()
+            .map(|data| Block::new(data.as_slice()).unwrap())
+            .collect();
+        let chainman = ChainstateManager::new(&context, &data_dir, &blocks_dir).unwrap();
+
+        let mut block_spent_outputs: Vec<BlockSpentOutputs> = vec![];
+
+        for block in blocks.iter() {
+            let mut coins: Vec<Vec<Coin>> = vec![];
+            for i in 0..block.transaction_count() {
+                let tx = block.transaction(i).unwrap();
+                if tx.is_coinbase() {
+                    println!("tx is coinbase!");
+                    continue;
+                }
+                coins.push(Vec::new());
+                for j in 0..tx.input_count() {
+                    let output = find_output(&blocks, tx.input(j).unwrap().outpoint()).unwrap();
+                    println!("Accessing coins i {i}");
+                    coins[i - 1].push(Coin::new(&output));
+                }
+            }
+            block_spent_outputs.push(BlockSpentOutputs::new(&coins));
+        }
+
+        for (block, block_spent_outputs) in blocks.iter().zip(block_spent_outputs.iter()) {
+            let result = chainman.process_block_header(&block.header());
+            match result {
+                ProcessBlockHeaderResult::Success(state) => {
+                    assert_eq!(state.mode(), ValidationMode::Valid);
+                }
+                _ => assert!(false),
+            };
+
+            let (result, state) = chainman.validate_block(block, &block_spent_outputs);
+            assert!(result);
+            assert_eq!(state.mode(), ValidationMode::Valid);
         }
     }
 

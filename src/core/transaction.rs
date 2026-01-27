@@ -153,10 +153,10 @@ use libbitcoinkernel_sys::{
     btck_transaction_count_outputs, btck_transaction_create, btck_transaction_destroy,
     btck_transaction_get_input_at, btck_transaction_get_output_at, btck_transaction_get_txid,
     btck_transaction_input_copy, btck_transaction_input_destroy,
-    btck_transaction_input_get_out_point, btck_transaction_out_point_copy,
-    btck_transaction_out_point_destroy, btck_transaction_out_point_get_index,
-    btck_transaction_out_point_get_txid, btck_transaction_output_copy,
-    btck_transaction_output_create, btck_transaction_output_destroy,
+    btck_transaction_input_get_out_point, btck_transaction_is_coinbase,
+    btck_transaction_out_point_copy, btck_transaction_out_point_destroy,
+    btck_transaction_out_point_get_index, btck_transaction_out_point_get_txid,
+    btck_transaction_output_copy, btck_transaction_output_create, btck_transaction_output_destroy,
     btck_transaction_output_get_amount, btck_transaction_output_get_script_pubkey,
     btck_transaction_to_bytes, btck_txid_copy, btck_txid_destroy, btck_txid_equals,
     btck_txid_to_bytes,
@@ -165,7 +165,7 @@ use libbitcoinkernel_sys::{
 use crate::{
     c_serialize,
     ffi::{
-        c_helpers::present,
+        c_helpers::{self, present},
         sealed::{AsPtr, FromMutPtr, FromPtr},
     },
     KernelError, ScriptPubkeyExt,
@@ -378,6 +378,10 @@ pub trait TransactionExt: AsPtr<btck_Transaction> {
     /// ```
     fn outputs(&self) -> TxOutIter<'_> {
         TxOutIter::new(unsafe { TransactionRef::from_ptr(self.as_ptr()) })
+    }
+
+    fn is_coinbase(&self) -> bool {
+        unsafe { c_helpers::enabled(btck_transaction_is_coinbase(self.as_ptr())) }
     }
 }
 

@@ -39,6 +39,7 @@ use libbitcoinkernel_sys::{
     btck_chainstate_manager_options_update_block_tree_db_in_memory,
     btck_chainstate_manager_options_update_chainstate_db_in_memory,
     btck_chainstate_manager_process_block, btck_chainstate_manager_process_block_header,
+    btck_chainstate_manager_validate_block,
 };
 
 use crate::{
@@ -321,6 +322,32 @@ impl ChainstateManager {
         }
     }
 
+    /// Returns a pair indicating wether the block was accepted, and whether it is valid.
+    /// # Example
+    /// ```no_run
+    /// # use bitcoinkernel::{BlockSpentOutputs, Block, ChainstateManager};
+    /// # let chainman: ChainstateManager = unimplemented!();
+    /// # let block: Block = unimplemented!();
+    /// # let spent_outputs: BlockSpentOutputs= unimplemented!();
+    /// let res = chainman.validate_block(&block, &spent_outputs);
+    /// ```
+    pub fn validate_block(
+        &self,
+        block: &Block,
+        block_spent_outputs: &BlockSpentOutputs,
+    ) -> (bool, BlockValidationState) {
+        let state = BlockValidationState::new();
+        let accepted = unsafe {
+            btck_chainstate_manager_validate_block(
+                self.inner,
+                block.as_ptr(),
+                block_spent_outputs.as_ptr(),
+                state.as_ptr() as *mut btck_BlockValidationState,
+            )
+        };
+        (c_helpers::success(accepted), state)
+    }
+
     /// Initialize the chainstate manager and optionally trigger a reindex.
     ///
     /// This should be called after creating the chainstate manager to complete
@@ -329,6 +356,7 @@ impl ChainstateManager {
     ///
     /// # Errors
     /// Returns [`KernelError::Internal`] if initialization fails.
+
     pub fn import_blocks(&self) -> Result<(), KernelError> {
         let result = unsafe {
             btck_chainstate_manager_import_blocks(

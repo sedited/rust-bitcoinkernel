@@ -1215,6 +1215,19 @@ btck_BlockSpentOutputs* btck_block_spent_outputs_read(const btck_ChainstateManag
     return btck_BlockSpentOutputs::create(block_undo);
 }
 
+btck_BlockSpentOutputs* btck_block_spent_outputs_create(void* context, btck_coin_getter coin_getter, btck_coins_count count_getter, size_t num_txs)
+{
+    auto block_undo{std::make_shared<CBlockUndo>()};
+    block_undo->vtxundo.reserve(num_txs);
+    for (uint64_t i{0}; i < num_txs; ++i) {
+        block_undo->vtxundo.emplace_back();
+        for (uint64_t j{0}; j < count_getter(context, i); ++j) {
+            block_undo->vtxundo[i].vprevout.emplace_back(btck_Coin::get(coin_getter(context, i, j)));
+        }
+    }
+    return btck_BlockSpentOutputs::create(block_undo);
+}
+
 btck_BlockSpentOutputs* btck_block_spent_outputs_copy(const btck_BlockSpentOutputs* block_spent_outputs)
 {
     return btck_BlockSpentOutputs::copy(block_spent_outputs);
@@ -1257,6 +1270,11 @@ const btck_Coin* btck_transaction_spent_outputs_get_coin_at(const btck_Transacti
     assert(coin_index < btck_TransactionSpentOutputs::get(transaction_spent_outputs).vprevout.size());
     const Coin* coin{&btck_TransactionSpentOutputs::get(transaction_spent_outputs).vprevout.at(coin_index)};
     return btck_Coin::ref(coin);
+}
+
+btck_Coin* btck_coin_create(const btck_TransactionOutput* output, int height, int is_coinbase)
+{
+    return btck_Coin::create(btck_TransactionOutput::get(output), height, is_coinbase == 1);
 }
 
 btck_Coin* btck_coin_copy(const btck_Coin* coin)
@@ -1311,6 +1329,25 @@ int btck_chainstate_manager_process_block_header(
         LogError("Failed to process block header: %s", e.what());
         return -1;
     }
+}
+
+int btck_chainstate_manager_validate_block(
+    btck_ChainstateManager* chainstate_manager,
+    const btck_Block* block,
+    const btck_BlockSpentOutputs* block_spent_outputs,
+    btck_BlockValidationState* state)
+{
+    auto& chainman = *btck_ChainstateManager::get(chainstate_manager).m_chainman;
+    LOCK(cs_main);
+
+    btck_BlockValidationState::get(state) = chainman.ValidateBlock(*btck_Block::get(block), *btck_BlockSpentOutputs::get(block_spent_outputs));
+
+    return btck_BlockValidationState::get(state).IsValid() ? 0 : -1;
+}
+
+int btck_transaction_is_coinbase(const btck_Transaction* tx)
+{
+    return btck_Transaction::get(tx)->IsCoinBase() ? 1 : 0;
 }
 
 const btck_Chain* btck_chainstate_manager_get_active_chain(const btck_ChainstateManager* chainman)
