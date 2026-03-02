@@ -21,7 +21,7 @@ mod tests {
     impl Log for TestLog {
         fn log(&self, message: &str) {
             log::info!(
-                target: "libbitcoinkernel", 
+                target: "libbitcoinkernel",
                 "{}", message.strip_suffix("\r\n").or_else(|| message.strip_suffix('\n')).unwrap_or(message));
         }
     }
@@ -595,6 +595,181 @@ mod tests {
             &tx_data,
         )?;
         Ok(())
+    }
+
+    #[cfg(feature = "script_debug")]
+    #[test]
+    fn test_script_debug() {
+        use bitcoinkernel::{ScriptDebugFrame, ScriptDebugger};
+        use std::sync::Mutex;
+
+        let frames: Arc<Mutex<Vec<ScriptDebugFrame>>> = Arc::new(Mutex::new(Vec::new()));
+        let frames_clone = frames.clone();
+        let _debugger = ScriptDebugger::new(move |frame| {
+            frames_clone.lock().unwrap().push(frame);
+        })
+        .expect("failed to register script debugger");
+
+        // Run a P2PKH verification (same test vector as script_verify_test)
+        verify_test(
+            "76a9144bfbaf6afb76cc5771bc6404810d1cc041a6933988ac",
+            "02000000013f7cebd65c27431a90bba7f796914fe8cc2ddfc3f2cbd6f7e5f2fc854534da95000000006b483045022100de1ac3bcdfb0332207c4a91f3832bd2c2915840165f876ab47c5f8996b971c3602201c6c053d750fadde599e6f5c4e1963df0f01fc0d97815e8157e3d59fe09ca30d012103699b464d1d8bc9e47d4fb1cdaa89a1c5783d68363c4dbc4b524ed3d857148617feffffff02836d3c01000000001976a914fc25d6d5c94003bf5b0c7b640a248e2c637fcfb088ac7ada8202000000001976a914fbed3d9b11183209a57999d54d59f67c019e756c88ac6acb0700",
+            0, 0, vec![], VERIFY_ALL_PRE_TAPROOT,
+        )
+        .unwrap();
+
+        let collected = frames.lock().unwrap();
+        assert!(
+            !collected.is_empty(),
+            "debugger should have captured frames"
+        );
+
+        // All frames in a P2PKH execution should be on the main execution path
+        for frame in collected.iter() {
+            assert!(
+                frame.f_exec,
+                "P2PKH steps should all be in an active branch"
+            );
+            assert!(!frame.script.is_empty(), "script bytes should be non-empty");
+        }
+    }
+
+    /// Multiple threads race to register a debugger — at most one should be active at a time.
+    #[cfg(feature = "script_debug")]
+    #[test]
+    fn test_script_debug_concurrent_registration() {
+        use bitcoinkernel::ScriptDebugger;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Barrier;
+        use std::thread;
+
+        let n_threads = 8;
+        let barrier = Arc::new(Barrier::new(n_threads));
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..n_threads)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let active = active.clone();
+                let max_active = max_active.clone();
+                thread::spawn(move || {
+                    barrier.wait(); // all threads try at once
+                    if let Some(debugger) = ScriptDebugger::new(|_| {}) {
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        max_active.fetch_max(current, Ordering::SeqCst);
+                        // hold it briefly so others see the conflict
+                        thread::sleep(std::time::Duration::from_millis(10));
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        drop(debugger);
+                    }
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        assert_eq!(
+            max_active.load(Ordering::SeqCst),
+            1,
+            "at most one debugger should be active at any time"
+        );
+    }
+
+    /// Drop a debugger and immediately re-register from another thread.
+    #[cfg(feature = "script_debug")]
+    #[test]
+    fn test_script_debug_drop_then_reregister() {
+        use bitcoinkernel::{ScriptDebugFrame, ScriptDebugger};
+        use std::sync::Mutex;
+
+        for _ in 0..10 {
+            let frames: Arc<Mutex<Vec<ScriptDebugFrame>>> = Arc::new(Mutex::new(Vec::new()));
+            let frames_clone = frames.clone();
+
+            let debugger = ScriptDebugger::new(move |frame| {
+                frames_clone.lock().unwrap().push(frame);
+            })
+            .expect("first registration should succeed");
+
+            // drop and re-register
+            drop(debugger);
+
+            let frames2: Arc<Mutex<Vec<ScriptDebugFrame>>> = Arc::new(Mutex::new(Vec::new()));
+            let frames2_clone = frames2.clone();
+            let debugger2 = ScriptDebugger::new(move |frame| {
+                frames2_clone.lock().unwrap().push(frame);
+            })
+            .expect("re-registration after drop should succeed");
+
+            // verify the second debugger actually receives frames
+            verify_test(
+                "76a9144bfbaf6afb76cc5771bc6404810d1cc041a6933988ac",
+                "02000000013f7cebd65c27431a90bba7f796914fe8cc2ddfc3f2cbd6f7e5f2fc854534da95000000006b483045022100de1ac3bcdfb0332207c4a91f3832bd2c2915840165f876ab47c5f8996b971c3602201c6c053d750fadde599e6f5c4e1963df0f01fc0d97815e8157e3d59fe09ca30d012103699b464d1d8bc9e47d4fb1cdaa89a1c5783d68363c4dbc4b524ed3d857148617feffffff02836d3c01000000001976a914fc25d6d5c94003bf5b0c7b640a248e2c637fcfb088ac7ada8202000000001976a914fbed3d9b11183209a57999d54d59f67c019e756c88ac6acb0700",
+                0, 0, vec![], VERIFY_ALL_PRE_TAPROOT,
+            )
+            .unwrap();
+
+            let collected = frames2.lock().unwrap();
+            assert!(
+                !collected.is_empty(),
+                "re-registered debugger should capture frames"
+            );
+
+            // first debugger should NOT have received any frames (it was dropped)
+            let old = frames.lock().unwrap();
+            assert!(old.is_empty(), "dropped debugger should not receive frames");
+
+            drop(debugger2);
+        }
+    }
+
+    /// Verify from multiple threads while a debugger is registered.
+    #[cfg(feature = "script_debug")]
+    #[test]
+    fn test_script_debug_concurrent_verify() {
+        use bitcoinkernel::{ScriptDebugFrame, ScriptDebugger};
+        use std::sync::{Barrier, Mutex};
+        use std::thread;
+
+        let frames: Arc<Mutex<Vec<ScriptDebugFrame>>> = Arc::new(Mutex::new(Vec::new()));
+        let frames_clone = frames.clone();
+        let _debugger = ScriptDebugger::new(move |frame| {
+            frames_clone.lock().unwrap().push(frame);
+        })
+        .expect("failed to register script debugger");
+
+        let n_threads = 4;
+        let barrier = Arc::new(Barrier::new(n_threads));
+
+        let handles: Vec<_> = (0..n_threads)
+            .map(|_| {
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    verify_test(
+                        "76a9144bfbaf6afb76cc5771bc6404810d1cc041a6933988ac",
+                        "02000000013f7cebd65c27431a90bba7f796914fe8cc2ddfc3f2cbd6f7e5f2fc854534da95000000006b483045022100de1ac3bcdfb0332207c4a91f3832bd2c2915840165f876ab47c5f8996b971c3602201c6c053d750fadde599e6f5c4e1963df0f01fc0d97815e8157e3d59fe09ca30d012103699b464d1d8bc9e47d4fb1cdaa89a1c5783d68363c4dbc4b524ed3d857148617feffffff02836d3c01000000001976a914fc25d6d5c94003bf5b0c7b640a248e2c637fcfb088ac7ada8202000000001976a914fbed3d9b11183209a57999d54d59f67c019e756c88ac6acb0700",
+                        0, 0, vec![], VERIFY_ALL_PRE_TAPROOT,
+                    )
+                    .unwrap();
+                })
+            })
+            .collect();
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let collected = frames.lock().unwrap();
+        assert!(
+            collected.len() >= n_threads,
+            "should have frames from all {} threads, got {}",
+            n_threads,
+            collected.len()
+        );
     }
 
     #[test]

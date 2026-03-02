@@ -47,6 +47,7 @@ add_library(bitcoinkernel
   ../pubkey.cpp
   ../random.cpp
   ../randomenv.cpp
+  ../script/debug.cpp
   ../script/interpreter.cpp
   ../script/script.cpp
   ../script/script_error.cpp
@@ -102,6 +103,11 @@ add_dependencies(libbitcoinkernel bitcoinkernel)
 get_target_property(bitcoinkernel_type bitcoinkernel TYPE)
 if(bitcoinkernel_type STREQUAL "STATIC_LIBRARY")
   target_compile_definitions(bitcoinkernel PUBLIC BITCOINKERNEL_STATIC)
+endif()
+
+option(ENABLE_SCRIPT_DEBUG "Enable script execution debug hooks" OFF)
+if(ENABLE_SCRIPT_DEBUG)
+  target_compile_definitions(bitcoinkernel PRIVATE ENABLE_SCRIPT_DEBUG)
 endif()
 
 configure_file(${PROJECT_SOURCE_DIR}/libbitcoinkernel.pc.in ${PROJECT_BINARY_DIR}/libbitcoinkernel.pc @ONLY)

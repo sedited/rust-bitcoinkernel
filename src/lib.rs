@@ -314,6 +314,9 @@ pub use crate::state::{
     ContextBuilder, ProcessBlockHeaderResult, ProcessBlockResult,
 };
 
+#[cfg(feature = "script_debug")]
+pub use crate::core::script_debug::{ScriptDebugFrame, ScriptDebugger};
+
 pub use crate::core::verify_flags::{
     VERIFY_ALL, VERIFY_ALL_PRE_TAPROOT, VERIFY_CHECKLOCKTIMEVERIFY, VERIFY_CHECKSEQUENCEVERIFY,
     VERIFY_DERSIG, VERIFY_NONE, VERIFY_NULLDUMMY, VERIFY_P2SH, VERIFY_TAPROOT, VERIFY_WITNESS,

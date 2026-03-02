@@ -34,7 +34,7 @@ jobs:
         rustc --version
         # Build the project
         cargo build --all-features
- 
+
     - name: Run tests with MSRV
       run: cargo test --all-features
 
@@ -84,7 +84,10 @@ jobs:
       run: cargo install cargo-llvm-cov --locked --version 0.6.19
 
     - name: Run tests with coverage
-      run: cargo llvm-cov --all-features --workspace --html --verbose
+      run: cargo llvm-cov --all-features --workspace --html --verbose -- --test-threads=1
+
+    - name: Run script_debug tests
+      run: cargo test --features script_debug -- --test-threads=1
 
     - name: Upload coverage report
       uses: actions/upload-artifact@v4

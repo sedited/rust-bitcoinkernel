@@ -21,6 +21,7 @@
 #include <node/chainstate.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
+#include <script/debug.h>
 #include <script/interpreter.h>
 #include <script/script.h>
 #include <serialize.h>
@@ -1392,4 +1393,54 @@ uint32_t btck_block_header_get_nonce(const btck_BlockHeader* header)
 void btck_block_header_destroy(btck_BlockHeader* header)
 {
     delete header;
+}
+
+void btck_register_script_debug_callback(void* user_data, btck_ScriptDebugCallback callback)
+{
+    if (!callback) return;
+
+    auto wrapper = [user_data, callback](std::span<const std::vector<unsigned char>> stack,
+                            const CScript& script,
+                            uint32_t opcode_pos,
+                            std::span<const std::vector<unsigned char>> altstack,
+                            bool fExec) {
+        std::vector<const unsigned char*> stack_ptrs;
+        std::vector<size_t> stack_sizes;
+        stack_ptrs.reserve(stack.size());
+        stack_sizes.reserve(stack.size());
+        for (const auto& item : stack) {
+            stack_ptrs.push_back(item.data());
+            stack_sizes.push_back(item.size());
+        }
+
+        std::vector<const unsigned char*> altstack_ptrs;
+        std::vector<size_t> altstack_sizes;
+        altstack_ptrs.reserve(altstack.size());
+        altstack_sizes.reserve(altstack.size());
+        for (const auto& item : altstack) {
+            altstack_ptrs.push_back(item.data());
+            altstack_sizes.push_back(item.size());
+        }
+
+        btck_ScriptDebugState state;
+        state.stack_items = stack_ptrs.data();
+        state.stack_item_sizes = stack_sizes.data();
+        state.stack_size = stack.size();
+        state.script = script.data();
+        state.script_size = script.size();
+        state.opcode_pos = opcode_pos;
+        state.altstack_items = altstack_ptrs.data();
+        state.altstack_item_sizes = altstack_sizes.data();
+        state.altstack_size = altstack.size();
+        state.f_exec = fExec ? 1 : 0;
+
+        callback(user_data, &state);
+    };
+
+    RegisterDebugScriptCallback(wrapper);
+}
+
+void btck_unregister_script_debug_callback(void)
+{
+    RegisterDebugScriptCallback(nullptr);
 }

@@ -9,6 +9,7 @@
 #include <crypto/sha1.h>
 #include <crypto/sha256.h>
 #include <pubkey.h>
+#include <script/debug.h>
 #include <script/script.h>
 #include <tinyformat.h>
 #include <uint256.h>
@@ -438,6 +439,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
     {
         for (; pc < pend; ++opcode_pos) {
             bool fExec = vfExec.all_true();
+            DEBUG_SCRIPT(stack, script, opcode_pos, altstack, fExec);
 
             //
             // Read instruction
@@ -1227,6 +1229,8 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
     {
         return set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
     }
+
+    DEBUG_SCRIPT(stack, script, opcode_pos, altstack, vfExec.all_true());
 
     if (!vfExec.empty())
         return set_error(serror, SCRIPT_ERR_UNBALANCED_CONDITIONAL);

@@ -1,6 +1,8 @@
 pub mod block;
 pub mod block_tree_entry;
 pub mod script;
+#[cfg(feature = "script_debug")]
+pub mod script_debug;
 pub mod transaction;
 pub mod verify;
 

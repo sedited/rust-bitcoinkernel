@@ -44,8 +44,21 @@ documentation directly via
 ## Examples
 
 Examples for the usage of the library can be found in the `examples/` directory
-and the `tests`. For now, the example binary implements a bare-bones silent
-payments scanner.
+and the `tests`.
+
+To run an example binary:
+
+```bash
+cd examples
+cargo run --bin silentpaymentscanner -- <data_dir>
+```
+
+The `script_debug` example requires the `script_debug` feature:
+
+```bash
+cd examples
+cargo run --features script_debug --bin script_debug
+```
 
 ## Fuzzing
 

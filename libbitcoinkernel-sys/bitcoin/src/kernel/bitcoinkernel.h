@@ -1775,6 +1775,60 @@ BITCOINKERNEL_API void btck_block_header_destroy(btck_BlockHeader* header);
 
 ///@}
 
+/** @name ScriptDebug
+ * Functions for script execution debugging.
+ */
+///@{
+
+/**
+ * Snapshot of script execution state passed to the debug callback.
+ */
+typedef struct {
+    const unsigned char* const* stack_items;
+    const size_t* stack_item_sizes;
+    size_t stack_size;
+    const unsigned char* script;
+    size_t script_size;
+    uint32_t opcode_pos;
+    const unsigned char* const* altstack_items;
+    const size_t* altstack_item_sizes;
+    size_t altstack_size;
+    int f_exec;
+} btck_ScriptDebugState;
+
+/**
+ * Callback function type for script debug events.
+ *
+ * Called during script execution with the current execution state.
+ *
+ * @param[in] user_data  User-defined opaque pointer passed through from registration.
+ * @param[in] state      Pointer to the current execution state snapshot.
+ */
+typedef void (*btck_ScriptDebugCallback)(
+    void* user_data,
+    const btck_ScriptDebugState* state
+);
+
+/**
+ * @brief Register a global script debug callback.
+ *
+ * Only one callback can be registered at a time. Registering a new callback
+ * replaces the previous one.
+ *
+ * @param[in] user_data User-defined opaque pointer passed to the callback.
+ * @param[in] callback  The callback function to register.
+ */
+BITCOINKERNEL_API void btck_register_script_debug_callback(void* user_data, btck_ScriptDebugCallback callback);
+
+/**
+ * @brief Unregister the global script debug callback.
+ *
+ * After calling this function, no script debug callbacks will be invoked.
+ */
+BITCOINKERNEL_API void btck_unregister_script_debug_callback(void);
+
+///@}
+
 #ifdef __cplusplus
 } // extern "C"
 #endif // __cplusplus

@@ -17,7 +17,8 @@ fn main() {
 
     let build_config = "RelWithDebInfo";
 
-    Command::new("cmake")
+    let mut cmake_configure = Command::new("cmake");
+    cmake_configure
         .arg("-B")
         .arg(&build_dir)
         .arg("-S")
@@ -40,9 +41,13 @@ fn main() {
         .arg("-DBUILD_SHARED_LIBS=OFF")
         .arg("-DCMAKE_INSTALL_LIBDIR=lib")
         .arg("-DENABLE_IPC=OFF")
-        .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()))
-        .status()
-        .unwrap();
+        .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()));
+
+    if env::var("CARGO_FEATURE_SCRIPT_DEBUG").is_ok() {
+        cmake_configure.arg("-DENABLE_SCRIPT_DEBUG=ON");
+    }
+
+    cmake_configure.status().unwrap();
 
     let num_jobs = env::var("NUM_JOBS")
         .ok()
