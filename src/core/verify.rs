@@ -108,7 +108,7 @@
 //! ## Handling verification errors
 //!
 //! ```no_run
-//! # use bitcoinkernel::{prelude::*, PrecomputedTransactionData, Transaction, verify, VERIFY_ALL, KernelError, ScriptVerifyError};
+//! # use bitcoinkernel::{prelude::*, PrecomputedTransactionData, Transaction, verify, VERIFY_ALL, KernelError, ScriptVerifyError, ScriptError};
 //! # let spending_tx_bytes = vec![];
 //! # let prev_tx_bytes = vec![];
 //! # let spending_tx = Transaction::new(&spending_tx_bytes).unwrap();
@@ -134,8 +134,8 @@
 //!     Err(KernelError::ScriptVerify(ScriptVerifyError::InvalidFlagsCombination)) => {
 //!         println!("Invalid combination of verification flags");
 //!     }
-//!     Err(KernelError::ScriptVerify(ScriptVerifyError::Invalid)) => {
-//!         println!("Script verification failed - invalid script");
+//!     Err(KernelError::ScriptVerify(ScriptVerifyError::Script(e))) => {
+//!         println!("Script verification failed: {}", e);
 //!     }
 //!     Err(e) => {
 //!         println!("Other error: {}", e);
@@ -154,8 +154,8 @@ use std::{
 };
 
 use libbitcoinkernel_sys::{
-    btck_PrecomputedTransactionData, btck_ScriptVerificationFlags, btck_ScriptVerifyStatus,
-    btck_TransactionOutput, btck_precomputed_transaction_data_copy,
+    btck_PrecomputedTransactionData, btck_ScriptError, btck_ScriptVerificationFlags,
+    btck_ScriptVerifyStatus, btck_TransactionOutput, btck_precomputed_transaction_data_copy,
     btck_precomputed_transaction_data_create, btck_precomputed_transaction_data_destroy,
     btck_script_pubkey_verify,
 };
@@ -163,7 +163,34 @@ use libbitcoinkernel_sys::{
 use crate::{
     c_helpers,
     ffi::{
-        sealed::AsPtr, BTCK_SCRIPT_VERIFICATION_FLAGS_ALL,
+        sealed::AsPtr, BTCK_SCRIPT_ERROR_BAD_OPCODE, BTCK_SCRIPT_ERROR_CHECKMULTISIGVERIFY,
+        BTCK_SCRIPT_ERROR_CHECKSIGVERIFY, BTCK_SCRIPT_ERROR_CLEANSTACK,
+        BTCK_SCRIPT_ERROR_DISABLED_OPCODE, BTCK_SCRIPT_ERROR_DISCOURAGE_OP_SUCCESS,
+        BTCK_SCRIPT_ERROR_DISCOURAGE_UPGRADABLE_NOPS,
+        BTCK_SCRIPT_ERROR_DISCOURAGE_UPGRADABLE_PUBKEYTYPE,
+        BTCK_SCRIPT_ERROR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION,
+        BTCK_SCRIPT_ERROR_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM, BTCK_SCRIPT_ERROR_EQUALVERIFY,
+        BTCK_SCRIPT_ERROR_EVAL_FALSE, BTCK_SCRIPT_ERROR_INVALID_ALTSTACK_OPERATION,
+        BTCK_SCRIPT_ERROR_INVALID_STACK_OPERATION, BTCK_SCRIPT_ERROR_MINIMALDATA,
+        BTCK_SCRIPT_ERROR_MINIMALIF, BTCK_SCRIPT_ERROR_NEGATIVE_LOCKTIME,
+        BTCK_SCRIPT_ERROR_NUMEQUALVERIFY, BTCK_SCRIPT_ERROR_OK, BTCK_SCRIPT_ERROR_OP_CODESEPARATOR,
+        BTCK_SCRIPT_ERROR_OP_COUNT, BTCK_SCRIPT_ERROR_OP_RETURN, BTCK_SCRIPT_ERROR_PUBKEYTYPE,
+        BTCK_SCRIPT_ERROR_PUBKEY_COUNT, BTCK_SCRIPT_ERROR_PUSH_SIZE, BTCK_SCRIPT_ERROR_SCHNORR_SIG,
+        BTCK_SCRIPT_ERROR_SCHNORR_SIG_HASHTYPE, BTCK_SCRIPT_ERROR_SCHNORR_SIG_SIZE,
+        BTCK_SCRIPT_ERROR_SCRIPT_SIZE, BTCK_SCRIPT_ERROR_SIG_COUNT, BTCK_SCRIPT_ERROR_SIG_DER,
+        BTCK_SCRIPT_ERROR_SIG_FINDANDDELETE, BTCK_SCRIPT_ERROR_SIG_HASHTYPE,
+        BTCK_SCRIPT_ERROR_SIG_HIGH_S, BTCK_SCRIPT_ERROR_SIG_NULLDUMMY,
+        BTCK_SCRIPT_ERROR_SIG_NULLFAIL, BTCK_SCRIPT_ERROR_SIG_PUSHONLY,
+        BTCK_SCRIPT_ERROR_STACK_SIZE, BTCK_SCRIPT_ERROR_TAPROOT_WRONG_CONTROL_SIZE,
+        BTCK_SCRIPT_ERROR_TAPSCRIPT_CHECKMULTISIG, BTCK_SCRIPT_ERROR_TAPSCRIPT_EMPTY_PUBKEY,
+        BTCK_SCRIPT_ERROR_TAPSCRIPT_MINIMALIF, BTCK_SCRIPT_ERROR_TAPSCRIPT_VALIDATION_WEIGHT,
+        BTCK_SCRIPT_ERROR_UNBALANCED_CONDITIONAL, BTCK_SCRIPT_ERROR_UNKNOWN,
+        BTCK_SCRIPT_ERROR_UNSATISFIED_LOCKTIME, BTCK_SCRIPT_ERROR_VERIFY,
+        BTCK_SCRIPT_ERROR_WITNESS_MALLEATED, BTCK_SCRIPT_ERROR_WITNESS_MALLEATED_P2SH,
+        BTCK_SCRIPT_ERROR_WITNESS_PROGRAM_MISMATCH,
+        BTCK_SCRIPT_ERROR_WITNESS_PROGRAM_WITNESS_EMPTY,
+        BTCK_SCRIPT_ERROR_WITNESS_PROGRAM_WRONG_LENGTH, BTCK_SCRIPT_ERROR_WITNESS_PUBKEYTYPE,
+        BTCK_SCRIPT_ERROR_WITNESS_UNEXPECTED, BTCK_SCRIPT_VERIFICATION_FLAGS_ALL,
         BTCK_SCRIPT_VERIFICATION_FLAGS_CHECKLOCKTIMEVERIFY,
         BTCK_SCRIPT_VERIFICATION_FLAGS_CHECKSEQUENCEVERIFY, BTCK_SCRIPT_VERIFICATION_FLAGS_DERSIG,
         BTCK_SCRIPT_VERIFICATION_FLAGS_NONE, BTCK_SCRIPT_VERIFICATION_FLAGS_NULLDUMMY,
@@ -338,8 +365,9 @@ unsafe impl Sync for PrecomputedTransactionData {}
 ///   combination of flags
 /// * `Err(KernelError::ScriptVerify(ScriptVerifyError::SpentOutputsRequired))` - Spent outputs
 ///   are required for this script type but were not provided
-/// * `Err(KernelError::ScriptVerify(ScriptVerifyError::Invalid))` - Script verification failed;
-///   the input does not properly satisfy the output's spending conditions
+/// * `Err(KernelError::ScriptVerify(ScriptVerifyError::Script(..)))` - Script verification failed;
+///   the input does not properly satisfy the output's spending conditions. The inner
+///   [`ScriptError`] indicates the specific reason for failure.
 ///
 /// # Examples
 ///
@@ -413,6 +441,7 @@ pub fn verify(
 
     let kernel_amount = amount.unwrap_or_default();
     let mut status = ScriptVerifyStatus::Ok.into();
+    let mut script_error: btck_ScriptError = BTCK_SCRIPT_ERROR_OK;
 
     let ret = unsafe {
         btck_script_pubkey_verify(
@@ -423,6 +452,7 @@ pub fn verify(
             input_index as u32,
             kernel_flags,
             &mut status,
+            &mut script_error,
         )
     };
 
@@ -438,7 +468,10 @@ pub fn verify(
             ScriptVerifyStatus::ErrorSpentOutputsRequired => {
                 ScriptVerifyError::SpentOutputsRequired
             }
-            _ => ScriptVerifyError::Invalid,
+            _ => {
+                let se = ScriptError::try_from(script_error).unwrap_or(ScriptError::Unknown);
+                ScriptVerifyError::Script(se)
+            }
         };
         Err(KernelError::ScriptVerify(err))
     } else {
@@ -499,6 +532,312 @@ impl From<btck_ScriptVerifyStatus> for ScriptVerifyStatus {
     }
 }
 
+/// Specific error codes from Bitcoin script execution.
+///
+/// These correspond to the script interpreter's error taxonomy and indicate
+/// exactly why a script failed verification. Values match the C++
+/// `ScriptError_t` enum in `script_error.h`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ScriptError {
+    /// Unknown error from the script interpreter (C++ `SCRIPT_ERR_UNKNOWN_ERROR`).
+    Unknown,
+    /// Script finished with false/empty top stack element.
+    EvalFalse,
+    /// OP_RETURN was encountered.
+    OpReturn,
+    /// Script exceeds maximum size.
+    ScriptSize,
+    /// Push value exceeds size limit.
+    PushSize,
+    /// Opcode count exceeded.
+    OpCount,
+    /// Stack size limit exceeded.
+    StackSize,
+    /// Signature count negative or exceeds pubkey count.
+    SigCount,
+    /// Pubkey count negative or limit exceeded.
+    PubkeyCount,
+    /// OP_VERIFY failed.
+    Verify,
+    /// OP_EQUALVERIFY failed.
+    EqualVerify,
+    /// OP_CHECKMULTISIGVERIFY failed.
+    CheckMultisigVerify,
+    /// OP_CHECKSIGVERIFY failed.
+    CheckSigVerify,
+    /// OP_NUMEQUALVERIFY failed.
+    NumEqualVerify,
+    /// Opcode missing or not understood.
+    BadOpcode,
+    /// Disabled opcode encountered.
+    DisabledOpcode,
+    /// Invalid stack operation for current stack size.
+    InvalidStackOperation,
+    /// Invalid altstack operation for current altstack size.
+    InvalidAltstackOperation,
+    /// Unbalanced OP_IF/OP_ELSE/OP_ENDIF.
+    UnbalancedConditional,
+    /// Negative locktime.
+    NegativeLocktime,
+    /// Locktime requirement not satisfied.
+    UnsatisfiedLocktime,
+    /// Signature hash type missing or not understood.
+    SigHashtype,
+    /// Non-canonical DER signature.
+    SigDer,
+    /// Data push larger than necessary.
+    MinimalData,
+    /// Non-push operators in scriptSig.
+    SigPushOnly,
+    /// Non-canonical signature: S value unnecessarily high.
+    SigHighS,
+    /// Dummy CHECKMULTISIG argument must be zero.
+    SigNullDummy,
+    /// Public key is neither compressed nor uncompressed.
+    PubkeyType,
+    /// Stack must contain exactly one element after execution.
+    CleanStack,
+    /// OP_IF/NOTIF argument must be minimal.
+    MinimalIf,
+    /// Signature must be zero for failed CHECK(MULTI)SIG.
+    SigNullFail,
+    /// NOPx reserved for soft-fork upgrades.
+    DiscourageUpgradableNops,
+    /// Witness version reserved for soft-fork upgrades.
+    DiscourageUpgradableWitnessProgram,
+    /// Taproot version reserved for soft-fork upgrades.
+    DiscourageUpgradableTaprootVersion,
+    /// OP_SUCCESSx reserved for soft-fork upgrades.
+    DiscourageOpSuccess,
+    /// Public key version reserved for soft-fork upgrades.
+    DiscourageUpgradablePubkeyType,
+    /// Witness program has incorrect length.
+    WitnessProgramWrongLength,
+    /// Witness program was passed an empty witness.
+    WitnessProgramWitnessEmpty,
+    /// Witness program hash mismatch.
+    WitnessProgramMismatch,
+    /// Witness requires empty scriptSig.
+    WitnessMalleated,
+    /// Witness requires only-redeemscript scriptSig.
+    WitnessMalleatedP2sh,
+    /// Witness provided for non-witness script.
+    WitnessUnexpected,
+    /// Using non-compressed keys in segwit.
+    WitnessPubkeyType,
+    /// Invalid Schnorr signature size.
+    SchnorrSigSize,
+    /// Invalid Schnorr signature hash type.
+    SchnorrSigHashtype,
+    /// Invalid Schnorr signature.
+    SchnorrSig,
+    /// Invalid Taproot control block size.
+    TaprootWrongControlSize,
+    /// Too much signature validation relative to witness weight.
+    TapscriptValidationWeight,
+    /// OP_CHECKMULTISIG(VERIFY) not available in tapscript.
+    TapscriptCheckMultisig,
+    /// OP_IF/NOTIF argument must be minimal in tapscript.
+    TapscriptMinimalIf,
+    /// Empty public key in tapscript.
+    TapscriptEmptyPubkey,
+    /// OP_CODESEPARATOR in non-witness script.
+    OpCodeseparator,
+    /// Signature found in scriptCode.
+    SigFindAndDelete,
+}
+
+impl Display for ScriptError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            ScriptError::Unknown => write!(f, "unknown error"),
+            ScriptError::EvalFalse => write!(
+                f,
+                "Script evaluated without error but finished with a false/empty top stack element"
+            ),
+            ScriptError::OpReturn => write!(f, "OP_RETURN was encountered"),
+            ScriptError::ScriptSize => write!(f, "Script is too big"),
+            ScriptError::PushSize => write!(f, "Push value size limit exceeded"),
+            ScriptError::OpCount => write!(f, "Operation limit exceeded"),
+            ScriptError::StackSize => write!(f, "Stack size limit exceeded"),
+            ScriptError::SigCount => {
+                write!(f, "Signature count negative or greater than pubkey count")
+            }
+            ScriptError::PubkeyCount => write!(f, "Pubkey count negative or limit exceeded"),
+            ScriptError::Verify => write!(f, "Script failed an OP_VERIFY operation"),
+            ScriptError::EqualVerify => write!(f, "Script failed an OP_EQUALVERIFY operation"),
+            ScriptError::CheckMultisigVerify => {
+                write!(f, "Script failed an OP_CHECKMULTISIGVERIFY operation")
+            }
+            ScriptError::CheckSigVerify => {
+                write!(f, "Script failed an OP_CHECKSIGVERIFY operation")
+            }
+            ScriptError::NumEqualVerify => {
+                write!(f, "Script failed an OP_NUMEQUALVERIFY operation")
+            }
+            ScriptError::BadOpcode => write!(f, "Opcode missing or not understood"),
+            ScriptError::DisabledOpcode => write!(f, "Attempted to use a disabled opcode"),
+            ScriptError::InvalidStackOperation => {
+                write!(f, "Operation not valid with the current stack size")
+            }
+            ScriptError::InvalidAltstackOperation => {
+                write!(f, "Operation not valid with the current altstack size")
+            }
+            ScriptError::UnbalancedConditional => write!(f, "Invalid OP_IF construction"),
+            ScriptError::NegativeLocktime => write!(f, "Negative locktime"),
+            ScriptError::UnsatisfiedLocktime => write!(f, "Locktime requirement not satisfied"),
+            ScriptError::SigHashtype => write!(f, "Signature hash type missing or not understood"),
+            ScriptError::SigDer => write!(f, "Non-canonical DER signature"),
+            ScriptError::MinimalData => write!(f, "Data push larger than necessary"),
+            ScriptError::SigPushOnly => write!(f, "Only push operators allowed in signatures"),
+            ScriptError::SigHighS => {
+                write!(f, "Non-canonical signature: S value is unnecessarily high")
+            }
+            ScriptError::SigNullDummy => write!(f, "Dummy CHECKMULTISIG argument must be zero"),
+            ScriptError::PubkeyType => {
+                write!(f, "Public key is neither compressed or uncompressed")
+            }
+            ScriptError::CleanStack => write!(f, "Stack size must be exactly one after execution"),
+            ScriptError::MinimalIf => write!(f, "OP_IF/NOTIF argument must be minimal"),
+            ScriptError::SigNullFail => write!(
+                f,
+                "Signature must be zero for failed CHECK(MULTI)SIG operation"
+            ),
+            ScriptError::DiscourageUpgradableNops => {
+                write!(f, "NOPx reserved for soft-fork upgrades")
+            }
+            ScriptError::DiscourageUpgradableWitnessProgram => {
+                write!(f, "Witness version reserved for soft-fork upgrades")
+            }
+            ScriptError::DiscourageUpgradableTaprootVersion => {
+                write!(f, "Taproot version reserved for soft-fork upgrades")
+            }
+            ScriptError::DiscourageOpSuccess => {
+                write!(f, "OP_SUCCESSx reserved for soft-fork upgrades")
+            }
+            ScriptError::DiscourageUpgradablePubkeyType => {
+                write!(f, "Public key version reserved for soft-fork upgrades")
+            }
+            ScriptError::WitnessProgramWrongLength => {
+                write!(f, "Witness program has incorrect length")
+            }
+            ScriptError::WitnessProgramWitnessEmpty => {
+                write!(f, "Witness program was passed an empty witness")
+            }
+            ScriptError::WitnessProgramMismatch => write!(f, "Witness program hash mismatch"),
+            ScriptError::WitnessMalleated => write!(f, "Witness requires empty scriptSig"),
+            ScriptError::WitnessMalleatedP2sh => {
+                write!(f, "Witness requires only-redeemscript scriptSig")
+            }
+            ScriptError::WitnessUnexpected => write!(f, "Witness provided for non-witness script"),
+            ScriptError::WitnessPubkeyType => write!(f, "Using non-compressed keys in segwit"),
+            ScriptError::SchnorrSigSize => write!(f, "Invalid Schnorr signature size"),
+            ScriptError::SchnorrSigHashtype => write!(f, "Invalid Schnorr signature hash type"),
+            ScriptError::SchnorrSig => write!(f, "Invalid Schnorr signature"),
+            ScriptError::TaprootWrongControlSize => write!(f, "Invalid Taproot control block size"),
+            ScriptError::TapscriptValidationWeight => write!(
+                f,
+                "Too much signature validation relative to witness weight"
+            ),
+            ScriptError::TapscriptCheckMultisig => {
+                write!(f, "OP_CHECKMULTISIG(VERIFY) is not available in tapscript")
+            }
+            ScriptError::TapscriptMinimalIf => {
+                write!(f, "OP_IF/NOTIF argument must be minimal in tapscript")
+            }
+            ScriptError::TapscriptEmptyPubkey => write!(f, "Empty public key in tapscript"),
+            ScriptError::OpCodeseparator => {
+                write!(f, "Using OP_CODESEPARATOR in non-witness script")
+            }
+            ScriptError::SigFindAndDelete => write!(f, "Signature is found in scriptCode"),
+        }
+    }
+}
+
+impl Error for ScriptError {}
+
+impl TryFrom<btck_ScriptError> for ScriptError {
+    type Error = btck_ScriptError;
+
+    fn try_from(value: btck_ScriptError) -> Result<Self, Self::Error> {
+        match value {
+            BTCK_SCRIPT_ERROR_OK => Err(value), // OK is not an error
+            BTCK_SCRIPT_ERROR_UNKNOWN => Ok(ScriptError::Unknown),
+            BTCK_SCRIPT_ERROR_EVAL_FALSE => Ok(ScriptError::EvalFalse),
+            BTCK_SCRIPT_ERROR_OP_RETURN => Ok(ScriptError::OpReturn),
+            BTCK_SCRIPT_ERROR_SCRIPT_SIZE => Ok(ScriptError::ScriptSize),
+            BTCK_SCRIPT_ERROR_PUSH_SIZE => Ok(ScriptError::PushSize),
+            BTCK_SCRIPT_ERROR_OP_COUNT => Ok(ScriptError::OpCount),
+            BTCK_SCRIPT_ERROR_STACK_SIZE => Ok(ScriptError::StackSize),
+            BTCK_SCRIPT_ERROR_SIG_COUNT => Ok(ScriptError::SigCount),
+            BTCK_SCRIPT_ERROR_PUBKEY_COUNT => Ok(ScriptError::PubkeyCount),
+            BTCK_SCRIPT_ERROR_VERIFY => Ok(ScriptError::Verify),
+            BTCK_SCRIPT_ERROR_EQUALVERIFY => Ok(ScriptError::EqualVerify),
+            BTCK_SCRIPT_ERROR_CHECKMULTISIGVERIFY => Ok(ScriptError::CheckMultisigVerify),
+            BTCK_SCRIPT_ERROR_CHECKSIGVERIFY => Ok(ScriptError::CheckSigVerify),
+            BTCK_SCRIPT_ERROR_NUMEQUALVERIFY => Ok(ScriptError::NumEqualVerify),
+            BTCK_SCRIPT_ERROR_BAD_OPCODE => Ok(ScriptError::BadOpcode),
+            BTCK_SCRIPT_ERROR_DISABLED_OPCODE => Ok(ScriptError::DisabledOpcode),
+            BTCK_SCRIPT_ERROR_INVALID_STACK_OPERATION => Ok(ScriptError::InvalidStackOperation),
+            BTCK_SCRIPT_ERROR_INVALID_ALTSTACK_OPERATION => {
+                Ok(ScriptError::InvalidAltstackOperation)
+            }
+            BTCK_SCRIPT_ERROR_UNBALANCED_CONDITIONAL => Ok(ScriptError::UnbalancedConditional),
+            BTCK_SCRIPT_ERROR_NEGATIVE_LOCKTIME => Ok(ScriptError::NegativeLocktime),
+            BTCK_SCRIPT_ERROR_UNSATISFIED_LOCKTIME => Ok(ScriptError::UnsatisfiedLocktime),
+            BTCK_SCRIPT_ERROR_SIG_HASHTYPE => Ok(ScriptError::SigHashtype),
+            BTCK_SCRIPT_ERROR_SIG_DER => Ok(ScriptError::SigDer),
+            BTCK_SCRIPT_ERROR_MINIMALDATA => Ok(ScriptError::MinimalData),
+            BTCK_SCRIPT_ERROR_SIG_PUSHONLY => Ok(ScriptError::SigPushOnly),
+            BTCK_SCRIPT_ERROR_SIG_HIGH_S => Ok(ScriptError::SigHighS),
+            BTCK_SCRIPT_ERROR_SIG_NULLDUMMY => Ok(ScriptError::SigNullDummy),
+            BTCK_SCRIPT_ERROR_PUBKEYTYPE => Ok(ScriptError::PubkeyType),
+            BTCK_SCRIPT_ERROR_CLEANSTACK => Ok(ScriptError::CleanStack),
+            BTCK_SCRIPT_ERROR_MINIMALIF => Ok(ScriptError::MinimalIf),
+            BTCK_SCRIPT_ERROR_SIG_NULLFAIL => Ok(ScriptError::SigNullFail),
+            BTCK_SCRIPT_ERROR_DISCOURAGE_UPGRADABLE_NOPS => {
+                Ok(ScriptError::DiscourageUpgradableNops)
+            }
+            BTCK_SCRIPT_ERROR_DISCOURAGE_UPGRADABLE_WITNESS_PROGRAM => {
+                Ok(ScriptError::DiscourageUpgradableWitnessProgram)
+            }
+            BTCK_SCRIPT_ERROR_DISCOURAGE_UPGRADABLE_TAPROOT_VERSION => {
+                Ok(ScriptError::DiscourageUpgradableTaprootVersion)
+            }
+            BTCK_SCRIPT_ERROR_DISCOURAGE_OP_SUCCESS => Ok(ScriptError::DiscourageOpSuccess),
+            BTCK_SCRIPT_ERROR_DISCOURAGE_UPGRADABLE_PUBKEYTYPE => {
+                Ok(ScriptError::DiscourageUpgradablePubkeyType)
+            }
+            BTCK_SCRIPT_ERROR_WITNESS_PROGRAM_WRONG_LENGTH => {
+                Ok(ScriptError::WitnessProgramWrongLength)
+            }
+            BTCK_SCRIPT_ERROR_WITNESS_PROGRAM_WITNESS_EMPTY => {
+                Ok(ScriptError::WitnessProgramWitnessEmpty)
+            }
+            BTCK_SCRIPT_ERROR_WITNESS_PROGRAM_MISMATCH => Ok(ScriptError::WitnessProgramMismatch),
+            BTCK_SCRIPT_ERROR_WITNESS_MALLEATED => Ok(ScriptError::WitnessMalleated),
+            BTCK_SCRIPT_ERROR_WITNESS_MALLEATED_P2SH => Ok(ScriptError::WitnessMalleatedP2sh),
+            BTCK_SCRIPT_ERROR_WITNESS_UNEXPECTED => Ok(ScriptError::WitnessUnexpected),
+            BTCK_SCRIPT_ERROR_WITNESS_PUBKEYTYPE => Ok(ScriptError::WitnessPubkeyType),
+            BTCK_SCRIPT_ERROR_SCHNORR_SIG_SIZE => Ok(ScriptError::SchnorrSigSize),
+            BTCK_SCRIPT_ERROR_SCHNORR_SIG_HASHTYPE => Ok(ScriptError::SchnorrSigHashtype),
+            BTCK_SCRIPT_ERROR_SCHNORR_SIG => Ok(ScriptError::SchnorrSig),
+            BTCK_SCRIPT_ERROR_TAPROOT_WRONG_CONTROL_SIZE => {
+                Ok(ScriptError::TaprootWrongControlSize)
+            }
+            BTCK_SCRIPT_ERROR_TAPSCRIPT_VALIDATION_WEIGHT => {
+                Ok(ScriptError::TapscriptValidationWeight)
+            }
+            BTCK_SCRIPT_ERROR_TAPSCRIPT_CHECKMULTISIG => Ok(ScriptError::TapscriptCheckMultisig),
+            BTCK_SCRIPT_ERROR_TAPSCRIPT_MINIMALIF => Ok(ScriptError::TapscriptMinimalIf),
+            BTCK_SCRIPT_ERROR_TAPSCRIPT_EMPTY_PUBKEY => Ok(ScriptError::TapscriptEmptyPubkey),
+            BTCK_SCRIPT_ERROR_OP_CODESEPARATOR => Ok(ScriptError::OpCodeseparator),
+            BTCK_SCRIPT_ERROR_SIG_FINDANDDELETE => Ok(ScriptError::SigFindAndDelete),
+            _ => Err(value),
+        }
+    }
+}
+
 /// Errors that can occur during script verification.
 ///
 /// These errors represent both configuration problems (incorrect parameters)
@@ -526,8 +865,8 @@ pub enum ScriptVerifyError {
     /// Spent outputs are required but were not provided.
     SpentOutputsRequired,
 
-    /// Script verification failed.
-    Invalid,
+    /// Script execution failed with a specific error.
+    Script(ScriptError),
 }
 
 impl Display for ScriptVerifyError {
@@ -541,12 +880,19 @@ impl Display for ScriptVerifyError {
             ScriptVerifyError::SpentOutputsRequired => {
                 write!(f, "Spent outputs required for verification")
             }
-            ScriptVerifyError::Invalid => write!(f, "Script verification failed"),
+            ScriptVerifyError::Script(e) => write!(f, "Script verification failed: {}", e),
         }
     }
 }
 
-impl Error for ScriptVerifyError {}
+impl Error for ScriptVerifyError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            ScriptVerifyError::Script(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -691,7 +1037,7 @@ mod tests {
             ScriptVerifyError::InvalidFlags,
             ScriptVerifyError::InvalidFlagsCombination,
             ScriptVerifyError::SpentOutputsRequired,
-            ScriptVerifyError::Invalid,
+            ScriptVerifyError::Script(ScriptError::EvalFalse),
         ];
 
         for err in errors {

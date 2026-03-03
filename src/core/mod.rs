@@ -23,7 +23,7 @@ pub use block::{
 pub use script::ScriptPubkeyExt;
 pub use transaction::{TransactionExt, TxInExt, TxOutExt, TxOutPointExt, TxidExt};
 
-pub use verify::{verify, PrecomputedTransactionData, ScriptVerifyError};
+pub use verify::{verify, PrecomputedTransactionData, ScriptError, ScriptVerifyError};
 
 pub mod verify_flags {
     pub use super::verify::{

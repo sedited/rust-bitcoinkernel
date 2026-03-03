@@ -295,9 +295,10 @@ impl std::error::Error for KernelError {
 
 pub use crate::core::{
     verify, Block, BlockHash, BlockHeader, BlockSpentOutputs, BlockSpentOutputsRef, BlockTreeEntry,
-    Coin, CoinRef, PrecomputedTransactionData, ScriptPubkey, ScriptPubkeyRef, ScriptVerifyError,
-    Transaction, TransactionRef, TransactionSpentOutputs, TransactionSpentOutputsRef, TxIn,
-    TxInRef, TxOut, TxOutPoint, TxOutPointRef, TxOutRef, Txid, TxidRef,
+    Coin, CoinRef, PrecomputedTransactionData, ScriptError, ScriptPubkey, ScriptPubkeyRef,
+    ScriptVerifyError, Transaction, TransactionRef, TransactionSpentOutputs,
+    TransactionSpentOutputsRef, TxIn, TxInRef, TxOut, TxOutPoint, TxOutPointRef, TxOutRef, Txid,
+    TxidRef,
 };
 
 pub use crate::log::{disable_logging, Log, LogCategory, LogLevel, Logger};
