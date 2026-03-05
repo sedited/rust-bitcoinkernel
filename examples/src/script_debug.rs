@@ -6,43 +6,62 @@ use bitcoinkernel::{
 
 fn main() {
     let _debugger = ScriptDebugger::new(|frame| {
-        println!("\nMain Stack ({} items, top last):", frame.stack.len());
-        if frame.stack.is_empty() {
-            println!("  <empty>");
-        } else {
+        let opcode_name = match frame.opcode {
+            0x00 => "OP_0",
+            0x76 => "OP_DUP",
+            0xa9 => "OP_HASH160",
+            0x87 => "OP_EQUAL",
+            0x88 => "OP_EQUALVERIFY",
+            0xac => "OP_CHECKSIG",
+            0xff => "END",
+            op if op <= 0x4b => "DATA_PUSH",
+            _ => "OTHER",
+        };
+        println!(
+            "\n[step {}] opcode=0x{:02x} ({}) op_count={} f_exec={} stack_depth={}",
+            frame.opcode_pos,
+            frame.opcode,
+            opcode_name,
+            frame.op_count,
+            frame.f_exec,
+            frame.stack.len(),
+        );
+
+        if !frame.stack.is_empty() {
+            println!("  Stack:");
             for (i, item) in frame.stack.iter().enumerate() {
                 if item.is_empty() {
-                    println!("  {}: <empty>", i);
+                    println!("    {}: <empty>", i);
                 } else {
-                    println!("  {}: 0x{}", i, hex::encode(item));
+                    println!("    {}: 0x{}", i, hex::encode(item));
                 }
             }
         }
 
         if !frame.altstack.is_empty() {
-            println!("\nAlt Stack ({} items, top last):", frame.altstack.len());
+            println!("  Altstack:");
             for (i, item) in frame.altstack.iter().enumerate() {
                 if item.is_empty() {
-                    println!("  {}: <empty>", i);
+                    println!("    {}: <empty>", i);
                 } else {
-                    println!("  {}: 0x{}", i, hex::encode(item));
+                    println!("    {}: 0x{}", i, hex::encode(item));
                 }
             }
         }
 
         let script = Script::from_bytes(&frame.script);
-        println!("Script (f_exec={}):", frame.f_exec);
+        println!("  Script:");
         for (i, op) in script.instructions().enumerate() {
             match op {
                 Ok(instruction) => {
                     if i as u32 == frame.opcode_pos {
-                        print!("  > ");
+                        print!("    > ");
                     } else {
-                        print!("    ");
+                        print!("      ");
                     }
                     println!("{:?}", instruction);
                 }
-                Err(e) => println!("    Error decoding instruction: {}", e),
+                Err(e) => println!("      Error decoding instruction: {}", e),
             }
         }
     })

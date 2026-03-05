@@ -24,6 +24,11 @@ pub struct ScriptDebugFrame {
     pub opcode_pos: u32,
     /// Whether the current branch is being executed (`true` = active, `false` = inside a false IF).
     pub f_exec: bool,
+    /// Decoded opcode value for the current instruction.
+    /// `0xff` (`OP_INVALIDOPCODE`) on the final callback or for empty scripts.
+    pub opcode: u8,
+    /// Cumulative count of non-push opcodes executed so far (tracks the 201-op limit).
+    pub op_count: u32,
 }
 
 /// Guard that keeps a script debug callback registered.
@@ -105,6 +110,8 @@ unsafe extern "C" fn trampoline(
             script,
             opcode_pos: state.opcode_pos,
             f_exec: state.f_exec != 0,
+            opcode: state.opcode,
+            op_count: state.op_count as u32,
         };
 
         let closure = unsafe { &mut **(user_data as *mut Box<dyn FnMut(ScriptDebugFrame)>) };

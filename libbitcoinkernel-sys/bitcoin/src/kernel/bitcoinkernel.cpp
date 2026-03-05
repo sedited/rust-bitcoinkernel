@@ -1407,7 +1407,9 @@ void btck_register_script_debug_callback(void* user_data, btck_ScriptDebugCallba
                             const CScript& script,
                             uint32_t opcode_pos,
                             std::span<const std::vector<unsigned char>> altstack,
-                            bool fExec) {
+                            bool fExec,
+                            uint8_t opcode,
+                            int nOpCount) {
         std::vector<const unsigned char*> stack_ptrs;
         std::vector<size_t> stack_sizes;
         stack_ptrs.reserve(stack.size());
@@ -1437,6 +1439,8 @@ void btck_register_script_debug_callback(void* user_data, btck_ScriptDebugCallba
         state.altstack_item_sizes = altstack_sizes.data();
         state.altstack_size = altstack.size();
         state.f_exec = fExec ? 1 : 0;
+        state.opcode = opcode;
+        state.op_count = nOpCount;
 
         callback(user_data, &state);
     };

@@ -705,6 +705,37 @@ mod tests {
             );
             assert!(!frame.script.is_empty(), "script bytes should be non-empty");
         }
+
+        // The P2PKH scriptPubKey is 76a914...88ac which starts with OP_DUP (0x76).
+        let p2pkh_script =
+            hex::decode("76a9144bfbaf6afb76cc5771bc6404810d1cc041a6933988ac").unwrap();
+        let p2pkh_frames: Vec<_> = collected
+            .iter()
+            .filter(|f| f.script == p2pkh_script && f.opcode != 0xff)
+            .collect();
+        assert!(
+            !p2pkh_frames.is_empty(),
+            "should have P2PKH scriptPubKey frames"
+        );
+        assert_eq!(
+            p2pkh_frames[0].opcode, 0x76,
+            "first P2PKH opcode should be OP_DUP"
+        );
+
+        // op_count should be monotonically non-decreasing within a script
+        assert!(
+            p2pkh_frames
+                .windows(2)
+                .all(|w| w[1].op_count >= w[0].op_count),
+            "op_count should be monotonically non-decreasing"
+        );
+
+        // The final frame (opcode == 0xff) should exist
+        let final_frames: Vec<_> = collected.iter().filter(|f| f.opcode == 0xff).collect();
+        assert!(
+            !final_frames.is_empty(),
+            "should have final callback frame(s) with opcode 0xff"
+        );
     }
 
     /// Multiple threads race to register a debugger — at most one should be active at a time.

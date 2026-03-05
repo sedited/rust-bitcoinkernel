@@ -421,7 +421,7 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
     CScript::const_iterator pc = script.begin();
     CScript::const_iterator pend = script.end();
     CScript::const_iterator pbegincodehash = script.begin();
-    opcodetype opcode;
+    opcodetype opcode = OP_INVALIDOPCODE;
     valtype vchPushValue;
     ConditionStack vfExec;
     std::vector<valtype> altstack;
@@ -439,7 +439,6 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
     {
         for (; pc < pend; ++opcode_pos) {
             bool fExec = vfExec.all_true();
-            DEBUG_SCRIPT(stack, script, opcode_pos, altstack, fExec);
 
             //
             // Read instruction
@@ -455,6 +454,8 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
                     return set_error(serror, SCRIPT_ERR_OP_COUNT);
                 }
             }
+
+            DEBUG_SCRIPT(stack, script, opcode_pos, altstack, fExec, static_cast<uint8_t>(opcode), nOpCount);
 
             if (opcode == OP_CAT ||
                 opcode == OP_SUBSTR ||
@@ -1230,7 +1231,8 @@ bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& 
         return set_error(serror, SCRIPT_ERR_UNKNOWN_ERROR);
     }
 
-    DEBUG_SCRIPT(stack, script, opcode_pos, altstack, vfExec.all_true());
+    opcode = OP_INVALIDOPCODE;
+    DEBUG_SCRIPT(stack, script, opcode_pos, altstack, vfExec.all_true(), static_cast<uint8_t>(opcode), nOpCount);
 
     if (!vfExec.empty())
         return set_error(serror, SCRIPT_ERR_UNBALANCED_CONDITIONAL);
