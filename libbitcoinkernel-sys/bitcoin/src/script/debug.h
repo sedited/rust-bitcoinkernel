@@ -11,17 +11,17 @@
 #include <span>
 #include <vector>
 
-using DebugScriptCallback = std::function<void(std::span<const std::vector<unsigned char>>, const CScript&, uint32_t, std::span<const std::vector<unsigned char>>, bool, uint8_t, int)>;
+using DebugScriptCallback = std::function<void(std::span<const std::vector<unsigned char>>, const CScript&, uint32_t, std::span<const std::vector<unsigned char>>, bool, uint8_t, int, uint8_t)>;
 
-void DebugScript(std::span<const std::vector<unsigned char>> stack, const CScript& script, uint32_t opcode_pos, std::span<const std::vector<unsigned char>> altstack, bool fExec, uint8_t opcode, int nOpCount);
+void DebugScript(std::span<const std::vector<unsigned char>> stack, const CScript& script, uint32_t opcode_pos, std::span<const std::vector<unsigned char>> altstack, bool fExec, uint8_t opcode, int nOpCount, uint8_t sigversion);
 
 void RegisterDebugScriptCallback(DebugScriptCallback func);
 
 #ifdef ENABLE_SCRIPT_DEBUG
-#define DEBUG_SCRIPT(stack, script, opcode_pos, altstack, fExec, opcode, nOpCount) \
-    DebugScript(stack, script, opcode_pos, altstack, fExec, opcode, nOpCount);
+#define DEBUG_SCRIPT(stack, script, opcode_pos, altstack, fExec, opcode, nOpCount, sigversion) \
+    DebugScript(stack, script, opcode_pos, altstack, fExec, opcode, nOpCount, sigversion);
 #else
-#define DEBUG_SCRIPT(stack, script, opcode_pos, altstack, fExec, opcode, nOpCount)
+#define DEBUG_SCRIPT(stack, script, opcode_pos, altstack, fExec, opcode, nOpCount, sigversion)
 #endif // ENABLE_SCRIPT_DEBUG
 
 #endif // BITCOIN_SCRIPT_DEBUG_H

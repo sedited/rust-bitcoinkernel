@@ -11,6 +11,38 @@ use libbitcoinkernel_sys::{
     btck_unregister_script_debug_callback,
 };
 
+/// Script execution context (signature version).
+///
+/// Indicates which script system rules apply during execution.
+/// Key-path taproot spends (`Taproot`) bypass `EvalScript` entirely,
+/// so they will not appear in debug callbacks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+#[repr(u8)]
+pub enum SigVersion {
+    /// Bare scripts and BIP16 P2SH-wrapped redeemscripts.
+    Base = 0,
+    /// Witness v0 (P2WPKH and P2WSH); see BIP 141.
+    WitnessV0 = 1,
+    /// Witness v1 key path spending; see BIP 341.
+    Taproot = 2,
+    /// Witness v1 script path spending, leaf version 0xc0; see BIP 342.
+    Tapscript = 3,
+}
+
+impl TryFrom<u8> for SigVersion {
+    type Error = u8;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(SigVersion::Base),
+            1 => Ok(SigVersion::WitnessV0),
+            2 => Ok(SigVersion::Taproot),
+            3 => Ok(SigVersion::Tapscript),
+            other => Err(other),
+        }
+    }
+}
+
 /// A snapshot of script execution state at a single opcode step.
 #[derive(Debug, Clone)]
 pub struct ScriptDebugFrame {
@@ -29,6 +61,8 @@ pub struct ScriptDebugFrame {
     pub opcode: u8,
     /// Cumulative count of non-push opcodes executed so far (tracks the 201-op limit).
     pub op_count: u32,
+    /// Script execution context (legacy, segwit v0, tapscript, etc.).
+    pub sig_version: SigVersion,
 }
 
 /// Guard that keeps a script debug callback registered.
@@ -104,6 +138,8 @@ unsafe extern "C" fn trampoline(
             unsafe { std::slice::from_raw_parts(state.script, state.script_size) }.to_vec()
         };
 
+        let sig_version = SigVersion::try_from(state.sig_version).unwrap_or(SigVersion::Base);
+
         let frame = ScriptDebugFrame {
             stack,
             altstack,
@@ -112,6 +148,7 @@ unsafe extern "C" fn trampoline(
             f_exec: state.f_exec != 0,
             opcode: state.opcode,
             op_count: state.op_count as u32,
+            sig_version,
         };
 
         let closure = unsafe { &mut **(user_data as *mut Box<dyn FnMut(ScriptDebugFrame)>) };

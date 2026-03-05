@@ -673,7 +673,7 @@ mod tests {
     #[cfg(feature = "script_debug")]
     #[test]
     fn test_script_debug() {
-        use bitcoinkernel::{ScriptDebugFrame, ScriptDebugger};
+        use bitcoinkernel::{ScriptDebugFrame, ScriptDebugger, SigVersion};
         use std::sync::Mutex;
 
         let frames: Arc<Mutex<Vec<ScriptDebugFrame>>> = Arc::new(Mutex::new(Vec::new()));
@@ -736,6 +736,15 @@ mod tests {
             !final_frames.is_empty(),
             "should have final callback frame(s) with opcode 0xff"
         );
+
+        // P2PKH uses SigVersion::Base for all execution phases
+        for frame in collected.iter() {
+            assert_eq!(
+                frame.sig_version,
+                SigVersion::Base,
+                "P2PKH execution should use SigVersion::Base"
+            );
+        }
     }
 
     /// Multiple threads race to register a debugger — at most one should be active at a time.

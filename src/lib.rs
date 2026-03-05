@@ -316,7 +316,7 @@ pub use crate::state::{
 };
 
 #[cfg(feature = "script_debug")]
-pub use crate::core::script_debug::{ScriptDebugFrame, ScriptDebugger};
+pub use crate::core::script_debug::{ScriptDebugFrame, ScriptDebugger, SigVersion};
 
 pub use crate::core::verify_flags::{
     VERIFY_ALL, VERIFY_ALL_PRE_TAPROOT, VERIFY_CHECKLOCKTIMEVERIFY, VERIFY_CHECKSEQUENCEVERIFY,
