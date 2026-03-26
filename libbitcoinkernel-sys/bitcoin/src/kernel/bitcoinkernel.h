@@ -1865,6 +1865,8 @@ typedef struct {
     const size_t* altstack_item_sizes;
     size_t altstack_size;
     int f_exec;
+    uint8_t opcode;
+    int op_count;
 } btck_ScriptDebugState;
 
 /**

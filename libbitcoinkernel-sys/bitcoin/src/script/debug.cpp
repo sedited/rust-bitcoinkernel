@@ -11,10 +11,11 @@
 static std::mutex g_script_debug_mutex;
 static DebugScriptCallback g_script_debug_callback{nullptr};
 
-void DebugScript(std::span<const std::vector<unsigned char>> stack, const CScript& script, uint32_t opcode_pos, std::span<const std::vector<unsigned char>> altstack, bool fExec)
+void DebugScript(std::span<const std::vector<unsigned char>> stack, const CScript& script, uint32_t opcode_pos, std::span<const std::vector<unsigned char>> altstack, bool fExec, uint8_t opcode, int nOpCount)
 {
     std::lock_guard<std::mutex> lock(g_script_debug_mutex);
-    if (g_script_debug_callback) g_script_debug_callback(stack, script, opcode_pos, altstack, fExec);
+    if (g_script_debug_callback)
+        g_script_debug_callback(stack, script, opcode_pos, altstack, fExec, opcode, nOpCount);
 }
 
 void RegisterDebugScriptCallback(DebugScriptCallback func)
