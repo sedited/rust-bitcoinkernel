@@ -6,7 +6,7 @@ mod tests {
         prelude::*, verify, Block, BlockHash, BlockHeader, BlockSpentOutputs, BlockTreeEntry,
         BlockValidationStateRef, ChainParams, ChainType, ChainstateManager,
         ChainstateManagerBuilder, Coin, Context, ContextBuilder, KernelError, Log, Logger,
-        PrecomputedTransactionData, ScriptPubkey, ScriptVerifyError, Transaction,
+        PrecomputedTransactionData, ScriptError, ScriptPubkey, ScriptVerifyError, Transaction,
         TransactionSpentOutputs, TxIn, TxOut, ValidationMode, VERIFY_ALL, VERIFY_ALL_PRE_TAPROOT,
         VERIFY_TAPROOT, VERIFY_WITNESS,
     };
@@ -243,7 +243,77 @@ mod tests {
     }
 
     #[test]
-    fn script_verify_test() {
+    fn test_script_error_codes() {
+        let p2pkh_tx = "02000000013f7cebd65c27431a90bba7f796914fe8cc2ddfc3f2cbd6f7e5f2fc854534da95000000006b483045022100de1ac3bcdfb0332207c4a91f3832bd2c2915840165f876ab47c5f8996b971c3602201c6c053d750fadde599e6f5c4e1963df0f01fc0d97815e8157e3d59fe09ca30d012103699b464d1d8bc9e47d4fb1cdaa89a1c5783d68363c4dbc4b524ed3d857148617feffffff02836d3c01000000001976a914fc25d6d5c94003bf5b0c7b640a248e2c637fcfb088ac7ada8202000000001976a914fbed3d9b11183209a57999d54d59f67c019e756c88ac6acb0700";
+
+        // OP_RETURN (0x6a) → OpReturn
+        assert!(matches!(
+            verify_test("6a", p2pkh_tx, 0, 0, vec![], VERIFY_ALL_PRE_TAPROOT),
+            Err(KernelError::ScriptVerify(ScriptVerifyError::Script(
+                ScriptError::OpReturn
+            )))
+        ));
+
+        // OP_0 (0x00) pushes empty bytes → top of stack is false → EvalFalse
+        assert!(matches!(
+            verify_test("00", p2pkh_tx, 0, 0, vec![], VERIFY_ALL_PRE_TAPROOT),
+            Err(KernelError::ScriptVerify(ScriptVerifyError::Script(
+                ScriptError::EvalFalse
+            )))
+        ));
+
+        // OP_EQUALVERIFY (0x88) pops sig and pubkey, they differ → EqualVerify
+        assert!(matches!(
+            verify_test("88", p2pkh_tx, 0, 0, vec![], VERIFY_ALL_PRE_TAPROOT),
+            Err(KernelError::ScriptVerify(ScriptVerifyError::Script(
+                ScriptError::EqualVerify
+            )))
+        ));
+
+        // OP_IF (0x63) without OP_ENDIF → UnbalancedConditional
+        assert!(matches!(
+            verify_test("63", p2pkh_tx, 0, 0, vec![], VERIFY_ALL_PRE_TAPROOT),
+            Err(KernelError::ScriptVerify(ScriptVerifyError::Script(
+                ScriptError::UnbalancedConditional
+            )))
+        ));
+
+        // OP_DROP OP_DROP OP_DROP (0x75 0x75 0x75): scriptSig pushes 2 items,
+        // third OP_DROP has nothing to pop → InvalidStackOperation
+        assert!(matches!(
+            verify_test("757575", p2pkh_tx, 0, 0, vec![], VERIFY_ALL_PRE_TAPROOT),
+            Err(KernelError::ScriptVerify(ScriptVerifyError::Script(
+                ScriptError::InvalidStackOperation
+            )))
+        ));
+
+        // OP_2MUL (0x8d) is a disabled opcode → DisabledOpcode
+        assert!(matches!(
+            verify_test("8d", p2pkh_tx, 0, 0, vec![], VERIFY_ALL_PRE_TAPROOT),
+            Err(KernelError::ScriptVerify(ScriptVerifyError::Script(
+                ScriptError::DisabledOpcode
+            )))
+        ));
+
+        // P2PKH with wrong pubkey hash: OP_DUP OP_HASH160 <20 zero bytes> OP_EQUALVERIFY OP_CHECKSIG
+        // Hash won't match the actual pubkey → EqualVerify
+        assert!(matches!(
+            verify_test(
+                "76a914000000000000000000000000000000000000000088ac",
+                p2pkh_tx,
+                0,
+                0,
+                vec![],
+                VERIFY_ALL_PRE_TAPROOT
+            ),
+            Err(KernelError::ScriptVerify(ScriptVerifyError::Script(
+                ScriptError::EqualVerify
+            )))
+        ));
+    }
+
+    #[test]
+    fn test_script_verify() {
         // a random old-style transaction from the blockchain
         verify_test (
             "76a9144bfbaf6afb76cc5771bc6404810d1cc041a6933988ac",
@@ -265,19 +335,22 @@ mod tests {
             18393430 , 0, vec![], VERIFY_ALL_PRE_TAPROOT
         ).unwrap();
 
-        // a random old-style transaction from the blockchain - WITH WRONG SIGNATURE for the address
+        // a random old-style transaction from the blockchain - WITH BAD OPCODE replacing OP_CHECKSIG
+        // scriptPubkey ends with 0xff instead of 0xac (OP_CHECKSIG), so EQUALVERIFY passes
+        // (correct pubkey hash) but then 0xff is an undefined opcode → BadOpcode
         assert!(matches!(verify_test(
             "76a9144bfbaf6afb76cc5771bc6404810d1cc041a6933988ff",
             "02000000013f7cebd65c27431a90bba7f796914fe8cc2ddfc3f2cbd6f7e5f2fc854534da95000000006b483045022100de1ac3bcdfb0332207c4a91f3832bd2c2915840165f876ab47c5f8996b971c3602201c6c053d750fadde599e6f5c4e1963df0f01fc0d97815e8157e3d59fe09ca30d012103699b464d1d8bc9e47d4fb1cdaa89a1c5783d68363c4dbc4b524ed3d857148617feffffff02836d3c01000000001976a914fc25d6d5c94003bf5b0c7b640a248e2c637fcfb088ac7ada8202000000001976a914fbed3d9b11183209a57999d54d59f67c019e756c88ac6acb0700",
             0, 0 , vec![], VERIFY_ALL_PRE_TAPROOT
-        ), Err(KernelError::ScriptVerify(ScriptVerifyError::Invalid))));
+        ), Err(KernelError::ScriptVerify(ScriptVerifyError::Script(ScriptError::BadOpcode)))));
 
-        // a random segwit transaction from the blockchain using native segwit - WITH WRONG SEGWIT
+        // a random segwit transaction from the blockchain using native segwit - WITH WRONG WITNESS HASH
+        // Last byte of witness program changed (c58d → c58f), so hash doesn't match → WitnessProgramMismatch
         assert!(matches!(verify_test(
             "0020701a8d401c84fb13e6baf169d59684e17abd9fa216c8cc5b9fc63d622ff8c58f",
             "010000000001011f97548fbbe7a0db7588a66e18d803d0089315aa7d4cc28360b6ec50ef36718a0100000000ffffffff02df1776000000000017a9146c002a686959067f4866b8fb493ad7970290ab728757d29f0000000000220020701a8d401c84fb13e6baf169d59684e17abd9fa216c8cc5b9fc63d622ff8c58d04004730440220565d170eed95ff95027a69b313758450ba84a01224e1f7f130dda46e94d13f8602207bdd20e307f062594022f12ed5017bbf4a055a06aea91c10110a0e3bb23117fc014730440220647d2dc5b15f60bc37dc42618a370b2a1490293f9e5c8464f53ec4fe1dfe067302203598773895b4b16d37485cbe21b337f4e4b650739880098c592553add7dd4355016952210375e00eb72e29da82b89367947f29ef34afb75e8654f6ea368e0acdfd92976b7c2103a1b26313f430c4b15bb1fdce663207659d8cac749a0e53d70eff01874496feff2103c96d495bfdd5ba4145e3e046fee45e84a8a48ad05bd8dbb395c011a32cf9f88053ae00000000",
             18393430 , 0, vec![], VERIFY_ALL_PRE_TAPROOT
-        ), Err(KernelError::ScriptVerify(ScriptVerifyError::Invalid))));
+        ), Err(KernelError::ScriptVerify(ScriptVerifyError::Script(ScriptError::WitnessProgramMismatch)))));
 
         // a random taproot transaction
         let spent = "5120339ce7e165e67d93adb3fef88a6d4beed33f01fa876f05a225242b82a631abc0";

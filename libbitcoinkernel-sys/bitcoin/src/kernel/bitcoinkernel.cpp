@@ -24,6 +24,7 @@
 #include <script/debug.h>
 #include <script/interpreter.h>
 #include <script/script.h>
+#include <script/script_error.h>
 #include <serialize.h>
 #include <streams.h>
 #include <sync.h>
@@ -653,7 +654,8 @@ int btck_script_pubkey_verify(const btck_ScriptPubkey* script_pubkey,
                               const btck_PrecomputedTransactionData* precomputed_txdata,
                               const unsigned int input_index,
                               const btck_ScriptVerificationFlags flags,
-                              btck_ScriptVerifyStatus* status)
+                              btck_ScriptVerifyStatus* status,
+                              btck_ScriptError* script_error)
 {
     // Assert that all specified flags are part of the interface before continuing
     assert((flags & ~btck_ScriptVerificationFlags_ALL) == 0);
@@ -675,12 +677,14 @@ int btck_script_pubkey_verify(const btck_ScriptPubkey* script_pubkey,
 
     if (status) *status = btck_ScriptVerifyStatus_OK;
 
+    ScriptError serror;
     bool result = VerifyScript(tx.vin[input_index].scriptSig,
                                btck_ScriptPubkey::get(script_pubkey),
                                &tx.vin[input_index].scriptWitness,
                                script_verify_flags::from_int(flags),
                                TransactionSignatureChecker(&tx, input_index, amount, txdata, MissingDataBehavior::FAIL),
-                               nullptr);
+                               &serror);
+    if (script_error) *script_error = static_cast<btck_ScriptError>(serror);
     return result ? 1 : 0;
 }
 
