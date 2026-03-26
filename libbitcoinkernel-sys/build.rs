@@ -42,7 +42,7 @@ fn main() {
         .arg("-DENABLE_IPC=OFF")
         .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()))
         .status()
-        .unwrap();
+        .expect("cmake should be installed and available in PATH.");
 
     let num_jobs = env::var("NUM_JOBS")
         .ok()
@@ -56,7 +56,7 @@ fn main() {
         .arg(build_config)
         .arg(format!("--parallel={num_jobs}"))
         .status()
-        .unwrap();
+        .expect("cmake build should succeed after configure");
 
     Command::new("cmake")
         .arg("--install")
@@ -64,7 +64,7 @@ fn main() {
         .arg("--config")
         .arg(build_config)
         .status()
-        .unwrap();
+        .expect("cmake install should succeed after build");
 
     // Check if the build system used a multi-config generator
     let lib_dir = if install_dir.join("lib").join(build_config).exists() {
