@@ -1,7 +1,7 @@
 use bitcoin::Script;
 use bitcoinkernel::{
-    prelude::*, verify, PrecomputedTransactionData, ScriptDebugger, ScriptPubkey, Transaction,
-    TxOut, VERIFY_ALL_PRE_TAPROOT,
+    prelude::*, verify, PrecomputedTransactionData, ScriptDebugger, ScriptPubkey, SigVersion,
+    Transaction, TxOut, VERIFY_ALL_PRE_TAPROOT,
 };
 
 fn main() {
@@ -17,12 +17,20 @@ fn main() {
             op if op <= 0x4b => "DATA_PUSH",
             _ => "OTHER",
         };
+        let sig_version_name = match frame.sig_version {
+            SigVersion::Base => "BASE",
+            SigVersion::WitnessV0 => "WITNESS_V0",
+            SigVersion::Taproot => "TAPROOT",
+            SigVersion::Tapscript => "TAPSCRIPT",
+            _ => "UNKNOWN",
+        };
         println!(
-            "\n[step {}] opcode=0x{:02x} ({}) op_count={} f_exec={} stack_depth={}",
+            "\n[step {}] opcode=0x{:02x} ({}) op_count={} sig_version={} f_exec={} stack_depth={}",
             frame.opcode_pos,
             frame.opcode,
             opcode_name,
             frame.op_count,
+            sig_version_name,
             frame.f_exec,
             frame.stack.len(),
         );

@@ -1851,6 +1851,12 @@ BITCOINKERNEL_API void btck_block_header_destroy(btck_BlockHeader* header);
  */
 ///@{
 
+typedef uint8_t btck_SigVersion;
+#define btck_SigVersion_BASE       ((btck_SigVersion)(0))
+#define btck_SigVersion_WITNESS_V0 ((btck_SigVersion)(1))
+#define btck_SigVersion_TAPROOT    ((btck_SigVersion)(2))
+#define btck_SigVersion_TAPSCRIPT  ((btck_SigVersion)(3))
+
 /**
  * Snapshot of script execution state passed to the debug callback.
  */
@@ -1867,6 +1873,7 @@ typedef struct {
     int f_exec;
     uint8_t opcode;
     int op_count;
+    uint8_t sig_version;
 } btck_ScriptDebugState;
 
 /**
