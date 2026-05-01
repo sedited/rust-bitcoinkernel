@@ -42,7 +42,9 @@
 #include <exception>
 #include <functional>
 #include <list>
+#include <map>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -275,6 +277,42 @@ struct LoggingConnection {
             m_deleter(m_user_data);
         }
     }
+};
+
+class CoinsViewBlock : public CCoinsViewCache
+{
+private:
+    std::optional<Coin> FetchCoinFromBase(const COutPoint& outpoint) const override
+    {
+        if (auto it = m_coins.find(outpoint); it != m_coins.end()) {
+            return *it->second;
+        }
+        return std::nullopt;
+    }
+
+    std::map<const COutPoint, const Coin*> m_coins;
+    uint256 m_hash_prev_block;
+
+public:
+    CoinsViewBlock(const CBlock& block, const CBlockUndo& block_undo) : CCoinsViewCache(&CoinsViewEmpty::Get()), m_hash_prev_block{block.hashPrevBlock}
+    {
+        size_t i{0};
+        for (const auto& tx : block.vtx) {
+            if (tx->IsCoinBase()) continue;
+            if (i >= block_undo.vtxundo.size()) break;
+            const auto& txundo = block_undo.vtxundo[i];
+            ++i;
+            size_t j{0};
+            for (const CTxIn& txin : tx->vin) {
+                if (j >= txundo.vprevout.size()) break;
+                const Coin& coin = txundo.vprevout[j];
+                ++j;
+                m_coins.try_emplace(txin.prevout, &coin);
+            }
+        }
+    }
+
+    uint256 GetBestBlock() const override { return m_hash_prev_block; }
 };
 
 class KernelNotifications final : public kernel::Notifications
@@ -546,6 +584,11 @@ uint32_t btck_transaction_get_locktime(const btck_Transaction* transaction)
 const btck_Txid* btck_transaction_get_txid(const btck_Transaction* transaction)
 {
     return btck_Txid::ref(&btck_Transaction::get(transaction)->GetHash());
+}
+
+int btck_transaction_is_coinbase(const btck_Transaction* transaction)
+{
+    return btck_Transaction::get(transaction)->IsCoinBase() ? 1 : 0;
 }
 
 btck_Transaction* btck_transaction_copy(const btck_Transaction* transaction)
@@ -1256,6 +1299,19 @@ btck_BlockSpentOutputs* btck_block_spent_outputs_read(const btck_ChainstateManag
     return btck_BlockSpentOutputs::create(block_undo);
 }
 
+btck_BlockSpentOutputs* btck_block_spent_outputs_create(void* context, btck_coin_getter coin_getter, btck_coins_count count_getter, size_t num_txs)
+{
+    auto block_undo{std::make_shared<CBlockUndo>()};
+    block_undo->vtxundo.reserve(num_txs);
+    for (uint64_t i{0}; i < num_txs; ++i) {
+        block_undo->vtxundo.emplace_back();
+        for (uint64_t j{0}; j < count_getter(context, i); ++j) {
+            block_undo->vtxundo[i].vprevout.emplace_back(btck_Coin::get(coin_getter(context, i, j)));
+        }
+    }
+    return btck_BlockSpentOutputs::create(block_undo);
+}
+
 btck_BlockSpentOutputs* btck_block_spent_outputs_copy(const btck_BlockSpentOutputs* block_spent_outputs)
 {
     return btck_BlockSpentOutputs::copy(block_spent_outputs);
@@ -1298,6 +1354,11 @@ const btck_Coin* btck_transaction_spent_outputs_get_coin_at(const btck_Transacti
     assert(coin_index < btck_TransactionSpentOutputs::get(transaction_spent_outputs).vprevout.size());
     const Coin* coin{&btck_TransactionSpentOutputs::get(transaction_spent_outputs).vprevout.at(coin_index)};
     return btck_Coin::ref(coin);
+}
+
+btck_Coin* btck_coin_create(const btck_TransactionOutput* output, uint32_t height, int is_coinbase)
+{
+    return btck_Coin::create(btck_TransactionOutput::get(output), height, is_coinbase == 1);
 }
 
 btck_Coin* btck_coin_copy(const btck_Coin* coin)
@@ -1352,6 +1413,24 @@ int btck_chainstate_manager_process_block_header(
         LogError("Failed to process block header: %s", e.what());
         return -1;
     }
+}
+
+int btck_chainstate_manager_validate_block(
+    btck_ChainstateManager* chainstate_manager,
+    const btck_Block* block,
+    const btck_BlockSpentOutputs* block_spent_outputs,
+    btck_BlockValidationState* state)
+{
+    auto& chainman = *btck_ChainstateManager::get(chainstate_manager).m_chainman;
+    try {
+        auto coins = CoinsViewBlock{*btck_Block::get(block), *btck_BlockSpentOutputs::get(block_spent_outputs)};
+        btck_BlockValidationState::get(state) = chainman.ValidateBlock(*btck_Block::get(block), coins);
+    } catch (const std::exception& e) {
+        LogError("Failed to validate block: %s", e.what());
+        btck_BlockValidationState::get(state).Error("Exception in ValidateBlock");
+    }
+
+    return btck_BlockValidationState::get(state).IsValid() ? 0 : -1;
 }
 
 const btck_Chain* btck_chainstate_manager_get_active_chain(const btck_ChainstateManager* chainman)
