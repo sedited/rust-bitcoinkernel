@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Updated examples/src/silentpaymentscanner.rs:if args.len() < 2
 - Added `Block::check` to perform context-free validation of a block (size, weight, coinbase, transactions, sigops), with optional proof-of-work and merkle-root checks toggled via the `BLOCK_CHECK_BASE` / `_POW` / `_MERKLE` / `_ALL` flags. Returns a `BlockCheckResult` enum carrying the validation state on failure.
 - Implemented `Debug` for `BlockValidationResult`, `BlockValidationStateRef`, `ProcessBlockHeaderresult` and `BlockCheckResult`, enabling inspection via `{:?}` in logs and test output.
 - Added `#[must_use]` to `BlockCheckResult` and `ProcessBlockHeaderResult` to warn when validation results are silently ignored.
