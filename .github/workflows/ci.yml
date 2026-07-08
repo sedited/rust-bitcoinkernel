@@ -109,10 +109,10 @@ jobs:
     - name: Build
       run: cargo build -vv
 
-    - name: Build example binary
+    - name: Run example binary
       run: |
         cd examples
-        cargo build --verbose
+        cargo run --verbose -- datadir
 
     - name: Check formatting
       run: cargo fmt -- --check
@@ -174,8 +174,19 @@ jobs:
         echo "BOOST_INCLUDEDIR=$env:GITHUB_WORKSPACE\vcpkg\installed\x64-windows-static\include" | Out-File -FilePath $env:GITHUB_ENV -Append
         echo "BOOST_LIBRARYDIR=$env:GITHUB_WORKSPACE\vcpkg\installed\x64-windows-static\lib" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-    - name: Run tests
-      run: cargo test -vv
+    - name: Build and Test
+      env:
+        CARGO_HTTP_PROTOCOL: "http1"
+        CARGO_HTTP_MULTIPLEXING: "false"
+        CARGO_NET_RETRY: "5"
+        CARGO_NET_TIMEOUT: "60"
+      run: |
+        # Clean the stale/corrupted attempt
+        cargo clean
+        # Force an update of the registry without using multiplexing
+        cargo update
+        # Perform the test
+        cargo test -vv
 
   linux-aarch64:
     name: Build and Test on Linux ARM64
