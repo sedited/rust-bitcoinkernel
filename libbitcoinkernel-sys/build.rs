@@ -38,6 +38,14 @@ fn main() {
         .arg("-DBUILD_SHARED_LIBS=OFF")
         .arg("-DCMAKE_INSTALL_LIBDIR=lib")
         .arg("-DENABLE_IPC=OFF")
+        .arg(format!(
+            "-DENABLE_SCRIPT_TRACE={}",
+            if cfg!(feature = "script-trace") {
+                "ON"
+            } else {
+                "OFF"
+            }
+        ))
         .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()))
         .status()
         .expect("cmake should be installed and available in PATH");

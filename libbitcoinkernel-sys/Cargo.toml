@@ -54,3 +54,6 @@ publish = true
 
 [build-dependencies]
 cc = "1.2"
+
+[features]
+script-trace = []

@@ -189,6 +189,7 @@ pub mod core;
 pub mod ffi;
 pub mod log;
 pub mod notifications;
+pub mod script_trace;
 pub mod state;
 
 #[cfg(test)]
@@ -241,6 +242,7 @@ pub enum KernelError {
     InvalidOptions(String),
     OutOfBounds,
     ScriptVerify(ScriptVerifyError),
+    ScriptTraceUnavailable,
     SerializationFailed,
     MismatchedOutputsSize,
     InvalidLength { expected: usize, actual: usize },
@@ -262,6 +264,7 @@ impl fmt::Display for KernelError {
             KernelError::InvalidOptions(msg) => write!(f, "Invalid options: {}", msg),
             KernelError::OutOfBounds => write!(f, "Out of bounds"),
             KernelError::ScriptVerify(err) => write!(f, "Script verification error: {}", err),
+            KernelError::ScriptTraceUnavailable => write!(f, "Script tracing is not available; recompile the kernel library with ENABLE_SCRIPT_TRACE"),
             KernelError::SerializationFailed => write!(f, "Serialization failed"),
             KernelError::MismatchedOutputsSize => write!(f, "Number of outputs size does not correspond to the number of inputs of the transaction."),
             KernelError::InvalidLength { expected, actual } => {
@@ -300,6 +303,11 @@ pub use crate::notifications::{
 pub use crate::state::{
     Chain, ChainParams, ChainType, ChainstateManager, ChainstateManagerBuilder, Context,
     ContextBuilder, ProcessBlockHeaderResult, ProcessBlockResult,
+};
+
+pub use crate::script_trace::{
+    set_script_trace_callback, unset_script_trace_callback, ScriptTraceFrame, ScriptTraceFrameKind,
+    SigVersion,
 };
 
 pub use crate::core::block_check_flags::{

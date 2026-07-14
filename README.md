@@ -65,8 +65,10 @@ documentation directly via
 ## Examples
 
 Examples for the usage of the library can be found in the `examples/` directory
-and the `tests`. For now, the example binary implements a bare-bones silent
-payments scanner.
+and the `tests`. The `silentpaymentscanner` binary implements a bare-bones
+silent payments scanner, and the `scripttrace` binary demonstrates the
+`script_trace` feature by printing a per-opcode execution trace while
+verifying a transaction.
 
 ## Fuzzing
 

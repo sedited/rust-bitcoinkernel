@@ -17,6 +17,8 @@ pub type btck_LogCategory = u8;
 pub type btck_LogLevel = u8;
 pub type btck_ScriptVerificationFlags = u32;
 pub type btck_ScriptVerifyStatus = u8;
+pub type btck_ScriptTraceFrameKind = u8;
+pub type btck_SigVersion = u8;
 pub type btck_SynchronizationState = u8;
 pub type btck_TxValidationResult = u32;
 pub type btck_ValidationMode = u8;
@@ -128,6 +130,19 @@ pub const btck_ValidationMode_INTERNAL_ERROR: btck_ValidationMode = 2;
 pub const btck_Warning_UNKNOWN_NEW_RULES_ACTIVATED: btck_Warning = 0;
 pub const btck_Warning_LARGE_WORK_INVALID_CHAIN: btck_Warning = 1;
 
+// btck_ScriptTraceFrameKind
+
+pub const btck_ScriptTraceFrameKind_BEGIN: btck_ScriptTraceFrameKind = 0;
+pub const btck_ScriptTraceFrameKind_STEP: btck_ScriptTraceFrameKind = 1;
+pub const btck_ScriptTraceFrameKind_END: btck_ScriptTraceFrameKind = 2;
+
+// btck_SigVersion
+
+pub const btck_SigVersion_BASE: btck_SigVersion = 0;
+pub const btck_SigVersion_WITNESS_V0: btck_SigVersion = 1;
+pub const btck_SigVersion_TAPROOT: btck_SigVersion = 2;
+pub const btck_SigVersion_TAPSCRIPT: btck_SigVersion = 3;
+
 // Opaque types - alphabetical order
 
 #[repr(C)]
@@ -233,6 +248,9 @@ pub type btck_DestroyCallback = Option<unsafe extern "C" fn(user_data: *mut c_vo
 
 pub type btck_LogCallback =
     unsafe extern "C" fn(user_data: *mut c_void, message: *const c_char, message_len: usize);
+
+pub type btck_ScriptTraceCallback =
+    unsafe extern "C" fn(user_data: *mut c_void, state: *const btck_ScriptTraceFrame);
 
 pub type btck_NotifyBlockTip = Option<
     unsafe extern "C" fn(
@@ -353,6 +371,27 @@ pub struct btck_ValidationInterfaceCallbacks {
     pub block_disconnected: btck_ValidationInterfaceBlockDisconnected,
 }
 
+#[repr(C)]
+pub struct btck_ScriptTraceFrame {
+    pub kind: btck_ScriptTraceFrameKind,
+    pub stack_items: *const *const c_uchar,
+    pub stack_item_sizes: *const usize,
+    pub stack_size: usize,
+    pub script: *const c_uchar,
+    pub script_size: usize,
+    pub opcode_pos: u32,
+    pub altstack_items: *const *const c_uchar,
+    pub altstack_item_sizes: *const usize,
+    pub altstack_size: usize,
+    pub f_exec: c_int,
+    pub opcode: u8,
+    pub op_count: c_int,
+    pub sig_version: btck_SigVersion,
+    pub tapleaf_hash: *const c_uchar,
+    pub codeseparator_pos: u32,
+    pub script_error: i32,
+}
+
 // Layout guards for structs passed by value across the FFI boundary.
 // Pointer-sized fields use size_of::<*const ()>() to remain correct on both
 // 32-bit and 64-bit targets.
@@ -375,6 +414,21 @@ const _: () = {
         core::mem::align_of::<btck_ValidationInterfaceCallbacks>()
             == core::mem::align_of::<*const ()>()
     );
+};
+
+// btck_ScriptTraceFrame mixes pointer-sized and fixed-size fields, so unlike
+// the callback structs above, its byte size is not just a multiple of the
+// pointer width.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    assert!(core::mem::size_of::<btck_ScriptTraceFrame>() == 112);
+    assert!(core::mem::align_of::<btck_ScriptTraceFrame>() == 8);
+};
+
+#[cfg(target_pointer_width = "32")]
+const _: () = {
+    assert!(core::mem::size_of::<btck_ScriptTraceFrame>() == 68);
+    assert!(core::mem::align_of::<btck_ScriptTraceFrame>() == 4);
 };
 
 // extern "C" declarations - grouped by type
@@ -519,6 +573,16 @@ extern "C" {
     ) -> *mut btck_LoggingConnection;
 
     pub fn btck_logging_connection_destroy(logging_connection: *mut btck_LoggingConnection);
+
+    // --- ScriptTrace ----------------------------------------------------
+
+    pub fn btck_script_trace_register_callback(
+        callback: btck_ScriptTraceCallback,
+        user_data: *mut c_void,
+        user_data_destroy_callback: btck_DestroyCallback,
+    ) -> c_int;
+
+    pub fn btck_script_trace_unregister_callback();
 
     // --- ChainParameters ----------------------------------------------------
 

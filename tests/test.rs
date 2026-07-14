@@ -2,15 +2,15 @@ mod common;
 
 #[cfg(test)]
 mod tests {
-    use crate::common::TempDir;
+    use crate::common::{verify_test, TempDir};
     use bitcoinkernel::notifications::types::BlockValidationState;
     use bitcoinkernel::state::chainstate::ProcessBlockHeaderResult;
     use bitcoinkernel::{
         prelude::*, verify, Block, BlockHash, BlockHeader, BlockSpentOutputs, BlockTreeEntry,
         BlockValidationStateRef, ChainParams, ChainType, ChainstateManager,
         ChainstateManagerBuilder, Coin, Context, ContextBuilder, KernelError, Log, Logger,
-        PrecomputedTransactionData, ScriptPubkey, ScriptVerificationFlags, ScriptVerifyError,
-        Transaction, TransactionSpentOutputs, TxIn, TxOut, VERIFY_ALL, VERIFY_ALL_PRE_TAPROOT,
+        PrecomputedTransactionData, ScriptPubkey, ScriptVerifyError, Transaction,
+        TransactionSpentOutputs, TxIn, TxOut, VERIFY_ALL, VERIFY_ALL_PRE_TAPROOT,
         VERIFY_CHECKLOCKTIMEVERIFY, VERIFY_CHECKSEQUENCEVERIFY, VERIFY_DERSIG, VERIFY_NONE,
         VERIFY_NULLDUMMY, VERIFY_P2SH, VERIFY_TAPROOT, VERIFY_WITNESS,
     };
@@ -851,29 +851,6 @@ mod tests {
         for (tx, tx_spent) in block.transactions().skip(1).zip(spent_outputs.iter()) {
             assert_eq!(tx.input_count(), tx_spent.count());
         }
-    }
-
-    fn verify_test(
-        spent: &str,
-        spending: &str,
-        amount: i64,
-        input: usize,
-        outputs: Vec<TxOut>,
-        flags: ScriptVerificationFlags,
-    ) -> Result<(), KernelError> {
-        let spent_script_pubkey =
-            ScriptPubkey::try_from(hex::decode(spent).unwrap().as_slice()).unwrap();
-        let spending_tx = Transaction::new(hex::decode(spending).unwrap().as_slice()).unwrap();
-        let tx_data = PrecomputedTransactionData::new(&spending_tx, &outputs).unwrap();
-        verify(
-            &spent_script_pubkey,
-            Some(amount),
-            &spending_tx,
-            input,
-            Some(flags),
-            &tx_data,
-        )?;
-        Ok(())
     }
 
     #[test]

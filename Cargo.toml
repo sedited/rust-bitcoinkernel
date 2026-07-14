@@ -19,6 +19,7 @@ libbitcoinkernel-sys = { path = "libbitcoinkernel-sys", version = "0.3.0" }
 hex = "0.4"
 env_logger = "0.11"
 log = "0.4"
+serial_test = { version = "3", features = ["file_locks"] }
 
 [workspace]
 members = [
@@ -26,3 +27,6 @@ members = [
     "fuzz",
     "libbitcoinkernel-sys"
 ]
+
+[features]
+script-trace = ["libbitcoinkernel-sys/script-trace"]
