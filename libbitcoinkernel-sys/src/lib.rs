@@ -432,6 +432,8 @@ extern "C" {
         validation: *mut btck_TxValidationState,
     ) -> c_int;
 
+    pub fn btck_transaction_is_coinbase(transaction: *const btck_Transaction) -> c_int;
+
     pub fn btck_transaction_destroy(transaction: *mut btck_Transaction);
 
     // --- PrecomputedTransactionData -----------------------------------------
@@ -646,6 +648,16 @@ extern "C" {
         header: *const btck_BlockHeader,
     ) -> *mut btck_BlockValidationState;
 
+    pub fn btck_chainstate_manager_validate_block(
+        chainstate_manager: *mut btck_ChainstateManager,
+        block: *const btck_Block,
+        block_tree_entry: *const btck_BlockTreeEntry,
+        spent_out_points: *const *const btck_TransactionOutPoint,
+        spent_coins: *const *const btck_Coin,
+        spent_outputs_len: usize,
+        block_validation_state: *mut btck_BlockValidationState,
+    ) -> c_int;
+
     pub fn btck_chainstate_manager_import_blocks(
         chainstate_manager: *mut btck_ChainstateManager,
         block_file_paths_data: *mut *const c_char,
@@ -800,6 +812,11 @@ extern "C" {
 
     // --- TransactionOutPoint ------------------------------------------------
 
+    pub fn btck_transaction_out_point_create(
+        txid: *const btck_Txid,
+        index: u32,
+    ) -> *mut btck_TransactionOutPoint;
+
     pub fn btck_transaction_out_point_copy(
         transaction_out_point: *const btck_TransactionOutPoint,
     ) -> *mut btck_TransactionOutPoint;
@@ -825,6 +842,12 @@ extern "C" {
     pub fn btck_txid_destroy(txid: *mut btck_Txid);
 
     // --- Coin ---------------------------------------------------------------
+
+    pub fn btck_coin_create(
+        output: *const btck_TransactionOutput,
+        height: u32,
+        is_coinbase: c_int,
+    ) -> *mut btck_Coin;
 
     pub fn btck_coin_copy(coin: *const btck_Coin) -> *mut btck_Coin;
 

@@ -28,8 +28,9 @@
 use std::ffi::CString;
 
 use libbitcoinkernel_sys::{
-    btck_BlockHash, btck_ChainstateManager, btck_ChainstateManagerOptions, btck_block_read,
-    btck_block_spent_outputs_read, btck_chainstate_manager_create, btck_chainstate_manager_destroy,
+    btck_BlockHash, btck_ChainstateManager, btck_ChainstateManagerOptions, btck_Coin,
+    btck_TransactionOutPoint, btck_block_read, btck_block_spent_outputs_read,
+    btck_chainstate_manager_create, btck_chainstate_manager_destroy,
     btck_chainstate_manager_get_active_chain, btck_chainstate_manager_get_best_entry,
     btck_chainstate_manager_get_block_tree_entry_by_hash, btck_chainstate_manager_import_blocks,
     btck_chainstate_manager_options_create, btck_chainstate_manager_options_destroy,
@@ -38,13 +39,15 @@ use libbitcoinkernel_sys::{
     btck_chainstate_manager_options_update_block_tree_db_in_memory,
     btck_chainstate_manager_options_update_chainstate_db_in_memory,
     btck_chainstate_manager_process_block, btck_chainstate_manager_process_block_header,
+    btck_chainstate_manager_validate_block,
 };
 
 use crate::{
     core::block::BlockHeader,
+    core::{CoinExt, TxOutPointExt},
     ffi::{
         c_helpers,
-        sealed::{AsPtr, FromMutPtr, FromPtr},
+        sealed::{AsMutPtr, AsPtr, FromMutPtr, FromPtr},
     },
     notifications::types::{BlockValidationState, BlockValidationStateExt},
     Block, BlockHash, BlockSpentOutputs, BlockTreeEntry, KernelError, ValidationMode,
@@ -79,6 +82,19 @@ pub enum ProcessBlockHeaderResult {
     /// The header was valid and added to the block tree.
     Valid,
     /// The header failed validation; the state holds the details.
+    Invalid(BlockValidationState),
+}
+
+/// Result of [`ChainstateManager::validate_block`].
+///
+/// On failure, the [`BlockValidationState`] carries details that can be
+/// inspected via [`BlockValidationStateExt`].
+#[derive(Clone, Debug)]
+#[must_use = "block validation result must be inspected to determine whether the block is valid"]
+pub enum ValidateBlockResult {
+    /// The block passed validation.
+    Valid,
+    /// The block failed validation; the state holds the details.
     Invalid(BlockValidationState),
 }
 
@@ -327,6 +343,100 @@ impl ChainstateManager {
             Ok(ProcessBlockHeaderResult::Valid)
         } else {
             Ok(ProcessBlockHeaderResult::Invalid(state))
+        }
+    }
+
+    /// Validate a block against caller-supplied spent coins, without requiring
+    /// the full UTXO set to be present.
+    ///
+    /// This validates the block through `CheckBlock`, `ContextualCheckBlock`, and
+    /// `ConnectBlock` (with `fJustCheck = true`, so the chainstate is not
+    /// mutated), using only the caller-supplied `spent_outputs` as the source of
+    /// truth for coins consumed by the block. Coins created and consumed within
+    /// the same block are handled automatically and do not need to be included.
+    /// For duplicate entries, only the first occurrence is used. BIP-30 violating
+    /// transactions cannot be detected through this function.
+    ///
+    /// The block's header must already have been processed (e.g. via
+    /// [`process_block_header`](Self::process_block_header)) so that a matching
+    /// [`BlockTreeEntry`] exists.
+    ///
+    /// # Arguments
+    /// * `block` - The [`Block`] to validate
+    /// * `entry` - The [`BlockTreeEntry`] associated with `block`
+    /// * `spent_outputs` - Pairs of (outpoint, coin) for every output spent by
+    ///   this block's transactions. Order is not significant.
+    ///
+    /// # Returns
+    /// * `Ok(ValidateBlockResult::Valid)` - the block passed validation
+    /// * `Ok(ValidateBlockResult::Invalid(state))` - the block failed validation;
+    ///   inspect `state` for details
+    /// * `Err(KernelError::Internal)` - an internal error occurred (e.g. an
+    ///   exception in the underlying library)
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{Block, BlockTreeEntry, ChainstateManager, KernelError, TxOutPoint, Coin, ValidateBlockResult};
+    /// # fn example(
+    /// #     chainman: &ChainstateManager,
+    /// #     block: &Block,
+    /// #     entry: &BlockTreeEntry,
+    /// #     spent_outputs: &[(TxOutPoint, Coin)],
+    /// # ) -> Result<(), KernelError> {
+    /// match chainman.validate_block(block, entry, spent_outputs)? {
+    ///     ValidateBlockResult::Valid => println!("Block is valid"),
+    ///     ValidateBlockResult::Invalid(state) => println!("Block is invalid: {:?}", state),
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn validate_block(
+        &self,
+        block: &Block,
+        entry: &BlockTreeEntry,
+        spent_outputs: &[(impl TxOutPointExt, impl CoinExt)],
+    ) -> Result<ValidateBlockResult, KernelError> {
+        let out_points: Vec<*const btck_TransactionOutPoint> =
+            spent_outputs.iter().map(|(op, _)| op.as_ptr()).collect();
+        let coins: Vec<*const btck_Coin> = spent_outputs
+            .iter()
+            .map(|(_, coin)| coin.as_ptr())
+            .collect();
+
+        let out_points_ptr = if out_points.is_empty() {
+            std::ptr::null()
+        } else {
+            out_points.as_ptr()
+        };
+        let coins_ptr = if coins.is_empty() {
+            std::ptr::null()
+        } else {
+            coins.as_ptr()
+        };
+
+        let state = BlockValidationState::new();
+        let result = unsafe {
+            btck_chainstate_manager_validate_block(
+                self.inner,
+                block.as_ptr(),
+                entry.as_ptr(),
+                out_points_ptr,
+                coins_ptr,
+                spent_outputs.len(),
+                state.as_mut_ptr(),
+            )
+        };
+
+        if state.mode() == ValidationMode::InternalError {
+            return Err(KernelError::Internal(
+                "Failed to validate block".to_string(),
+            ));
+        }
+
+        if c_helpers::success(result) {
+            Ok(ValidateBlockResult::Valid)
+        } else {
+            Ok(ValidateBlockResult::Invalid(state))
         }
     }
 

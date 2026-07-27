@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `Transaction::check` for context-free consensus validation of a transaction. Returns `TxCheckResult::Valid` on success or `TxCheckResult::Invalid(TxValidationResult)` on failure.
 - Added `TxValidationResult` enum with all transaction validation result variants.
 - Added `ChainParams::new_signet` and `ContextBuilder::signet` to configure a custom signet from a user-provided challenge.
+- Added `TransactionExt::is_coinbase` to check whether a transaction is a coinbase transaction.
+- Added `Coin::new` to construct a coin from a transaction output, confirmation height, and coinbase flag, for use with `ChainstateManager::validate_block` when validating a block without the full UTXO set present.
+- Added `TxOutPoint::new` to construct a new outpoint from a transaction ID and output index.
+- Added `ChainstateManager::validate_block` to validate a block against caller-supplied spent coins, without requiring the full UTXO set to be present. Returns a `ValidateBlockResult` enum carrying the validation state on failure.
 
 ### Changed
 - The `verify` function's `flags` parameter now uses `ScriptVerificationFlags` instead of `u32`, making the type explicit in the public API.

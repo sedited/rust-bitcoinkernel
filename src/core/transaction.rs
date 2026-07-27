@@ -161,7 +161,8 @@ use libbitcoinkernel_sys::{
     btck_transaction_get_input_at, btck_transaction_get_locktime, btck_transaction_get_output_at,
     btck_transaction_get_txid, btck_transaction_input_copy, btck_transaction_input_destroy,
     btck_transaction_input_get_out_point, btck_transaction_input_get_sequence,
-    btck_transaction_out_point_copy, btck_transaction_out_point_destroy,
+    btck_transaction_is_coinbase, btck_transaction_out_point_copy,
+    btck_transaction_out_point_create, btck_transaction_out_point_destroy,
     btck_transaction_out_point_get_index, btck_transaction_out_point_get_txid,
     btck_transaction_output_copy, btck_transaction_output_create, btck_transaction_output_destroy,
     btck_transaction_output_get_amount, btck_transaction_output_get_script_pubkey,
@@ -407,6 +408,29 @@ pub trait TransactionExt: AsPtr<btck_Transaction> {
     /// ```
     fn locktime(&self) -> u32 {
         unsafe { btck_transaction_get_locktime(self.as_ptr()) }
+    }
+
+    /// Returns true if this is a coinbase transaction.
+    ///
+    /// A coinbase transaction is the first transaction in a block and creates
+    /// new coins as a reward for the miner (plus any collected fees). Coinbase
+    /// transactions have a single input with a null previous outpoint.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{prelude::*, Transaction};
+    /// # fn example() -> Result<(), bitcoinkernel::KernelError> {
+    /// # let tx_data = vec![0u8; 100]; // placeholder
+    /// # let tx = Transaction::new(&tx_data)?;
+    /// if tx.is_coinbase() {
+    ///     println!("This is a coinbase transaction");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn is_coinbase(&self) -> bool {
+        let result = unsafe { btck_transaction_is_coinbase(self.as_ptr()) };
+        present(result)
     }
 
     /// Runs context-free consensus validation on this transaction.
@@ -1337,6 +1361,31 @@ unsafe impl Send for TxOutPoint {}
 unsafe impl Sync for TxOutPoint {}
 
 impl TxOutPoint {
+    /// Creates a new outpoint from a transaction ID and output index.
+    ///
+    /// # Arguments
+    /// * `txid` - The [`TxidExt`] value identifying the transaction containing the output being
+    ///   referenced
+    /// * `index` - The zero-based index of the output within that transaction
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{prelude::*, Transaction, TxOutPoint, KernelError};
+    /// # fn example() -> Result<(), KernelError> {
+    /// # let tx_data = vec![0u8; 100]; // placeholder
+    /// # let tx = Transaction::new(&tx_data)?;
+    /// let txid = tx.txid();
+    /// let outpoint = TxOutPoint::new(&txid, 0);
+    /// assert_eq!(outpoint.index(), 0);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn new(txid: &impl TxidExt, index: u32) -> Self {
+        TxOutPoint {
+            inner: unsafe { btck_transaction_out_point_create(txid.as_ptr(), index) },
+        }
+    }
+
     /// Returns a borrowed reference to this outpoint.
     ///
     /// This allows converting from an owned [`TxOutPoint`] to a [`TxOutPointRef`]
@@ -2101,6 +2150,20 @@ mod tests {
     }
 
     #[test]
+    fn test_transaction_is_coinbase() {
+        let (tx, tx2) = get_test_transactions();
+        assert!(!tx.is_coinbase());
+        assert!(!tx2.is_coinbase());
+    }
+
+    #[test]
+    fn test_transaction_is_coinbase_true() {
+        let (tx, tx2) = get_test_coinbase_transactions();
+        assert!(tx.is_coinbase());
+        assert!(tx2.is_coinbase());
+    }
+
+    #[test]
     fn test_transaction_check_invalid() {
         let tx_no_outputs = hex::decode(
             "01000000010001000000000000000000000000000000000000000000000000000000000000\
@@ -2239,6 +2302,18 @@ mod tests {
 
         let index = outpoint.index();
         assert_eq!(index, 0);
+    }
+
+    #[test]
+    fn test_txoutpoint_new() {
+        let (tx, _) = get_test_transactions();
+        let txin = tx.input(0).unwrap();
+        let outpoint = txin.outpoint();
+
+        let new_outpoint = TxOutPoint::new(&outpoint.txid().to_owned(), outpoint.index());
+
+        assert_eq!(new_outpoint.index(), outpoint.index());
+        assert_eq!(new_outpoint.txid(), outpoint.txid());
     }
 
     #[test]
