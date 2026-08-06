@@ -226,6 +226,10 @@ pub struct btck_TransactionSpentOutputs {
 pub struct btck_Txid {
     _unused: [u8; 0],
 }
+#[repr(C)]
+pub struct btck_WitnessStack {
+    _unused: [u8; 0],
+}
 
 // Function-pointer type aliases - alphabetical order
 
@@ -796,7 +800,34 @@ extern "C" {
         transaction_input: *const btck_TransactionInput,
     ) -> u32;
 
+    pub fn btck_transaction_input_get_witness_stack(
+        transaction_input: *const btck_TransactionInput,
+    ) -> *const btck_WitnessStack;
+
+    pub fn btck_transaction_input_get_script_sig(
+        transaction_input: *const btck_TransactionInput,
+        writer: btck_WriteBytes,
+        user_data: *mut c_void,
+    ) -> c_int;
+
     pub fn btck_transaction_input_destroy(transaction_input: *mut btck_TransactionInput);
+
+    // --- WitnessStack ---------------------------------------------------------
+
+    pub fn btck_witness_stack_count_items(witness_stack: *const btck_WitnessStack) -> usize;
+
+    pub fn btck_witness_stack_get_item_at(
+        witness_stack: *const btck_WitnessStack,
+        index: usize,
+        writer: btck_WriteBytes,
+        user_data: *mut c_void,
+    ) -> c_int;
+
+    pub fn btck_witness_stack_copy(
+        witness_stack: *const btck_WitnessStack,
+    ) -> *mut btck_WitnessStack;
+
+    pub fn btck_witness_stack_destroy(witness_stack: *mut btck_WitnessStack);
 
     // --- TransactionOutPoint ------------------------------------------------
 

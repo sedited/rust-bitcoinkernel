@@ -12,14 +12,14 @@ pub use block_tree_entry::BlockTreeEntry;
 pub use script::{ScriptPubkey, ScriptPubkeyRef};
 pub use transaction::{
     Transaction, TransactionRef, TxCheckResult, TxIn, TxInRef, TxOut, TxOutPoint, TxOutPointRef,
-    TxOutRef, Txid, TxidRef,
+    TxOutRef, Txid, TxidRef, WitnessStack, WitnessStackRef,
 };
 
 pub use block::{
     BlockHashExt, BlockHeaderExt, BlockSpentOutputsExt, CoinExt, TransactionSpentOutputsExt,
 };
 pub use script::ScriptPubkeyExt;
-pub use transaction::{TransactionExt, TxInExt, TxOutExt, TxOutPointExt, TxidExt};
+pub use transaction::{TransactionExt, TxInExt, TxOutExt, TxOutPointExt, TxidExt, WitnessStackExt};
 
 pub use verify::{verify, PrecomputedTransactionData, ScriptVerificationFlags, ScriptVerifyError};
 

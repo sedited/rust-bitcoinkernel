@@ -155,12 +155,13 @@ use libbitcoinkernel_sys::{
     btck_TxValidationResult_NO_MEMPOOL, btck_TxValidationResult_PREMATURE_SPEND,
     btck_TxValidationResult_RECONSIDERABLE, btck_TxValidationResult_UNKNOWN,
     btck_TxValidationResult_UNSET, btck_TxValidationResult_WITNESS_MUTATED,
-    btck_TxValidationResult_WITNESS_STRIPPED, btck_TxValidationState, btck_Txid,
+    btck_TxValidationResult_WITNESS_STRIPPED, btck_TxValidationState, btck_Txid, btck_WitnessStack,
     btck_transaction_check, btck_transaction_copy, btck_transaction_count_inputs,
     btck_transaction_count_outputs, btck_transaction_create, btck_transaction_destroy,
     btck_transaction_get_input_at, btck_transaction_get_locktime, btck_transaction_get_output_at,
     btck_transaction_get_txid, btck_transaction_input_copy, btck_transaction_input_destroy,
-    btck_transaction_input_get_out_point, btck_transaction_input_get_sequence,
+    btck_transaction_input_get_out_point, btck_transaction_input_get_script_sig,
+    btck_transaction_input_get_sequence, btck_transaction_input_get_witness_stack,
     btck_transaction_out_point_copy, btck_transaction_out_point_destroy,
     btck_transaction_out_point_get_index, btck_transaction_out_point_get_txid,
     btck_transaction_output_copy, btck_transaction_output_create, btck_transaction_output_destroy,
@@ -168,7 +169,8 @@ use libbitcoinkernel_sys::{
     btck_transaction_to_bytes, btck_tx_validation_state_create, btck_tx_validation_state_destroy,
     btck_tx_validation_state_get_tx_validation_result,
     btck_tx_validation_state_get_validation_mode, btck_txid_copy, btck_txid_destroy,
-    btck_txid_equals, btck_txid_to_bytes,
+    btck_txid_equals, btck_txid_to_bytes, btck_witness_stack_copy, btck_witness_stack_count_items,
+    btck_witness_stack_get_item_at,
 };
 
 use crate::{
@@ -1096,6 +1098,52 @@ pub trait TxInExt: AsPtr<btck_TransactionInput> {
     fn sequence(&self) -> u32 {
         unsafe { btck_transaction_input_get_sequence(self.as_ptr()) }
     }
+
+    /// Returns a reference to the witness stack of this input.
+    ///
+    /// The witness stack contains the data needed to satisfy a segwit (or taproot) spending
+    /// condition as a sequence of byte-string items. Pre-segwit inputs have an empty witness stack.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{prelude::*, Transaction, KernelError};
+    /// # fn example(tx: &Transaction) -> Result<(), KernelError> {
+    /// let input = tx.input(0)?;
+    /// for item in input.witness_stack().items() {
+    ///     println!("witness item: {} bytes", item.len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn witness_stack(&self) -> WitnessStackRef<'_> {
+        let ptr = unsafe { btck_transaction_input_get_witness_stack(self.as_ptr()) };
+        unsafe { WitnessStackRef::from_ptr(ptr) }
+    }
+
+    /// Returns the scriptSig of this input, serialized as raw bytes.
+    ///
+    /// The scriptSig satisfies a legacy (pre-segwit) spending condition - typically a signature and
+    /// public key push, or redeem script for P2SH. Segwit and taproot inputs carry their spending
+    /// data in the [`witness_stack`](TxInExt::witness_stack) instead, and have an empty scriptSig.
+    ///
+    /// # Errors
+    /// Returns [`KernelError::Internal`] if serialization fails.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{prelude::*, Transaction, KernelError};
+    /// # fn example(tx: &Transaction) -> Result<(), KernelError> {
+    /// let input = tx.input(0)?;
+    /// let script_sig = input.script_sig()?;
+    /// println!("scriptSig is {} bytes", script_sig.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn script_sig(&self) -> Result<Vec<u8>, KernelError> {
+        c_serialize(|callback, user_data| unsafe {
+            btck_transaction_input_get_script_sig(self.as_ptr(), callback, user_data)
+        })
+    }
 }
 
 /// A single transaction input referencing a previous output to be spent.
@@ -1205,6 +1253,227 @@ impl<'a> Clone for TxInRef<'a> {
 }
 
 impl<'a> Copy for TxInRef<'a> {}
+
+/// Common operations for witness stacks, implemented by both owned and borrowed types.
+///
+/// This traits provides shared functionality for [`WitnessStack`] and [`WitnessStackRef`],
+/// allowing code to work with either owned or borrowed witness stacks.
+pub trait WitnessStackExt: AsPtr<btck_WitnessStack> {
+    /// Returns the number of items in this witness stack.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{prelude::*, Transaction, KernelError};
+    /// # fn example(tx: &Transaction) -> Result<(), KernelError> {
+    /// let input = tx.input(0)?;
+    /// println!("Witness has {} items", input.witness_stack().len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn len(&self) -> usize {
+        unsafe { btck_witness_stack_count_items(self.as_ptr()) as usize }
+    }
+
+    /// Returns true if the witness stack has not items.
+    ///
+    /// This is the case for pre-segwit inputs.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the item at the specified index as raw bytes.
+    ///
+    /// # Arguments
+    /// * `index` - The zero-based index of the item to retrieve
+    ///
+    /// # Errors
+    /// Returns [`KernelError::OutOfBounds`] if the index is invalid.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{prelude::*, Transaction, KernelError};
+    /// # fn example(tx: &Transaction) -> Result<(), KernelError> {
+    /// let input = tx.input(0)?;
+    /// let stack = input.witness_stack();
+    /// let first_item = stack.item(0)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn item(&self, index: usize) -> Result<Vec<u8>, KernelError> {
+        if index >= self.len() {
+            return Err(KernelError::OutOfBounds);
+        }
+
+        c_serialize(|callback, user_data| unsafe {
+            btck_witness_stack_get_item_at(self.as_ptr(), index, callback, user_data)
+        })
+    }
+
+    /// Returns an iterator over all items in the witness stack.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{prelude::*, Transaction, KernelError};
+    /// # fn example(tx: &Transaction) -> Result<(), KernelError> {
+    /// let input = tx.input(0)?;
+    /// for item in input.witness_stack().items() {
+    ///     println!("{} bytes", item.len());
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn items(&self) -> WitnessStackIter<'_> {
+        WitnessStackIter::new(unsafe { WitnessStackRef::from_ptr(self.as_ptr()) })
+    }
+}
+
+/// The witness stack of a transactoin input.
+///
+/// Holds the sequence of byte-string items (signatures, script, etc.) used to
+/// satisfy a segwit or taproot spending condition. Pre-segwit inputs have an
+/// empty witness stack.
+///
+/// # Thread Safety
+///
+/// `WitnessStack` is both [`Send`] and [`Sync`].
+#[derive(Debug)]
+pub struct WitnessStack {
+    inner: *mut btck_WitnessStack,
+}
+
+unsafe impl Send for WitnessStack {}
+unsafe impl Sync for WitnessStack {}
+
+impl WitnessStack {
+    /// Creates a borrowed reference to this witness stack.
+    ///
+    /// # Lifetime
+    /// The returned reference is valid for the lifetime of this [`WitnessStack`].
+    pub fn as_ref(&self) -> WitnessStackRef<'_> {
+        unsafe { WitnessStackRef::from_ptr(self.inner as *const _) }
+    }
+}
+
+impl AsPtr<btck_WitnessStack> for WitnessStack {
+    fn as_ptr(&self) -> *const btck_WitnessStack {
+        self.inner as *const _
+    }
+}
+
+impl FromMutPtr<btck_WitnessStack> for WitnessStack {
+    unsafe fn from_ptr(ptr: *mut btck_WitnessStack) -> Self {
+        WitnessStack { inner: ptr }
+    }
+}
+
+impl WitnessStackExt for WitnessStack {}
+
+impl Clone for WitnessStack {
+    fn clone(&self) -> Self {
+        WitnessStack {
+            inner: unsafe { btck_witness_stack_copy(self.inner) },
+        }
+    }
+}
+
+/// A borrowed reference to a witness_stack.
+///
+/// Provides a zero-copy access to witness stack metadata (item count). It implements
+/// [`Copy`], making it cheap to pass around. Note that reading an individual item's bytes via
+/// [`WitnessStackExt::item`] still allocates, since the underlying C API only exposes items through
+/// a serializing callback.
+///
+/// # Lifetime
+/// The reference is only valid as long as the transaction input it came from remains alive
+///
+/// # Thread Safety
+/// `WitnessStackRef` is both [`Send`] and [`Sync`].
+pub struct WitnessStackRef<'a> {
+    inner: *const btck_WitnessStack,
+    marker: PhantomData<&'a ()>,
+}
+
+unsafe impl<'a> Send for WitnessStackRef<'a> {}
+unsafe impl<'a> Sync for WitnessStackRef<'a> {}
+
+impl<'a> WitnessStackRef<'a> {
+    pub fn to_owned(&self) -> WitnessStack {
+        WitnessStack {
+            inner: unsafe { btck_witness_stack_copy(self.inner) },
+        }
+    }
+}
+
+impl<'a> AsPtr<btck_WitnessStack> for WitnessStackRef<'a> {
+    fn as_ptr(&self) -> *const btck_WitnessStack {
+        self.inner
+    }
+}
+
+impl<'a> FromPtr<btck_WitnessStack> for WitnessStackRef<'a> {
+    unsafe fn from_ptr(ptr: *const btck_WitnessStack) -> Self {
+        WitnessStackRef {
+            inner: ptr,
+            marker: PhantomData,
+        }
+    }
+}
+
+impl<'a> WitnessStackExt for WitnessStackRef<'a> {}
+
+impl<'a> Clone for WitnessStackRef<'a> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<'a> Copy for WitnessStackRef<'a> {}
+
+/// Iterator over witness stack items.
+///
+/// Yields each item as an owned `Vec<u8>`, in the order they appear in the witness stack.
+///
+/// # Lifetime
+/// The iterator is tied to the lifetime of the transaction input it was created from.
+pub struct WitnessStackIter<'a> {
+    stack: WitnessStackRef<'a>,
+    current_index: usize,
+}
+
+impl<'a> WitnessStackIter<'a> {
+    fn new(stack: WitnessStackRef<'a>) -> Self {
+        Self {
+            stack,
+            current_index: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for WitnessStackIter<'a> {
+    type Item = Vec<u8>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.current_index >= self.stack.len() {
+            return None;
+        }
+
+        let index = self.current_index;
+        self.current_index += 1;
+
+        self.stack.item(index).ok()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.stack.len().saturating_sub(self.current_index);
+        (remaining, Some(remaining))
+    }
+}
+
+impl<'a> ExactSizeIterator for WitnessStackIter<'a> {
+    fn len(&self) -> usize {
+        self.stack.len().saturating_sub(self.current_index)
+    }
+}
 
 /// Common operations for transaction outpoints, implemented by both owned and borrowed types.
 ///
@@ -1848,6 +2117,15 @@ mod tests {
         )
     }
 
+    fn get_test_legacy_txin() -> TxIn {
+        let legacy_tx_bytes = hex::decode("0100000001416e9b4555180aaa0c417067a46607bc58c96f0131b2f41f7d0fb665eab03a7e000000006a47304402201c3be71e1794621cbe3a7adec1af25f818f238f5796d47152137eba710f2174a02204f8fe667b696e30012ef4e56ac96afb830bddffee3b15d2e474066ab3aa39bad012103bf350d2821375158a608b51e3e898e507fe47f2d2e8c774de4a9a7edecf74edaffffffff01204e0000000000001976a914e81d742e2c3c7acd4c29de090fc2c4d4120b2bf888ac00000000").unwrap();
+        Transaction::new(&legacy_tx_bytes)
+            .unwrap()
+            .input(0)
+            .unwrap()
+            .to_owned()
+    }
+
     fn get_test_txoutpoints() -> (TxOutPoint, TxOutPoint) {
         let (txin1, txin2) = get_test_txins();
         (txin1.outpoint().to_owned(), txin2.outpoint().to_owned())
@@ -1890,6 +2168,26 @@ mod tests {
     );
     test_owned_clone_and_send!(test_txin_clone_send, get_test_txins().0, get_test_txins().1);
     test_ref_copy!(test_txin_ref_copy, get_test_txins().0);
+
+    test_owned_trait_requirements!(
+        test_witness_stack_requirements,
+        WitnessStack,
+        btck_WitnessStack
+    );
+    test_ref_trait_requirements!(
+        test_witness_stack_ref_requirements,
+        WitnessStackRef<'static>,
+        btck_WitnessStack
+    );
+    test_owned_clone_and_send!(
+        test_witness_stack_clone_send,
+        get_test_txins().0.witness_stack().to_owned(),
+        get_test_txins().1.witness_stack().to_owned()
+    );
+    test_ref_copy!(
+        test_witness_stack_ref_copy,
+        get_test_txins().0.witness_stack().to_owned()
+    );
 
     test_owned_trait_requirements!(
         test_txoutpoint_requirements,
@@ -2230,6 +2528,65 @@ mod tests {
         assert_eq!(input.sequence(), 0xFFFFFFFD);
     }
 
+    #[test]
+    fn test_txin_script_sig_empty_for_segwit() {
+        let (input, _) = get_test_txins();
+        let script_sig = input.script_sig().unwrap();
+        assert!(script_sig.is_empty());
+    }
+
+    #[test]
+    fn test_txin_script_sig_non_empty_for_legacy() {
+        let input = get_test_legacy_txin();
+        let script_sig = input.script_sig().unwrap();
+        assert!(!script_sig.is_empty());
+    }
+
+    // WitnessStack tests
+    #[test]
+    fn test_witness_stack_p2wpkh_has_two_items() {
+        let (tx, _) = get_test_transactions();
+        let input = tx.input(0).unwrap();
+        let stack = input.witness_stack();
+        assert_eq!(stack.len(), 2);
+        assert!(!stack.is_empty());
+    }
+
+    #[test]
+    fn test_witness_stack_empty_for_legacy_input() {
+        let input = get_test_legacy_txin();
+        let stack = input.witness_stack();
+        assert_eq!(stack.len(), 0);
+        assert!(stack.is_empty());
+    }
+
+    #[test]
+    fn test_witness_stack_item_out_of_bounds() {
+        let (tx, _) = get_test_transactions();
+        let input = tx.input(0).unwrap();
+        let stack = input.witness_stack();
+        assert!(matches!(
+            stack.item(stack.len()),
+            Err(KernelError::OutOfBounds)
+        ));
+    }
+
+    #[test]
+    fn test_witness_stack_iterator() {
+        let (tx, _) = get_test_transactions();
+        let input = tx.input(0).unwrap();
+        let stack = input.witness_stack();
+        let len = stack.len();
+
+        let mut iter_count = 0;
+        for (i, item) in stack.items().enumerate() {
+            assert_eq!(item, stack.item(i).unwrap());
+            iter_count += 1;
+        }
+
+        assert_eq!(iter_count, len);
+    }
+
     // TxOutPoint tests
     #[test]
     fn test_txoutpoint_index() {
@@ -2402,6 +2759,32 @@ mod tests {
         let value_from_ref = get_value(&txout_ref);
 
         assert_eq!(value_from_owned, value_from_ref);
+    }
+
+    #[test]
+    fn test_txin_script_sig_polymorphism() {
+        let (input, _) = get_test_txins();
+        let input_ref = input.as_ref();
+
+        fn get_script_sig(input: &impl TxInExt) -> Vec<u8> {
+            input.script_sig().unwrap()
+        }
+
+        assert_eq!(get_script_sig(&input_ref), get_script_sig(&input));
+    }
+
+    #[test]
+    fn test_witness_stack_polymorphism() {
+        let (tx, _) = get_test_transactions();
+        let input = tx.input(0).unwrap();
+        let stack_ref = input.witness_stack();
+        let stack_owned = stack_ref.to_owned();
+
+        fn get_len(stack: &impl WitnessStackExt) -> usize {
+            stack.len()
+        }
+
+        assert_eq!(get_len(&stack_ref), get_len(&stack_owned));
     }
 
     #[test]
