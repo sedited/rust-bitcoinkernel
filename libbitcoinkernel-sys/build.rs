@@ -23,8 +23,10 @@ const BASE_CMAKE_FLAGS: &[&str] = &[
     "-DBUILD_FUZZ_BINARY=OFF",
     "-DBUILD_SHARED_LIBS=OFF",
     "-DCMAKE_INSTALL_LIBDIR=lib",
+    "-DCMAKE_POSITION_INDEPENDENT_CODE=ON",
     "-DENABLE_IPC=OFF",
 ];
+
 fn main() {
     let target = target_config();
 
