@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Enabled `CMAKE_POSITION_INDEPENDENT_CODE` when building the kernel. Previously `libbitcoinkernel.a` could not be linked into a shared object on toolchains where Bitcoin Core's PIE probe fails
+
 ## [0.4.0] - 2026-08-26
 
 ### Added
