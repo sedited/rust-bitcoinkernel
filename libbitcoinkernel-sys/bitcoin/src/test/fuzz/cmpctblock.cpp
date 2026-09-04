@@ -14,7 +14,6 @@
 #include <net_processing.h>
 #include <netmessagemaker.h>
 #include <node/blockstorage.h>
-#include <node/mining_types.h>
 #include <policy/truc_policy.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
@@ -26,20 +25,16 @@
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
 #include <test/fuzz/util/net.h>
-#include <test/util/mining.h>
 #include <test/util/net.h>
 #include <test/util/random.h>
 #include <test/util/script.h>
 #include <test/util/setup_common.h>
 #include <test/util/time.h>
-#include <test/util/txmempool.h>
 #include <test/util/validation.h>
 #include <txmempool.h>
 #include <uint256.h>
 #include <util/check.h>
-#include <util/task_runner.h>
 #include <util/time.h>
-#include <util/translation.h>
 #include <validation.h>
 #include <validationinterface.h>
 
@@ -52,7 +47,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <thread>
 #include <utility>
 #include <vector>
 
@@ -107,42 +101,6 @@ public:
     }
 };
 
-void ResetChainmanAndMempool(TestingSetup& setup)
-{
-    SetMockTime(Params().GenesisBlock().Time());
-
-    bilingual_str error{};
-    setup.m_node.mempool.reset();
-    setup.m_node.mempool = std::make_unique<CTxMemPool>(MemPoolOptionsForTest(setup.m_node), error);
-    Assert(error.empty());
-
-    setup.m_node.chainman.reset();
-    setup.m_make_chainman();
-    setup.LoadVerifyActivateChainstate();
-
-    node::BlockCreateOptions options;
-    options.coinbase_output_script = P2WSH_OP_TRUE;
-
-    g_mature_coinbase.clear();
-
-    for (int i = 0; i < 2 * COINBASE_MATURITY; ++i) {
-        COutPoint prevout{MineBlock(setup.m_node, options)};
-        if (i < COINBASE_MATURITY) {
-            LOCK(cs_main);
-            CAmount subsidy{setup.m_node.chainman->ActiveChainstate().CoinsTip().GetCoin(prevout)->out.nValue};
-            g_mature_coinbase.emplace_back(prevout, subsidy);
-        }
-    }
-}
-
-//! Used to run tasks in a std::thread to avoid DEBUG_LOCKORDER false positives.
-class ImmediateBackgroundTaskRunner : public util::TaskRunnerInterface
-{
-public:
-    void insert(std::function<void()> func) override { std::thread(std::move(func)).join(); }
-    void flush() override {}
-    size_t size() override { return 0; }
-};
 
 } // namespace
 
@@ -150,12 +108,13 @@ extern void MakeRandDeterministicDANGEROUS(const uint256& seed) noexcept;
 
 void initialize_cmpctblock()
 {
+    FakeNodeClock init_clock{}; // Uses the existing mock time
     static const auto testing_setup = MakeNoLogFileContext<TestingSetup>();
     g_setup = testing_setup.get();
     g_nBits = Params().GenesisBlock().nBits;
     // Replace validation_signals before creating chainman and mempool so they use it.
     testing_setup->m_node.validation_signals = std::make_unique<ValidationSignals>(std::make_unique<ImmediateBackgroundTaskRunner>());
-    ResetChainmanAndMempool(*g_setup);
+    g_mature_coinbase = ResetChainmanAndMempool(*g_setup, init_clock);
 }
 
 FUZZ_TARGET(cmpctblock, .init = initialize_cmpctblock)
@@ -163,7 +122,7 @@ FUZZ_TARGET(cmpctblock, .init = initialize_cmpctblock)
     SeedRandomStateForTest(SeedRand::ZEROS);
     FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
 
-    FakeNodeClock clock{1610000000s};
+    FakeNodeClock node_clock{1610000000s}; // 2021-01-07, arbitrary
     FakeSteadyClock steady_clock;
 
     auto setup = g_setup;
@@ -453,10 +412,10 @@ FUZZ_TARGET(cmpctblock, .init = initialize_cmpctblock)
             [&]() {
                 // Set mock time randomly or to tip's time.
                 if (fuzzed_data_provider.ConsumeBool()) {
-                    clock.set(ConsumeTime(fuzzed_data_provider));
+                    node_clock.set(ConsumeTime(fuzzed_data_provider));
                 } else {
                     const NodeSeconds tip_time = WITH_LOCK(::cs_main, return chainman.ActiveChain().Tip()->Time());
-                    clock.set(tip_time);
+                    node_clock.set(tip_time);
                 }
 
                 sent_net_msg = false;
@@ -509,6 +468,6 @@ FUZZ_TARGET(cmpctblock, .init = initialize_cmpctblock)
 
     if (initial_index_size != end_index_size || initial_sequence != end_sequence) {
         MakeRandDeterministicDANGEROUS(uint256::ZERO);
-        ResetChainmanAndMempool(*g_setup);
+        g_mature_coinbase = ResetChainmanAndMempool(*g_setup, node_clock);
     }
 }

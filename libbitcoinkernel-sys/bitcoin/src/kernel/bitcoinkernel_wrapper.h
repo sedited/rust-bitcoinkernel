@@ -8,6 +8,7 @@
 #include <kernel/bitcoinkernel.h>
 
 #include <array>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -120,6 +121,19 @@ enum class BlockCheckFlags : btck_BlockCheckFlags {
     ALL = btck_BlockCheckFlags_ALL
 };
 
+enum class ScriptTraceFrameKind : btck_ScriptTraceFrameKind {
+    BEGIN = btck_ScriptTraceFrameKind_BEGIN,
+    STEP = btck_ScriptTraceFrameKind_STEP,
+    END = btck_ScriptTraceFrameKind_END,
+};
+
+enum class SigVersion : btck_SigVersion {
+    BASE = btck_SigVersion_BASE,
+    WITNESS_V0 = btck_SigVersion_WITNESS_V0,
+    TAPROOT = btck_SigVersion_TAPROOT,
+    TAPSCRIPT = btck_SigVersion_TAPSCRIPT,
+};
+
 template <typename T>
 struct is_bitmask_enum : std::false_type {
 };
@@ -189,7 +203,7 @@ T check(T ptr)
     return ptr;
 }
 
-template <typename Collection, typename ValueType>
+template <typename Collection, typename ValueType, auto GetFunc>
 class Iterator
 {
 public:
@@ -208,8 +222,7 @@ public:
     Iterator(const Collection* ptr, size_t idx) : m_collection{ptr}, m_idx{idx} {}
 
     // This is just a view, so return a copy.
-    auto operator*() const { return (*m_collection)[m_idx]; }
-    auto operator->() const { return (*m_collection)[m_idx]; }
+    auto operator*() const { return std::invoke(GetFunc, *m_collection, m_idx); }
 
     auto& operator++() { m_idx++; return *this; }
     auto operator++(int) { Iterator tmp = *this; ++(*this); return tmp; }
@@ -225,7 +238,7 @@ public:
 
     auto operator-(const Iterator& other) const { return static_cast<difference_type>(m_idx) - static_cast<difference_type>(other.m_idx); }
 
-    ValueType operator[](difference_type n) const { return (*m_collection)[m_idx + n]; }
+    ValueType operator[](difference_type n) const { return *(*this + n); }
 
     auto operator<=>(const Iterator& other) const { return m_idx <=> other.m_idx; }
 
@@ -248,7 +261,7 @@ class Range
 public:
     using value_type = std::invoke_result_t<decltype(GetFunc), const Container&, size_t>;
     using difference_type = std::ptrdiff_t;
-    using iterator = Iterator<Range, value_type>;
+    using iterator = Iterator<Container, value_type, GetFunc>;
     using const_iterator = iterator;
 
 private:
@@ -260,8 +273,8 @@ public:
         static_assert(std::ranges::random_access_range<Range>);
     }
 
-    iterator begin() const { return iterator(this, 0); }
-    iterator end() const { return iterator(this, size()); }
+    iterator begin() const { return iterator(m_container, 0); }
+    iterator end() const { return iterator(m_container, size()); }
 
     const_iterator cbegin() const { return begin(); }
     const_iterator cend() const { return end(); }
@@ -1200,6 +1213,11 @@ public:
         btck_chainstate_manager_options_set_worker_threads_num(get(), worker_threads);
     }
 
+    bool SetDatabaseCacheBytes(uint64_t database_cache_bytes)
+    {
+        return btck_chainstate_manager_options_set_database_cache_bytes(get(), database_cache_bytes) == 0;
+    }
+
     bool SetWipeDbs(bool wipe_block_tree, bool wipe_chainstate)
     {
         return btck_chainstate_manager_options_set_wipe_dbs(get(), wipe_block_tree, wipe_chainstate) == 0;
@@ -1410,6 +1428,89 @@ public:
         return btck_block_spent_outputs_read(get(), entry.get());
     }
 };
+
+inline void set_mock_time(std::chrono::seconds timestamp)
+{
+    if (btck_set_mock_time(timestamp.count()) != 0) {
+        throw std::runtime_error("timestamp out of range");
+    }
+}
+
+class ScriptEvalStackItemView : public View<btck_ScriptEvalStackItem>
+{
+public:
+    explicit ScriptEvalStackItemView(const btck_ScriptEvalStackItem* ptr) : View{ptr} {}
+
+    std::vector<std::byte> ToBytes() const
+    {
+        return write_bytes(get(), btck_script_eval_stack_item_to_bytes);
+    }
+};
+
+class ScriptEvalStackView : public View<btck_ScriptEvalStack>
+{
+public:
+    explicit ScriptEvalStackView(const btck_ScriptEvalStack* ptr) : View{ptr} {}
+
+    size_t CountItems() const { return btck_script_eval_stack_count_items(get()); }
+
+    ScriptEvalStackItemView GetItem(size_t index) const
+    {
+        return ScriptEvalStackItemView{btck_script_eval_stack_get_item_at(get(), index)};
+    }
+
+    MAKE_RANGE_METHOD(Items, ScriptEvalStackView, &ScriptEvalStackView::CountItems, &ScriptEvalStackView::GetItem, *this)
+};
+
+class ScriptTraceFrameView : public View<btck_ScriptTraceFrame> {
+public:
+    explicit ScriptTraceFrameView(const btck_ScriptTraceFrame* ptr) : View{ptr} {}
+
+    ScriptTraceFrameKind Kind() const { return static_cast<ScriptTraceFrameKind>(btck_script_trace_frame_get_kind(get())); }
+
+    ScriptEvalStackView GetStack() const { return ScriptEvalStackView{btck_script_trace_frame_get_stack(get())}; }
+    ScriptEvalStackView GetAltstack() const { return ScriptEvalStackView{btck_script_trace_frame_get_altstack(get())}; }
+
+    std::vector<std::byte> GetScript() const
+    {
+        return write_bytes(get(), btck_script_trace_frame_get_script);
+    }
+    uint32_t OpcodePos() const { return btck_script_trace_frame_get_opcode_pos(get()); }
+    bool Exec() const { return btck_script_trace_frame_get_exec(get()) != 0; }
+    uint8_t Opcode() const { return btck_script_trace_frame_get_opcode(get()); }
+    int OpCount() const { return btck_script_trace_frame_get_op_count(get()); }
+    SigVersion GetSigVersion() const { return static_cast<SigVersion>(btck_script_trace_frame_get_sig_version(get())); }
+    uint32_t CodeseparatorPos() const { return btck_script_trace_frame_get_codeseparator_pos(get()); }
+    int32_t GetScriptError() const { return btck_script_trace_frame_get_script_error(get()); }
+
+    std::optional<std::array<unsigned char, 32>> TapleafHash() const
+    {
+        std::array<unsigned char, 32> hash;
+        if (btck_script_trace_frame_get_tapleaf_hash(get(), hash.data()) != 0) return std::nullopt;
+        return hash;
+    }
+};
+
+template <typename T>
+concept ScriptTraceT = requires(T a, const ScriptTraceFrameView& frame) {
+    { a.ScriptTrace(frame) } -> std::same_as<void>;
+};
+
+template <ScriptTraceT T>
+void ScriptTraceSetCallback(std::unique_ptr<T> trace)
+{
+    if (btck_script_trace_register_callback(
+            +[](void* user_data, const btck_ScriptTraceFrame* trace) { static_cast<T*>(user_data)->ScriptTrace(ScriptTraceFrameView{trace}); },
+            trace.release(),
+            +[](void* user_data) { delete static_cast<T*>(user_data); }) != 0) {
+        throw std::runtime_error("Script Tracing is not available. Compile bitcoin kernel with ENABLE_SCRIPT_TRACE");
+    }
+}
+
+inline void ScriptTraceUnsetCallback()
+{
+    btck_script_trace_unregister_callback();
+}
 
 } // namespace btck
 

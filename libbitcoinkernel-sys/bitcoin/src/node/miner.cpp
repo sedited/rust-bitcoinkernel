@@ -243,11 +243,11 @@ std::unique_ptr<CBlockTemplate> BlockAssembler::CreateNewBlock()
     return std::move(pblocktemplate);
 }
 
-bool BlockAssembler::TestChunkBlockLimits(FeePerWeight chunk_feerate, int64_t chunk_sigops_cost) const
+bool BlockAssembler::TestChunkBlockLimits(int64_t chunk_weight, int64_t chunk_sigops_cost) const
 {
     // block_max_weight has been flattened before block assembly limit checks.
     Assert(m_options.block_max_weight);
-    if (nBlockWeight + chunk_feerate.size >= *m_options.block_max_weight) {
+    if (nBlockWeight + chunk_weight >= m_options.block_max_weight) {
         return false;
     }
     if (nBlockSigOpsCost + chunk_sigops_cost >= MAX_BLOCK_SIGOPS_COST) {
@@ -310,12 +310,14 @@ void BlockAssembler::addChunks()
         }
 
         int64_t chunk_sig_ops = 0;
+        int64_t chunk_weight = 0;
         for (const auto& tx : selected_transactions) {
             chunk_sig_ops += tx.get().GetSigOpCost();
+            chunk_weight += tx.get().GetTxWeight();
         }
 
         // Check to see if this chunk will fit.
-        if (!TestChunkBlockLimits(chunk_feerate, chunk_sig_ops) || !TestChunkTransactions(selected_transactions)) {
+        if (!TestChunkBlockLimits(chunk_weight, chunk_sig_ops) || !TestChunkTransactions(selected_transactions)) {
             // This chunk won't fit, so we skip it and will try the next best one.
             m_mempool->SkipBuilderChunk();
             ++nConsecutiveFailed;
@@ -385,7 +387,7 @@ protected:
 };
 } // namespace
 
-bool SubmitBlock(ChainstateManager& chainman, const std::shared_ptr<const CBlock>& block, bool* new_block, std::string& reason, std::string& debug)
+bool SubmitBlock(ChainstateManager& chainman, const std::shared_ptr<const CBlock>& block, std::string& reason, std::string& debug)
 {
     reason.clear();
     debug.clear();
@@ -395,27 +397,34 @@ bool SubmitBlock(ChainstateManager& chainman, const std::shared_ptr<const CBlock
     // point decodes hex, formats BIP22/JSONRPC results, and calls
     // UpdateUncommittedBlockStructures() for legacy witness handling. IPC
     // callers submit already-formed blocks and need bool + reason/debug
-    // results, while submitSolution() preserves its duplicate-as-success
-    // behavior.
+    // results.
     auto sc = std::make_shared<SubmitBlockStateCatcher>(block->GetHash());
     CHECK_NONFATAL(chainman.m_options.signals)->RegisterSharedValidationInterface(sc);
-    bool accepted = chainman.ProcessNewBlock(block, /*force_processing=*/true, /*min_pow_checked=*/true, /*new_block=*/new_block);
+    bool new_block;
+    bool accepted = chainman.ProcessNewBlock(block, /*force_processing=*/true, /*min_pow_checked=*/true, /*new_block=*/&new_block);
+    // No queue drain is needed. The BlockChecked notification used above is
+    // emitted synchronously by ProcessNewBlock, unlike most validation signals.
     CHECK_NONFATAL(chainman.m_options.signals)->UnregisterSharedValidationInterface(sc);
 
-    if (new_block && !*new_block && accepted) {
+    if (!new_block && accepted) {
         reason = "duplicate";
+    } else if (!accepted && (!sc->m_found || sc->m_state.IsValid())) {
+        // ProcessNewBlock can fail without a validation result, for example
+        // from an activation or system error. It can also fail after a valid
+        // BlockChecked result. In these cases the validation result is
+        // inconclusive.
+        reason = "inconclusive";
     } else if (!sc->m_found) {
-        // A block can be accepted and stored without being connected, for
-        // example if it does not have more work than the current tip. In that
-        // case no BlockChecked callback is emitted, so the validation result is
-        // inconclusive. Mining::submitBlock treats this as an error for mining
-        // clients, but it does not mean the block is invalid.
+        // The block was accepted but not connected, for example if it does not
+        // have more work than the current tip.
         reason = "inconclusive";
     } else if (!sc->m_state.IsValid()) {
         reason = sc->m_state.GetRejectReason();
         debug = sc->m_state.GetDebugMessage();
     }
-    return accepted;
+    const bool result{accepted && new_block && reason.empty()};
+    CHECK_NONFATAL(result == reason.empty());
+    return result;
 }
 
 void InterruptWait(KernelNotifications& kernel_notifications, bool& interrupt_wait)

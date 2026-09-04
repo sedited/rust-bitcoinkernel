@@ -5,6 +5,7 @@
 
 import argparse
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -26,6 +27,31 @@ def run(cmd, **kwargs):
 def print_version():
     bitcoind = Path.cwd() / "bin" / "bitcoind.exe"
     run([str(bitcoind), "-version"])
+
+
+def check_imports():
+    bitcoind = Path.cwd() / "bin" / "bitcoind.exe"
+    output = run(
+        ["dumpbin.exe", "/imports", str(bitcoind)],
+        capture_output=True,
+        text=True,
+    ).stdout
+    dlls = re.findall(r"^\s*(\S+\.dll)\s*$", output, re.IGNORECASE | re.MULTILINE)
+    print("\n".join(dlls))
+
+    # Ensure the executable is linked against the expected C runtime.
+    dlls = {name.lower() for name in dlls}
+    uses_msvcrt = "msvcrt.dll" in dlls
+    uses_ucrt = any(name.startswith("api-ms-win-crt-") for name in dlls)
+    crt = os.environ["CRT"]
+    if crt == "msvcrt":
+        crt_ok = uses_msvcrt and not uses_ucrt
+    elif crt == "ucrt":
+        crt_ok = uses_ucrt and not uses_msvcrt
+    else:
+        sys.exit(f"Unexpected CRT value: {crt!r}")
+    if not crt_ok:
+        sys.exit(f"Imported DLLs do not match the expected {crt!r} C runtime.")
 
 
 def check_manifests():
@@ -99,23 +125,26 @@ def run_functional_tests():
         f"--tmpdirprefix={workspace / '_ _'}",
         "--combinedlogslen=99999999",
         *shlex.split(os.environ.get("TEST_RUNNER_EXTRA", "").strip()),
-        # feature_unsupported_utxo_db.py fails on Windows because of emojis in the test data directory.
+        # Tests using ancient releases fail on Windows because of emojis in the test data directory.
         "--exclude",
         "feature_unsupported_utxo_db.py",
+        "--exclude",
+        "wallet_ancient_migration.py",
     ]
     run(test_runner_cmd)
 
-    # Run feature_unsupported_utxo_db sequentially in ASCII-only tmp dir,
-    # because it is excluded above due to lack of UTF-8 support in the
+    # Run ancient release tests sequentially in ASCII-only tmp dir,
+    # because they are excluded above due to lack of UTF-8 support in the
     # ancient release.
-    cmd_feature_unsupported_db = [
-        sys.executable,
-        str(workspace / "test" / "functional" / "feature_unsupported_utxo_db.py"),
-        "--previous-releases",
-        "--tmpdir",
-        str(Path(workspace) / "test_feature_unsupported_utxo_db"),
-    ]
-    run(cmd_feature_unsupported_db)
+    for test_name in ["feature_unsupported_utxo_db", "wallet_ancient_migration"]:
+        cmd = [
+            sys.executable,
+            str(workspace / "test" / "functional" / f"{test_name}.py"),
+            "--previous-releases",
+            "--tmpdir",
+            str(workspace / f"test_{test_name}"),
+        ]
+        run(cmd)
 
 
 def run_unit_tests():
@@ -140,6 +169,7 @@ def main():
     parser = argparse.ArgumentParser(description="Utility to run Windows CI steps.")
     steps = list(map(lambda f: f.__name__, [
         print_version,
+        check_imports,
         check_manifests,
         prepare_tests,
         run_unit_tests,

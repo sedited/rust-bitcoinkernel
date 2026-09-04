@@ -2,21 +2,20 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <test/data/bip341_wallet_vectors.json.h>
-
 #include <addresstype.h>
 #include <key.h>
 #include <key_io.h>
 #include <script/script.h>
 #include <script/signingprovider.h>
 #include <script/solver.h>
+#include <test/data/bip341_wallet_vectors.json.h>
 #include <test/util/common.h>
 #include <test/util/setup_common.h>
+#include <univalue.h>
+#include <util/check.h>
 #include <util/strencodings.h>
 
 #include <boost/test/unit_test.hpp>
-
-#include <univalue.h>
 
 using namespace util::hex_literals;
 
@@ -439,15 +438,20 @@ BOOST_AUTO_TEST_CASE(script_standard_taproot_builder)
     constexpr uint256 hash_3{"31fe7061656bea2a36aa60a2f7ef940578049273746935d296426dc0afd86b68"};
 
     TaprootBuilder builder;
-    BOOST_CHECK(builder.IsValid() && builder.IsComplete());
+    BOOST_CHECK(builder.IsValid());
+    BOOST_CHECK(builder.IsComplete());
     builder.Add(2, script_2, 0xc0);
-    BOOST_CHECK(builder.IsValid() && !builder.IsComplete());
+    BOOST_CHECK(builder.IsValid());
+    BOOST_CHECK(!builder.IsComplete());
     builder.AddOmitted(2, hash_3);
-    BOOST_CHECK(builder.IsValid() && !builder.IsComplete());
+    BOOST_CHECK(builder.IsValid());
+    BOOST_CHECK(!builder.IsComplete());
     builder.Add(1, script_1, 0xc0);
-    BOOST_CHECK(builder.IsValid() && builder.IsComplete());
+    BOOST_CHECK(builder.IsValid());
+    BOOST_CHECK(builder.IsComplete());
     builder.Finalize(key_inner);
-    BOOST_CHECK(builder.IsValid() && builder.IsComplete());
+    BOOST_CHECK(builder.IsValid());
+    BOOST_CHECK(builder.IsComplete());
     BOOST_CHECK_EQUAL(EncodeDestination(builder.GetOutput()), "bc1pj6gaw944fy0xpmzzu45ugqde4rz7mqj5kj0tg8kmr5f0pjq8vnaqgynnge");
 }
 
@@ -456,7 +460,7 @@ BOOST_AUTO_TEST_CASE(bip341_spk_test_vectors)
     using control_set = decltype(TaprootSpendData::scripts)::mapped_type;
 
     UniValue tests;
-    tests.read(json_tests::bip341_wallet_vectors);
+    Assert(tests.read(json_tests::bip341_wallet_vectors));
 
     const auto& vectors = tests["scriptPubKey"];
 

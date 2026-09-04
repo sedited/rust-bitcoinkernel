@@ -8,11 +8,14 @@
 #define BITCOIN_KEY_H
 
 #include <pubkey.h>
+#include <script/keyorigin.h>
 #include <serialize.h>
 #include <support/allocators/secure.h>
 #include <uint256.h>
 
+#include <optional>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 struct secp256k1_context_struct;
@@ -25,7 +28,7 @@ typedef struct secp256k1_context_struct secp256k1_context;
 typedef std::vector<unsigned char, secure_allocator<unsigned char> > CPrivKey;
 
 /** Size of ECDH shared secrets. */
-constexpr static size_t ECDH_SECRET_SIZE = CSHA256::OUTPUT_SIZE;
+inline constexpr size_t ECDH_SECRET_SIZE = CSHA256::OUTPUT_SIZE;
 
 // Used to represent ECDH shared secret (ECDH_SECRET_SIZE bytes)
 using ECDHSecret = std::array<std::byte, ECDH_SECRET_SIZE>;
@@ -39,8 +42,8 @@ public:
     /**
      * secp256k1:
      */
-    static const unsigned int SIZE            = 279;
-    static const unsigned int COMPRESSED_SIZE = 214;
+    static constexpr unsigned int SIZE{279};
+    static constexpr unsigned int COMPRESSED_SIZE{214};
     /**
      * see www.keylength.com
      * script supports up to 75 for single byte push
@@ -228,7 +231,7 @@ CKey GenerateRandomKey(bool compressed = true) noexcept;
 
 struct CExtKey {
     unsigned char nDepth;
-    unsigned char vchFingerprint[4];
+    KeyFingerprint fingerprint;
     unsigned int nChild;
     ChainCode chaincode;
     CKey key;
@@ -236,16 +239,18 @@ struct CExtKey {
     friend bool operator==(const CExtKey& a, const CExtKey& b)
     {
         return a.nDepth == b.nDepth &&
-            memcmp(a.vchFingerprint, b.vchFingerprint, sizeof(vchFingerprint)) == 0 &&
+            a.fingerprint == b.fingerprint &&
             a.nChild == b.nChild &&
             a.chaincode == b.chaincode &&
             a.key == b.key;
     }
 
     CExtKey() = default;
-    CExtKey(const CExtPubKey& xpub, const CKey& key_in) : nDepth(xpub.nDepth), nChild(xpub.nChild), chaincode(xpub.chaincode), key(key_in)
+    CExtKey(const CExtPubKey& xpub, const CKey& key_in) : nDepth(xpub.nDepth), fingerprint(xpub.fingerprint), nChild(xpub.nChild), chaincode(xpub.chaincode), key(key_in) {}
+
+    KeyFingerprint id_key_fingerprint() const
     {
-        std::copy(xpub.vchFingerprint, xpub.vchFingerprint + sizeof(xpub.vchFingerprint), vchFingerprint);
+        return key.GetPubKey().GetID().fingerprint();
     }
 
     void Encode(unsigned char code[BIP32_EXTKEY_SIZE]) const;
@@ -254,6 +259,12 @@ struct CExtKey {
     CExtPubKey Neuter() const;
     void SetSeed(std::span<const std::byte> seed);
 };
+
+//! Get extended key and origin info for a given path
+//! @param[in] ext_key The extended private key to derive from
+//! @param[in] path The BIP 32 path
+//! @return the resulting extended private key and origin info
+std::optional<std::pair<CExtKey, KeyOriginInfo>> DeriveExtKey(const CExtKey& ext_key, const std::vector<uint32_t>& path);
 
 /** KeyPair
  *

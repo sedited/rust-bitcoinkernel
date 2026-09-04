@@ -43,7 +43,6 @@
 #include <validationinterface.h>
 
 #include <cstdint>
-#include <numeric>
 
 #include <univalue.h>
 
@@ -152,8 +151,7 @@ PartiallySignedTransaction ProcessPSBT(const std::string& psbt_string, const std
 
         // Look in the txindex
         if (g_txindex) {
-            uint256 block_hash;
-            g_txindex->FindTx(psbt_input.prev_txid, block_hash, tx);
+            if (auto result{g_txindex->FindTx(psbt_input.prev_txid)}) tx = result->tx;
         }
         // If we still don't have it look in the mempool
         if (!tx) {
@@ -196,7 +194,8 @@ PartiallySignedTransaction ProcessPSBT(const std::string& psbt_string, const std
         // We only actually care about those if our signing provider doesn't hide private
         // information, as is the case with `descriptorprocesspsbt`
         // Only error for mismatching sighash types as it is critical that the sighash to sign with matches the PSBT's
-        if (SignPSBTInput(provider, psbtx, /*index=*/i, &txdata, {.sighash_type = sighash_type, .finalize = finalize}, /*out_sigdata=*/nullptr) == common::PSBTError::SIGHASH_MISMATCH) {
+        const auto sign_result = SignPSBTInput(provider, psbtx, /*index=*/i, &txdata, {.sighash_type = sighash_type, .finalize = finalize}, /*out_sigdata=*/nullptr);
+        if (!sign_result.has_value() && sign_result.error() == common::PSBTError::SIGHASH_MISMATCH) {
             throw JSONRPCPSBTError(common::PSBTError::SIGHASH_MISMATCH);
         }
     }
@@ -216,6 +215,7 @@ static RPCMethod getrawtransaction()
     const std::vector<RPCResult> verbosity_1_block{
         {RPCResult::Type::BOOL, "in_active_chain", /*optional=*/true, "Whether specified block is in the active chain or not (only present with explicit \"blockhash\" argument)"},
         {RPCResult::Type::STR_HEX, "blockhash", /*optional=*/true, "the block hash"},
+        {RPCResult::Type::NUM, "vsize_adjusted", /*optional=*/true, "Sigop-adjusted virtual size in bytes, present for mempool transactions."},
         {RPCResult::Type::NUM, "confirmations", /*optional=*/true, "The confirmations"},
         {RPCResult::Type::NUM_TIME, "blocktime", /*optional=*/true, "The block time expressed in " + UNIX_EPOCH_TIME},
         {RPCResult::Type::NUM, "time", /*optional=*/true, "Same as \"blocktime\""},
@@ -333,6 +333,15 @@ static RPCMethod getrawtransaction()
         LOCK(cs_main);
         blockindex = chainman.m_blockman.LookupBlockIndex(hash_block); // May be nullptr for mempool transactions
     }
+
+    // Add sigop-adjusted virtual size if the transaction exists in the mempool.
+    if (blockindex == nullptr && hash_block.IsNull() && node.mempool) {
+        auto info = node.mempool->info(tx->GetHash());
+        if (info.tx) {
+            result.pushKV("vsize_adjusted", info.vsize);
+        }
+    }
+
     if (verbosity == 1) {
         TxToJSON(*tx, hash_block, result, chainman.ActiveChainstate());
         return result;
@@ -1116,7 +1125,7 @@ static RPCMethod decodepsbt()
 
             UniValue keypath(UniValue::VOBJ);
             keypath.pushKV("xpub", EncodeBase58Check(ser_xpub));
-            keypath.pushKV("master_fingerprint", HexStr(std::span<unsigned char>(xpub_pair.first.fingerprint, xpub_pair.first.fingerprint + 4)));
+            keypath.pushKV("master_fingerprint", HexStr(xpub_pair.first.fingerprint));
             keypath.pushKV("path", WriteHDKeypath(xpub_pair.first.path));
             global_xpubs.push_back(std::move(keypath));
         }
@@ -1237,7 +1246,7 @@ static RPCMethod decodepsbt()
                 UniValue keypath(UniValue::VOBJ);
                 keypath.pushKV("pubkey", HexStr(entry.first));
 
-                keypath.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(entry.second.fingerprint)));
+                keypath.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(entry.second.fingerprint.data())));
                 keypath.pushKV("path", WriteHDKeypath(entry.second.path));
                 keypaths.push_back(std::move(keypath));
             }
@@ -1354,7 +1363,7 @@ static RPCMethod decodepsbt()
                 const auto& [leaf_hashes, origin] = leaf_origin;
                 UniValue path_obj(UniValue::VOBJ);
                 path_obj.pushKV("pubkey", HexStr(xonly));
-                path_obj.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(origin.fingerprint)));
+                path_obj.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(origin.fingerprint.data())));
                 path_obj.pushKV("path", WriteHDKeypath(origin.path));
                 UniValue leaf_hashes_arr(UniValue::VARR);
                 for (const auto& leaf_hash : leaf_hashes) {
@@ -1473,7 +1482,7 @@ static RPCMethod decodepsbt()
             for (auto entry : output.hd_keypaths) {
                 UniValue keypath(UniValue::VOBJ);
                 keypath.pushKV("pubkey", HexStr(entry.first));
-                keypath.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(entry.second.fingerprint)));
+                keypath.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(entry.second.fingerprint.data())));
                 keypath.pushKV("path", WriteHDKeypath(entry.second.path));
                 keypaths.push_back(std::move(keypath));
             }
@@ -1513,7 +1522,7 @@ static RPCMethod decodepsbt()
                 const auto& [leaf_hashes, origin] = leaf_origin;
                 UniValue path_obj(UniValue::VOBJ);
                 path_obj.pushKV("pubkey", HexStr(xonly));
-                path_obj.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(origin.fingerprint)));
+                path_obj.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(origin.fingerprint.data())));
                 path_obj.pushKV("path", WriteHDKeypath(origin.path));
                 UniValue leaf_hashes_arr(UniValue::VARR);
                 for (const auto& leaf_hash : leaf_hashes) {
@@ -1918,37 +1927,17 @@ static RPCMethod joinpsbts()
         for (const PSBTOutput& output : psbt.outputs) {
             merged_psbt.AddOutput(output);
         }
-        for (auto& xpub_pair : psbt.m_xpubs) {
-            if (!merged_psbt.m_xpubs.contains(xpub_pair.first)) {
-                merged_psbt.m_xpubs[xpub_pair.first] = xpub_pair.second;
-            } else {
-                merged_psbt.m_xpubs[xpub_pair.first].insert(xpub_pair.second.begin(), xpub_pair.second.end());
-            }
-        }
+        merged_psbt.MergeGlobalXPubs(psbt);
+        merged_psbt.m_proprietary.insert(psbt.m_proprietary.begin(), psbt.m_proprietary.end());
         merged_psbt.unknown.insert(psbt.unknown.begin(), psbt.unknown.end());
     }
 
-    // Generate list of shuffled indices for shuffling inputs and outputs of the merged PSBT
-    std::vector<int> input_indices(merged_psbt.inputs.size());
-    std::iota(input_indices.begin(), input_indices.end(), 0);
-    std::vector<int> output_indices(merged_psbt.outputs.size());
-    std::iota(output_indices.begin(), output_indices.end(), 0);
-
-    // Shuffle input and output indices lists
-    std::shuffle(input_indices.begin(), input_indices.end(), FastRandomContext());
-    std::shuffle(output_indices.begin(), output_indices.end(), FastRandomContext());
-
-    PartiallySignedTransaction shuffled_psbt(tx, merged_psbt.GetVersion());
-    for (int i : input_indices) {
-        shuffled_psbt.AddInput(merged_psbt.inputs[i]);
-    }
-    for (int i : output_indices) {
-        shuffled_psbt.AddOutput(merged_psbt.outputs[i]);
-    }
-    shuffled_psbt.unknown.insert(merged_psbt.unknown.begin(), merged_psbt.unknown.end());
+    // Shuffle the inputs and outputs for privacy
+    std::shuffle(merged_psbt.inputs.begin(), merged_psbt.inputs.end(), FastRandomContext());
+    std::shuffle(merged_psbt.outputs.begin(), merged_psbt.outputs.end(), FastRandomContext());
 
     DataStream ssTx{};
-    ssTx << shuffled_psbt;
+    ssTx << merged_psbt;
     return EncodeBase64(ssTx);
 },
     };
@@ -2123,10 +2112,12 @@ RPCMethod descriptorprocesspsbt()
         sighash_type,
         finalize);
 
-    // Check whether or not all of the inputs are now signed
+    // Check whether or not all of the inputs are now correctly signed
     bool complete = true;
-    for (const auto& input : psbtx.inputs) {
-        complete &= PSBTInputSigned(input);
+    const std::optional<PrecomputedTransactionData> txdata_opt{PrecomputePSBTData(psbtx)};
+    const PrecomputedTransactionData txdata{*CHECK_NONFATAL(txdata_opt)};
+    for (unsigned int i = 0; i < psbtx.inputs.size(); ++i) {
+        complete = complete && PSBTInputSignedAndVerified(psbtx, i, &txdata);
     }
 
     DataStream ssTx{};

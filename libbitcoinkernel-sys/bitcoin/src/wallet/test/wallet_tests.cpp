@@ -137,7 +137,8 @@ BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions, TestChain100Setup)
         {
             CBlockLocator locator;
             BOOST_CHECK(WalletBatch{wallet.GetDatabase()}.ReadBestBlock(locator));
-            BOOST_CHECK(!locator.IsNull() && locator.vHave.front() == newTip->GetBlockHash());
+            BOOST_REQUIRE(!locator.IsNull());
+            BOOST_CHECK(locator.vHave.front() == newTip->GetBlockHash());
         }
 
         CWallet::ScanResult result = wallet.ScanForWalletTransactions(/*start_block=*/oldTip->GetBlockHash(), /*start_height=*/oldTip->nHeight, /*max_height=*/{}, reserver, /*save_progress=*/true);
@@ -150,7 +151,8 @@ BOOST_FIXTURE_TEST_CASE(scan_for_wallet_transactions, TestChain100Setup)
         {
             CBlockLocator locator;
             BOOST_CHECK(WalletBatch{wallet.GetDatabase()}.ReadBestBlock(locator));
-            BOOST_CHECK(!locator.IsNull() && locator.vHave.front() == newTip->GetBlockHash());
+            BOOST_REQUIRE(!locator.IsNull());
+            BOOST_CHECK(locator.vHave.front() == newTip->GetBlockHash());
         }
     }
 
@@ -406,7 +408,7 @@ public:
         CMutableTransaction blocktx;
         {
             LOCK(wallet->cs_wallet);
-            blocktx = CMutableTransaction(*wallet->mapWallet.at(tx->GetHash()).tx);
+            blocktx = CMutableTransaction(*wallet->mapWallet.at(tx->GetHash()).GetTx());
         }
         CreateAndProcessBlock({CMutableTransaction(blocktx)}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()));
 
@@ -489,7 +491,7 @@ void TestCoinsResult(ListCoinsTest& context, OutputType out_type, CAmount amount
     filter.skip_locked = false;
     CoinsResult available_coins = AvailableCoins(*context.wallet, nullptr, std::nullopt, filter);
     // Lock outputs so they are not spent in follow-up transactions
-    for (uint32_t i = 0; i < wtx.tx->vout.size(); i++) context.wallet->LockCoin({wtx.GetHash(), i}, /*persist=*/false);
+    for (uint32_t i = 0; i < wtx.GetTx()->vout.size(); i++) context.wallet->LockCoin({wtx.GetHash(), i}, /*persist=*/false);
     for (const auto& [type, size] : expected_coins_sizes) BOOST_CHECK_EQUAL(size, available_coins.coins[type].size());
 }
 
@@ -728,7 +730,6 @@ BOOST_FIXTURE_TEST_CASE(RemoveTxs, TestChain100Setup)
     CKey key = GenerateRandomKey();
     AddKey(*wallet, key);
 
-    std::string error;
     m_coinbase_txns.push_back(CreateAndProcessBlock({}, GetScriptForRawPubKey(coinbaseKey.GetPubKey())).vtx[0]);
     auto block_tx = TestSimpleSpend(*m_coinbase_txns[0], 0, coinbaseKey, GetScriptForRawPubKey(key.GetPubKey()));
     CreateAndProcessBlock({block_tx}, GetScriptForRawPubKey(coinbaseKey.GetPubKey()));

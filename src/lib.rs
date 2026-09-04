@@ -179,6 +179,8 @@
 //!
 //! - Silent Payment Scanning
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 use std::ffi::NulError;
 use std::{fmt, panic};
 
@@ -289,6 +291,13 @@ pub use crate::core::{
 };
 
 pub use crate::log::{disable_logging, Log, LogCategory, LogLevel, Logger};
+
+#[cfg(feature = "script-trace")]
+pub use crate::log::{
+    ScriptEvalStackItemRef, ScriptEvalStackIter, ScriptEvalStackRef, ScriptTraceCallback,
+    ScriptTraceCollector, ScriptTraceFrame, ScriptTraceFrameKind, ScriptTraceFrameRef,
+    ScriptTracer, SigVersion,
+};
 
 pub use crate::notifications::{
     BlockCheckedCallback, BlockTipCallback, BlockValidationResult, BlockValidationStateRef,

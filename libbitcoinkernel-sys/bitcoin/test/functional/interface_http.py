@@ -5,9 +5,13 @@
 """Test the HTTP server basics."""
 
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal, str_to_b64str
+from test_framework.netutil import NETWORK_ERRORS
+from test_framework.util import assert_equal, assert_raises, str_to_b64str
 
+import concurrent.futures
 import http.client
+import socket
+import threading
 import time
 import urllib.parse
 
@@ -16,15 +20,6 @@ RPCSERVERTIMEOUT = 2
 # Set in httpserver.h
 MAX_HEADERS_SIZE = 8192
 MAX_BODY_SIZE = 32 * 1024 * 1024
-
-# When a test expects a server disconnection, any of these errors are
-# acceptable. The specific event is determined by race condition and platform OS.
-NETWORK_ERRORS = (
-    BrokenPipeError,                 # write to a closed socket/pipe
-    ConnectionResetError,            # connection forcibly closed by peer
-    ConnectionAbortedError,          # connection aborted locally or by network stack
-    http.client.ResponseNotReady,    # server response not ready or connection out of sync
-)
 
 class BitcoinHTTPConnection:
     def __init__(self, node):
@@ -122,7 +117,8 @@ class HTTPBasicsTest (BitcoinTestFramework):
         self.check_keepalive_connection()
         self.check_close_connection()
         self.check_excessive_request_size()
-        self.check_pipelining()
+        self.check_pipelining(with_invalid_second_request=False)
+        self.check_pipelining(with_invalid_second_request=True)
         self.check_chunked_transfer()
         self.check_idle_timeout()
         self.check_server_busy_idle_timeout()
@@ -136,6 +132,7 @@ class HTTPBasicsTest (BitcoinTestFramework):
         self.check_null_byte_in_uri()
         self.check_invalid_http_version()
         self.check_whitespace_in_headers()
+        self.check_connection_limit()
 
 
     def check_default_connection(self):
@@ -230,31 +227,45 @@ class HTTPBasicsTest (BitcoinTestFramework):
         assert_equal(response4.status, http.client.OK)
 
         conn = BitcoinHTTPConnection(self.node)
+
+        # Split off the send into a background thread. When the server detects
+        # the excessive size it will stop reading from the socket, but the client
+        # will continue trying to write until the backpressure eventually
+        # drops the TCP window size to 0. While the send operation is blocking until
+        # it times out, we can still receive the server's response in the foreground.
+
+        def send_excessive_body(self, conn):
+            try:
+                # Excessive body size is invalid
+                conn.post_raw('/', f'{{"jsonrpc": "2.0", "id": "0", "method": "submitblock", "params": ["{"0" * bytes_above_limit}"]}}')
+                # On some platforms (e.g. Windows) the whole request may be
+                # accepted into the OS send buffer before the server disconnects.
+                # It's ok to allow that, the server-side behavior is asserted in
+                # the foreground thread via the 413 response.
+                self.log.info("Client finished sending request before connection was terminated")
+            except NETWORK_ERRORS:
+                self.log.info("Client did not finish sending request before connection was terminated")
+
+        send_thread = threading.Thread(target=send_excessive_body, args=(self, conn))
+        send_thread.start()
+
+        response5 = conn.recv_raw().decode()
+        assert "413 Content too large" in response5
+
         try:
-            # Excessive body size is invalid
-            conn.post_raw('/', f'{{"jsonrpc": "2.0", "id": "0", "method": "submitblock", "params": ["{"0" * bytes_above_limit}"]}}')
-            self.log.info("Client finished sending request before connection was terminated")
-        except NETWORK_ERRORS:
-            self.log.info("Client did not finish sending request before connection was terminated")
-
-        # The server will send a 413 response and disconnect but due to a race
-        # condition, the python client may or may not read the response before
-        # detecting the broken socket (which it may still be trying to write to).
-        try:
-            response5 = conn.conn.getresponse()
-            assert_equal(response5.status, http.client.REQUEST_ENTITY_TOO_LARGE)
-            self.log.info(f"Client got expected response status {response5.status}")
-            assert conn.sock_closed()
-        except NETWORK_ERRORS:
-            self.log.info("Client did not read response before disconnecting")
+            conn.conn.sock.shutdown(socket.SHUT_RDWR)
+            self.log.info("Send thread force-closed by test framework")
+        except OSError:
+            self.log.info("Send thread was already closed by RST from server")
+        send_thread.join()
 
 
-    def check_pipelining(self):
+    def check_pipelining(self, with_invalid_second_request):
         """
         Requests are responded to in the order in which they were received
         See https://www.rfc-editor.org/rfc/rfc7230#section-6.3.2
         """
-        self.log.info("Check pipelining")
+        self.log.info("Check pipelining" + (" with invalid second request" if with_invalid_second_request else ""))
         tip_height = self.node.getblockcount()
         conn = BitcoinHTTPConnection(self.node)
         conn.set_timeout(5)
@@ -262,30 +273,43 @@ class HTTPBasicsTest (BitcoinTestFramework):
         # Send two requests in a row.
         # The first request will block the second indefinitely
         conn.post_raw('/', f'{{"method": "waitforblockheight", "params": [{tip_height + 1}]}}')
-        conn.post_raw('/', '{"method": "getblockcount"}')
+        if with_invalid_second_request:
+            conn.post_raw(f'/{"x" * MAX_HEADERS_SIZE * 2}', '{"method": "getblockcount"}')
+        else:
+            conn.post_raw('/', '{"method": "getblockcount"}')
 
-        try:
-            # The server should not respond to the second request until the first
-            # request has been handled. Since the server will not respond at all
-            # to the first request until we generate a block we expect a socket timeout.
-            conn.recv_raw()
-            assert False
-        except TimeoutError:
-            pass
+        # The server should not respond to the second request until the first
+        # request has been handled. Since the server will not respond at all
+        # to the first request until we generate a block we expect a socket timeout.
+        assert_raises(TimeoutError, lambda: conn.recv_raw())
 
         # Use a separate http connection to generate a block
         self.generate(self.node, 1, sync_fun=self.no_op)
 
-        # Wait for two responses to be received
+        # Wait for responses to be received
+        if with_invalid_second_request:
+            OK = 1
+            BAD = 1
+        else:
+            OK = 2
+            BAD = 0
         res = b""
-        while res.count(b"result") != 2:
+        while True:
             res += conn.recv_raw()
+            if res.count(b"HTTP/1.1 200") == OK and res.count(b"HTTP/1.1 400") == BAD:
+                break
 
         # waitforblockheight was responded to first, and then getblockcount
         # which includes the block added after the request was made
         chunks = res.split(b'"result":')
         assert chunks[1].startswith(b'{"hash":')
-        assert chunks[2].startswith(bytes(f'{tip_height + 1}', 'utf8'))
+        if with_invalid_second_request:
+            # The response to the in-flight first request is sent before the
+            # error generated by parsing the second one, even though the second
+            # request could have been rejected much earlier.
+            assert res.index(b"HTTP/1.1 200") < res.index(b"HTTP/1.1 400")
+        else:
+            assert chunks[2].startswith(bytes(f'{tip_height + 1}', 'utf8'))
 
 
     def check_chunked_transfer(self):
@@ -322,27 +346,41 @@ class HTTPBasicsTest (BitcoinTestFramework):
             b'3' * 10000000,
             b'"]}'
         ]
-        try:
-            conn.conn.request(
-                method='POST',
-                url='/',
-                body=iter(body_chunked),
-                headers=headers_chunked,
-                encode_chunked=True)
-            self.log.info("Client finished sending request before connection was terminated")
-        except NETWORK_ERRORS:
-            self.log.info("Client did not finish sending request before connection was terminated")
 
-        # The server will send a 413 response and disconnect but due to a race
-        # condition, the python client may or may not read the response before
-        # detecting the broken socket (which it may still be trying to write to).
+        # Split off the send into a background thread. When the server detects
+        # the excessive size it will stop reading from the socket, but the client
+        # will continue trying to write until the backpressure eventually
+        # drops the TCP window size to 0. While the send operation is blocking until
+        # it times out, we can still receive the server's response in the foreground.
+
+        def send_excessive_chunked(self, conn):
+            try:
+                conn.conn.request(
+                    method='POST',
+                    url='/',
+                    body=iter(body_chunked),
+                    headers=headers_chunked,
+                    encode_chunked=True)
+                # On some platforms (e.g. Windows) the whole request may be
+                # accepted into the OS send buffer before the server disconnects.
+                # It's ok to allow that, the server-side behavior is asserted in
+                # the foreground thread via the 413 response.
+                self.log.info("Client finished sending request before connection was terminated")
+            except NETWORK_ERRORS:
+                self.log.info("Client did not finish sending request before connection was terminated")
+
+        send_thread = threading.Thread(target=send_excessive_chunked, args=(self, conn))
+        send_thread.start()
+
+        response2 = conn.recv_raw().decode()
+        assert "413 Content too large" in response2
+
         try:
-            response2 = conn.conn.getresponse()
-            assert_equal(response2.status, http.client.REQUEST_ENTITY_TOO_LARGE)
-            self.log.info(f"Client got expected response status {response2.status}")
-            assert conn.sock_closed()
-        except NETWORK_ERRORS:
-            self.log.info("Client did not read response before disconnecting")
+            conn.conn.sock.shutdown(socket.SHUT_RDWR)
+            self.log.info("Send thread force-closed by test framework")
+        except OSError:
+            self.log.info("Send thread was already closed by RST from server")
+        send_thread.join()
 
 
     def check_idle_timeout(self):
@@ -567,6 +605,82 @@ class HTTPBasicsTest (BitcoinTestFramework):
         conn.headers = {"Authorization": f"Basic \n {str_to_b64str(conn.authpair)}"}
         response = conn.post('/', '{"method": "getbestblockhash"}')
         assert_equal(response.status, http.client.BAD_REQUEST)
+
+
+    def check_connection_limit(self):
+        self.log.info("Check connection limits")
+
+        # Disable timeout so the initial batch of clients stays connected
+        # until the end of the test.
+        for comment,                  extra_args,                                      limit in [
+            ("default (16)",          ["-rpcservertimeout=0", "-rest"],                16),
+            ("-rpcmaxconnections=64", ["-rpcservertimeout=0", "-rest",
+                                       "-rpcmaxconnections=64", "-maxconnections=16"], 64)
+        ]:
+            self.log.info(f"Using connection limit: {comment}")
+            self.restart_node(0, extra_args=extra_args)
+
+            # Close the persistent HTTP connection to this node by replacing it with
+            # a new AuthServiceProxy, reducing HTTPServer::GetConnectionsCount() to 0.
+            # The new AuthServiceProxy won't actually open an HTTP connection until
+            # it needs to send an RPC (for example, to stop the node at the end of the test).
+            self.node._rpc = self.node.create_new_rpc_connection(mode="AUTHPROXY")
+
+            MAX_HTTP_CONNECTIONS = limit
+            connections = []
+
+            # Connections all succeed up to the limit
+            with self.node.assert_debug_log(
+                expected_msgs = [f"method=invalidrpc_{i} " for i in range(1, MAX_HTTP_CONNECTIONS + 1)]
+            ):
+                for i in range(1, MAX_HTTP_CONNECTIONS + 1):
+                    conn = BitcoinHTTPConnection(self.node)
+                    # Each client makes a unique request so it's easy to find in the log
+                    conn.post('/', f'{{"method": "invalidrpc_{i}"}}', connection_header='keep-alive').read()
+                    connections.append(conn)
+
+            # The next connection is over the limit, expect it to timeout
+            with self.node.assert_debug_log(
+                expected_msgs = [],
+                unexpected_msgs = ["method=never_accepted"]
+            ):
+                conn = BitcoinHTTPConnection(self.node)
+                conn.set_timeout(5)
+                assert_raises(TimeoutError, lambda: conn.post('/', '{"method": "never_accepted"}', connection_header='keep-alive').read())
+
+            # All original clients are still connected
+            assert_equal(len(connections), MAX_HTTP_CONNECTIONS)
+            for client in connections:
+                assert not client.sock_closed()
+
+            # Try connecting again, but this time we'll wait for acceptance.
+            # Because the send is blocking, we'll execute in a background thread.
+
+            def wait_for_send(conn):
+                return conn.get('/rest/blockhashbyheight/0.json').read()
+
+            conn = BitcoinHTTPConnection(self.node)
+            conn.set_timeout(None)
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            waiting_request = executor.submit(
+                wait_for_send,
+                conn
+            )
+
+            # We are waiting
+            assert not waiting_request.done()
+
+            # Close one of the original connections
+            popped_client = connections.pop()
+            popped_client.close_sock()
+
+            # The waiting connection gets processed
+            delayed_response = waiting_request.result(timeout=5)
+            assert "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206" in delayed_response.decode()
+
+            # Close all remaining connections for clean up
+            for client in connections:
+                client.close_sock()
 
 
 if __name__ == '__main__':
