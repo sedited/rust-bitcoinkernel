@@ -162,7 +162,8 @@ use libbitcoinkernel_sys::{
     btck_transaction_get_txid, btck_transaction_input_copy, btck_transaction_input_destroy,
     btck_transaction_input_get_out_point, btck_transaction_input_get_script_sig,
     btck_transaction_input_get_sequence, btck_transaction_input_get_witness_stack,
-    btck_transaction_out_point_copy, btck_transaction_out_point_destroy,
+    btck_transaction_is_coinbase, btck_transaction_out_point_copy,
+    btck_transaction_out_point_create, btck_transaction_out_point_destroy,
     btck_transaction_out_point_get_index, btck_transaction_out_point_get_txid,
     btck_transaction_output_copy, btck_transaction_output_create, btck_transaction_output_destroy,
     btck_transaction_output_get_amount, btck_transaction_output_get_script_pubkey,
@@ -409,6 +410,26 @@ pub trait TransactionExt: AsPtr<btck_Transaction> {
     /// ```
     fn locktime(&self) -> u32 {
         unsafe { btck_transaction_get_locktime(self.as_ptr()) }
+    }
+
+    /// Returns true if this is a coinbase transaction.
+    ///
+    /// A coinbase transaction is the first transaction in a block. It has exactly
+    /// one input whose outpoint is null. It creates the block subsidy and collects
+    /// the fees of the other transactions in the block rather than spending
+    /// existing outputs.
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{prelude::*, Block, KernelError};
+    /// # fn example(block: &Block) -> Result<(), KernelError> {
+    /// let first = block.transaction(0)?;
+    /// assert!(first.is_coinbase());
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn is_coinbase(&self) -> bool {
+        present(unsafe { btck_transaction_is_coinbase(self.as_ptr()) })
     }
 
     /// Runs context-free consensus validation on this transaction.
@@ -1613,6 +1634,31 @@ unsafe impl Send for TxOutPoint {}
 unsafe impl Sync for TxOutPoint {}
 
 impl TxOutPoint {
+    /// Creates a new outpoint from a transaction ID and output index.
+    ///
+    /// # Arguments
+    /// * `txid` - The [`TxidExt`] value identifying the transaction containing the output being
+    ///   referenced
+    /// * `index` - The zero-based index of the output within that transaction
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{prelude::*, Transaction, TxOutPoint, KernelError};
+    /// # fn example() -> Result<(), KernelError> {
+    /// # let tx_data = vec![0u8; 100]; // placeholder
+    /// # let tx = Transaction::new(&tx_data)?;
+    /// let txid = tx.txid();
+    /// let outpoint = TxOutPoint::new(&txid, 0);
+    /// assert_eq!(outpoint.index(), 0);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn new(txid: &impl TxidExt, index: u32) -> Self {
+        TxOutPoint {
+            inner: unsafe { btck_transaction_out_point_create(txid.as_ptr(), index) },
+        }
+    }
+
     /// Returns a borrowed reference to this outpoint.
     ///
     /// This allows converting from an owned [`TxOutPoint`] to a [`TxOutPointRef`]
@@ -2428,6 +2474,20 @@ mod tests {
         assert_eq!(tx.as_ref().check(), TxCheckResult::Valid);
     }
 
+    #[test]
+    fn test_transaction_is_coinbase() {
+        let (coinbase, coinbase_2) = get_test_coinbase_transactions();
+        assert!(coinbase.is_coinbase());
+        assert!(coinbase_2.is_coinbase());
+    }
+
+    #[test]
+    fn test_transaction_is_not_coinbase() {
+        let (tx, tx_2) = get_test_transactions();
+        assert!(!tx.is_coinbase());
+        assert!(!tx_2.is_coinbase());
+    }
+
     // TxOut tests
     #[test]
     fn test_txout_new() {
@@ -2647,6 +2707,18 @@ mod tests {
 
         let index = outpoint.index();
         assert_eq!(index, 0);
+    }
+
+    #[test]
+    fn test_txoutpoint_new() {
+        let (tx, _) = get_test_transactions();
+        let txin = tx.input(0).unwrap();
+        let outpoint = txin.outpoint();
+
+        let new_outpoint = TxOutPoint::new(&outpoint.txid().to_owned(), outpoint.index());
+
+        assert_eq!(new_outpoint.index(), outpoint.index());
+        assert_eq!(new_outpoint.txid(), outpoint.txid());
     }
 
     #[test]

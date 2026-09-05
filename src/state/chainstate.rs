@@ -25,7 +25,7 @@
 //! #     Ok(())
 //! # }
 
-use std::ffi::CString;
+use std::{ffi::CString, panic::resume_unwind};
 
 use libbitcoinkernel_sys::{
     btck_ChainstateManager, btck_ChainstateManagerOptions, btck_block_read,
@@ -38,19 +38,23 @@ use libbitcoinkernel_sys::{
     btck_chainstate_manager_options_update_block_tree_db_in_memory,
     btck_chainstate_manager_options_update_chainstate_db_in_memory,
     btck_chainstate_manager_process_block, btck_chainstate_manager_process_block_header,
+    btck_chainstate_manager_validate_block,
 };
 
 use crate::{
     core::block::BlockHeader,
     ffi::{
         c_helpers,
-        sealed::{AsPtr, FromMutPtr, FromPtr},
+        sealed::{AsMutPtr, AsPtr, FromMutPtr, FromPtr},
     },
     notifications::types::{BlockValidationState, BlockValidationStateExt},
     Block, BlockHash, BlockSpentOutputs, BlockTreeEntry, KernelError, ValidationMode,
 };
 
-use super::{Chain, Context};
+use super::{
+    coins::{validation_fetch_coin_wrapper, FetchCoinRegistry},
+    Chain, Context, FetchCoinCallback,
+};
 
 /// Result of processing a block with the [`ChainstateManager`].
 ///
@@ -79,6 +83,19 @@ pub enum ProcessBlockHeaderResult {
     /// The header was valid and added to the block tree.
     Valid,
     /// The header failed validation; the state holds the details.
+    Invalid(BlockValidationState),
+}
+
+/// Result of [`ChainstateManager::validate_block`].
+///
+/// On failure, the [`BlockValidationState`] carries details that can be
+/// inspected via [`BlockValidationStateExt`].
+#[derive(Clone, Debug)]
+#[must_use = "block validation result must be inspected to determine whether the block is valid"]
+pub enum ValidateBlockResult {
+    /// The block passed validation.
+    Valid,
+    /// The block failed validation; the state holds the details.
     Invalid(BlockValidationState),
 }
 
@@ -327,6 +344,76 @@ impl ChainstateManager {
             Ok(ProcessBlockHeaderResult::Valid)
         } else {
             Ok(ProcessBlockHeaderResult::Invalid(state))
+        }
+    }
+
+    /// Validate a block against caller-supplied coins, without requiring the
+    /// full UTXO set to be present.
+    ///
+    /// The block is run through `CheckBlock`, `ContextualCheckBlockHeader`,
+    /// `ContextualCheckBlock` and `ConnectBlock` with `fJustCheck = true`, do the
+    /// chainstate is read but never mutated. Coins spent by the block are taken
+    /// from `fetch_coin` instead of from the chainstate's UTXO set.
+    ///
+    /// `fetch_coin` is only consulted for outputs that existed before this block:
+    /// outputs created and spent within the smae block are resolved internally
+    /// and never reach the callback. As a consequence, BIP-30 violating
+    /// transactions cannot be detected through this function.
+    ///
+    /// The block's header must already have been processed (e.g. via
+    /// [`process_block_header`](Self::process_block_header)) so that a matching
+    /// [`BlockTreeEntry`] exists.
+    ///
+    /// # Arguments
+    /// * `block` - The [`Block`] to validate
+    /// * `entry` - The [`BlockTreeEntry`] assoicated with `block`
+    /// * `fetch_coin` - Supplies the coins spent by the block
+    ///
+    /// # Returns
+    /// * `Ok(ValidateBlockResult::Valid)` - the block passed validation
+    /// * `Ok(ValidateBlockResult::Invalid(state))` - the block failed validation;
+    ///   inspect `state` for details
+    /// * `Err(KernelError::Internal)` - an internal error occured
+    ///
+    /// # Panics
+    ///
+    /// A panic raised by `fetch_coin` is caught at the FFI boundary and resumed
+    /// once the kernel call has returned, rather tha unwinding into C++.
+    ///
+    pub fn validate_block<C: FetchCoinCallback>(
+        &self,
+        block: &Block,
+        entry: &BlockTreeEntry,
+        fetch_coin: &C,
+    ) -> Result<ValidateBlockResult, KernelError> {
+        let registry = FetchCoinRegistry::new(fetch_coin);
+        let state = BlockValidationState::new();
+
+        let result = unsafe {
+            btck_chainstate_manager_validate_block(
+                self.inner,
+                block.as_ptr(),
+                entry.as_ptr(),
+                validation_fetch_coin_wrapper,
+                registry.as_user_data(),
+                state.as_mut_ptr(),
+            )
+        };
+
+        if let Some(payload) = registry.take_panic() {
+            resume_unwind(payload);
+        }
+
+        if state.mode() == ValidationMode::InternalError {
+            return Err(KernelError::Internal(
+                "Failed to validate block".to_string(),
+            ));
+        }
+
+        if c_helpers::success(result) {
+            Ok(ValidateBlockResult::Valid)
+        } else {
+            Ok(ValidateBlockResult::Invalid(state))
         }
     }
 

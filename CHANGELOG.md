@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `WitnessStack` and `WitnessStackRef` types for holding a transaction input's witness stack, along with the shared `WitnessStackExt` trait exposing `len()`, `is_empty()` and `item(index)`. `item` returns the raw bytes of the item at the given index, or `Err(KernelError::OutOfBounds)` if the index is invalid.
 - Added `WitnessStackExt::items()` returning a `WitnessStackIter` that yields each witness stack item as an owned `Vec<u8>` in order. Implements `Iterator` and `ExactSizeIterator`.
 - Added `TxIn::script_sig()` (via `TxInExt`) to retrieve an input's scriptSig as a serialized `Vec<u8>`. Returns `Err(KernelError::SerializationFailed)` if serialization fails
+- Added `TransactionExt::is_coinbase` to check whether a transaction is a coinbase transaction.
+- Added `Coin::new` to construct a coin from a transaction output, confirmation height, and coinbase flag, for use with `ChainstateManager::validate_block` when validating a block without the full UTXO set present.
+- Added `TxOutPoint::new` to construct a new outpoint from a transaction ID and output index.
 
 ### Changed
 - The `verify` function's `flags` parameter now uses `ScriptVerificationFlags` instead of `u32`, making the type explicit in the public API.
