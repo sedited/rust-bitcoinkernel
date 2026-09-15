@@ -36,7 +36,8 @@ cargo b
 
 ### Android Cross-Compilation
 
-Android cross-compilation requires [Nix](https://nixos.org/).
+The recommended way to cross-compile for Android is with
+[Nix](https://nixos.org/).
 
 Nix handles the exact NDK version, Rust toolchains, Boost, and cmake
 automatically, giving you a reproducible build environment with no manual setup.
@@ -50,6 +51,9 @@ nix build .#libbitcoinkernel-android-x86_64 # build only; tests skipped (see fla
 The resulting libraries and headers are placed in `result/lib/` and `result/include`.
 
 Output targets Android API 24+ (Nougat) minimum.
+
+If you cannot use Nix, see [ANDROID.md](ANDROID.md) for instructions on
+setting up the NDK toolchain and building by hand.
 
 ## MSRV (Minimum Supported Rust Version)
 
