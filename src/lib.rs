@@ -299,7 +299,8 @@ pub use crate::notifications::{
 
 pub use crate::state::{
     Chain, ChainParams, ChainType, ChainstateManager, ChainstateManagerBuilder, Context,
-    ContextBuilder, ProcessBlockHeaderResult, ProcessBlockResult,
+    ContextBuilder, FetchCoinCallback, ProcessBlockHeaderResult, ProcessBlockResult,
+    ValidateBlockResult,
 };
 
 pub use crate::core::block_check_flags::{
