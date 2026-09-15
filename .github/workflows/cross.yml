@@ -8,6 +8,9 @@ on:
     - cron: '0 0 * * 1' # weekly on Monday at midnight UTC
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -58,6 +61,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Add target
         run: rustup target add ${{ matrix.target }}
@@ -176,6 +181,8 @@ jobs:
           - libbitcoinkernel-android-x86_64
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Install Nix
       uses: cachix/install-nix-action@v31

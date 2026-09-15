@@ -4,6 +4,9 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
+permissions:
+  contents: read
+
 jobs:
   changelog-check:
     name: Verify CHANGELOG.md was modified
@@ -11,6 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Verify CHANGELOG.md was modified
         env:

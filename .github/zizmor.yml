@@ -1,0 +1,7 @@
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # Tag refs are accepted repo-wide. Flip to hash-pin if the
+        # SHA-pinning discussion in #226 is revisited.
+        "*": ref-pin

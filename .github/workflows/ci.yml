@@ -6,6 +6,9 @@ on:
   schedule:
     - cron: '0 0 * * 1' # weekly on Monday at midnight UTC
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -19,6 +22,8 @@ jobs:
         dep: [minimal, recent]
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Install Rust MSRV
       uses: dtolnay/rust-toolchain@master
@@ -52,6 +57,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Install Rust nightly
       uses: dtolnay/rust-toolchain@nightly
@@ -67,6 +74,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
+      with:
+        persist-credentials: false
 
     - name: Install Nix
       uses: cachix/install-nix-action@v31
@@ -92,6 +101,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -152,6 +163,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -183,6 +196,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -204,6 +219,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
 
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@stable
@@ -234,10 +251,13 @@ jobs:
     steps:
       - name: Checkout rust-bitcoinkernel
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Checkout qa-assets corpus
         uses: actions/checkout@v4
         with:
+          persist-credentials: false
           repository: alexanderwiederin/qa-assets
           path: qa-assets
 
