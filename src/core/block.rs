@@ -141,7 +141,7 @@ use libbitcoinkernel_sys::{
     btck_block_spent_outputs_count, btck_block_spent_outputs_destroy,
     btck_block_spent_outputs_get_transaction_spent_outputs_at, btck_block_to_bytes,
     btck_chain_parameters_get_consensus_params, btck_coin_confirmation_height, btck_coin_copy,
-    btck_coin_destroy, btck_coin_get_output, btck_coin_is_coinbase,
+    btck_coin_create, btck_coin_destroy, btck_coin_get_output, btck_coin_is_coinbase,
     btck_transaction_spent_outputs_copy, btck_transaction_spent_outputs_count,
     btck_transaction_spent_outputs_destroy, btck_transaction_spent_outputs_get_coin_at,
 };
@@ -185,7 +185,7 @@ pub enum BlockCheckResult {
     Invalid(BlockValidationState),
 }
 
-use super::transaction::{TransactionRef, TxOutRef};
+use super::transaction::{TransactionRef, TxOutExt, TxOutRef};
 
 /// Common operations for block hashes, implemented by both owned and borrowed types.
 ///
@@ -1846,6 +1846,37 @@ unsafe impl Send for Coin {}
 unsafe impl Sync for Coin {}
 
 impl Coin {
+    /// Creates a new coin from a transaction output, confirmation height, and coinbase flag.
+    ///
+    /// This is useful for constructing coins to pass to
+    /// [`ChainstateManager::validate_block`](crate::ChainstateManager::validate_block)
+    /// when validating a block without having the full UTXO set present.
+    ///
+    /// # Arguments
+    /// * `output` - The [`TxOutExt`] (value and script) that this coin represents
+    /// * `height` - The block height at which the coin was confirmed
+    /// * `is_coinbase` - Whether the coin originated from a coinbase transaction
+    ///
+    /// # Examples
+    /// ```no_run
+    /// # use bitcoinkernel::{prelude::*, Coin, TxOut, ScriptPubkey};
+    /// # fn example() -> Result<(), bitcoinkernel::KernelError> {
+    /// let script = ScriptPubkey::new(&[0x76, 0xa9])?;
+    /// let output = TxOut::new(&script, 50000);
+    /// let coin = Coin::new(&output, 100, false);
+    /// assert_eq!(coin.confirmation_height(), 100);
+    /// assert!(!coin.is_coinbase());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn new(output: &impl TxOutExt, height: u32, is_coinbase: bool) -> Self {
+        Coin {
+            inner: unsafe {
+                btck_coin_create(output.as_ptr(), height, c_helpers::to_c_bool(is_coinbase))
+            },
+        }
+    }
+
     /// Creates a borrowed reference to this coin.
     ///
     /// This allows converting from owned [`Coin`] to [`CoinRef`] without
@@ -1948,7 +1979,7 @@ mod tests {
         test_owned_clone_and_send, test_owned_trait_requirements, test_ref_trait_requirements,
     };
     use crate::prelude::*;
-    use crate::{BlockValidationResult, ChainType, ValidationMode};
+    use crate::{BlockValidationResult, ChainType, ScriptPubkey, TxOut, ValidationMode};
     use std::{
         fs::File,
         io::{BufRead, BufReader},
@@ -2018,6 +2049,22 @@ mod tests {
 
     test_owned_trait_requirements!(test_coin_requirements, Coin, btck_Coin);
     test_ref_trait_requirements!(test_coin_ref_requirements, CoinRef<'static>, btck_Coin);
+
+    #[test]
+    fn test_coin_new() {
+        let script = hex::decode("76a9144bfbaf6afb76cc5771bc6404810d1cc041a6933988ac").unwrap();
+        let script_pubkey = ScriptPubkey::new(&script).unwrap();
+        let output = TxOut::new(&script_pubkey, 1);
+
+        let coin = Coin::new(&output, 0, false);
+        let coin2 = Coin::new(&output, 1, true);
+
+        assert!(!coin.is_coinbase());
+        assert_eq!(coin.confirmation_height(), 0);
+        assert!(coin2.is_coinbase());
+        assert_eq!(coin2.confirmation_height(), 1);
+        assert_eq!(coin.output().value(), output.value());
+    }
 
     test_owned_clone_and_send!(
         test_block_hash_clone_send,
