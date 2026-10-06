@@ -27,9 +27,9 @@ namespace leveldb {
 class Env;
 } // namespace leveldb
 
-static const size_t DBWRAPPER_PREALLOC_KEY_SIZE = 64;
-static const size_t DBWRAPPER_PREALLOC_VALUE_SIZE = 1024;
-static const size_t DBWRAPPER_MAX_FILE_SIZE{32_MiB};
+inline constexpr size_t DBWRAPPER_PREALLOC_KEY_SIZE = 64;
+inline constexpr size_t DBWRAPPER_PREALLOC_VALUE_SIZE = 1024;
+inline constexpr size_t DBWRAPPER_MAX_FILE_SIZE{32_MiB};
 
 //! User-controlled performance and debug options.
 struct DBOptions {
@@ -278,6 +278,11 @@ public:
      * Return true if the database managed by this class contains no entries.
      */
     bool IsEmpty();
+
+    //! Probe an unopened database for a key prefix. Return true if a database at
+    //! path exists and contains at least 1 entry beginning with prefix; missing
+    //! or empty databases return false, and database errors throw dbwrapper_error.
+    static bool HasKeyStartingWith(const fs::path& path, uint8_t prefix);
 
     template<typename K>
     size_t EstimateSize(const K& key_begin, const K& key_end) const

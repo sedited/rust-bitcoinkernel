@@ -1,6 +1,11 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{env, fs, path::PathBuf};
 
+use bitcoinkernel::{
+    verify, KernelError, PrecomputedTransactionData, ScriptPubkey, ScriptVerificationFlags,
+    Transaction, TxOut,
+};
+
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // Utility to create temporary directories that are cleaned on drop. Duplicated in `src/test_utils.rs` and `tests/common/mod.rs`.
@@ -9,6 +14,8 @@ pub struct TempDir {
     blocks_dir: PathBuf,
 }
 
+// compiled per test binary; not all binaries use TempDir
+#[allow(dead_code)]
 impl TempDir {
     pub fn new(name: &str) -> Self {
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -41,4 +48,27 @@ impl Drop for TempDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.data_dir);
     }
+}
+
+pub fn verify_test(
+    spent: &str,
+    spending: &str,
+    amount: i64,
+    input: usize,
+    outputs: Vec<TxOut>,
+    flags: ScriptVerificationFlags,
+) -> Result<(), KernelError> {
+    let spent_script_pubkey =
+        ScriptPubkey::try_from(hex::decode(spent).unwrap().as_slice()).unwrap();
+    let spending_tx = Transaction::new(hex::decode(spending).unwrap().as_slice()).unwrap();
+    let tx_data = PrecomputedTransactionData::new(&spending_tx, &outputs).unwrap();
+    verify(
+        &spent_script_pubkey,
+        Some(amount),
+        &spending_tx,
+        input,
+        Some(flags),
+        &tx_data,
+    )?;
+    Ok(())
 }

@@ -28,6 +28,7 @@
 #include <util/vector.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <functional>
 #include <iterator>
@@ -312,21 +313,20 @@ static bool SignMuSig2(const BaseSignatureCreator& creator, SignatureData& sigda
         CPubKey plain_pub = agg_pub;
         if (XOnlyPubKey(agg_pub) != script_pubkey) {
             if (agg_info.path.empty()) continue;
-            // Compute and compare fingerprint
-            CKeyID keyid = agg_pub.GetID();
-            if (!std::equal(agg_info.fingerprint, agg_info.fingerprint + sizeof(agg_info.fingerprint), keyid.data())) {
+            if (agg_info.fingerprint != agg_pub.GetID().fingerprint()) {
                 continue;
             }
             // Get the BIP32 derivation tweaks
             CExtPubKey extpub = CreateMuSig2SyntheticXpub(agg_pub);
-            for (const int i : agg_info.path) {
+            for (const uint32_t i : agg_info.path) {
+                if (i >> 31) return false; // Hardened derivation is not possible from a public key
                 auto& [t, xonly] = tweaks.emplace_back();
                 xonly = false;
                 if (!extpub.Derive(extpub, i, &t)) {
                     return false;
                 }
             }
-            Assert(XOnlyPubKey(extpub.pubkey) == script_pubkey);
+            if (XOnlyPubKey(extpub.pubkey) != script_pubkey) continue;
             plain_pub = extpub.pubkey;
         }
 

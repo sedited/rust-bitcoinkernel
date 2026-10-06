@@ -4,8 +4,11 @@
 
 #include <kernel/bitcoinkernel.h>
 #include <kernel/bitcoinkernel_wrapper.h>
+#include <util/byte_units.h>
 #include <util/fs.h>
 
+// Boost.Test's SIGSTKSZ alternate stack can be smaller than Linux requires on musl.
+#define BOOST_TEST_DISABLE_ALT_STACK
 #define BOOST_TEST_MODULE Bitcoin Kernel Test Suite
 #include <boost/test/included/unit_test.hpp>
 
@@ -389,6 +392,113 @@ void CheckRange(const RangeType& range, size_t expected_size)
     BOOST_CHECK(it2 == it + 1);
 }
 
+struct ScriptTracer {
+    struct Snapshot {
+        ScriptTraceFrameKind m_kind;
+        std::optional<int32_t> m_script_error;
+        bool m_exec;
+    };
+    std::vector<Snapshot>& m_state;
+
+    void ScriptTrace(const ScriptTraceFrameView& frame)
+    {
+        m_state.push_back({frame.Kind(), frame.GetScriptError(), frame.Exec()});
+    }
+};
+
+BOOST_AUTO_TEST_CASE(btck_script_trace_tests)
+{
+    std::vector<ScriptTracer::Snapshot> states;
+#ifndef ENABLE_SCRIPT_TRACE
+    BOOST_CHECK_EXCEPTION(
+        ScriptTraceSetCallback(std::make_unique<ScriptTracer>(states)),
+        std::runtime_error,
+        HasReason("Script Tracing is not available. Compile bitcoin kernel with ENABLE_SCRIPT_TRACE"));
+    // Should be no-op
+    ScriptTraceUnsetCallback();
+#else
+    ScriptTraceSetCallback(std::make_unique<ScriptTracer>(states));
+
+    auto legacy_spent_script_pubkey{ScriptPubkey{hex_string_to_byte_vec("76a9144bfbaf6afb76cc5771bc6404810d1cc041a6933988ac")}};
+    auto legacy_spending_tx{Transaction{hex_string_to_byte_vec("02000000013f7cebd65c27431a90bba7f796914fe8cc2ddfc3f2cbd6f7e5f2fc854534da95000000006b483045022100de1ac3bcdfb0332207c4a91f3832bd2c2915840165f876ab47c5f8996b971c3602201c6c053d750fadde599e6f5c4e1963df0f01fc0d97815e8157e3d59fe09ca30d012103699b464d1d8bc9e47d4fb1cdaa89a1c5783d68363c4dbc4b524ed3d857148617feffffff02836d3c01000000001976a914fc25d6d5c94003bf5b0c7b640a248e2c637fcfb088ac7ada8202000000001976a914fbed3d9b11183209a57999d54d59f67c019e756c88ac6acb0700")}};
+    auto status{ScriptVerifyStatus::OK};
+    BOOST_CHECK(legacy_spent_script_pubkey.Verify(
+        /*amount=*/0,
+        /*tx_to=*/legacy_spending_tx,
+        /*precomputed_txdata=*/nullptr,
+        /*input_index=*/0,
+        VERIFY_ALL_PRE_TAPROOT,
+        status));
+    BOOST_CHECK(status == ScriptVerifyStatus::OK);
+
+    const auto frame_count = states.size();
+    ScriptTraceUnsetCallback();
+
+    BOOST_CHECK(legacy_spent_script_pubkey.Verify(
+        /*amount=*/0,
+        /*tx_to=*/legacy_spending_tx,
+        /*precomputed_txdata=*/nullptr,
+        /*input_index=*/0,
+        VERIFY_ALL_PRE_TAPROOT,
+        status));
+    BOOST_CHECK_EQUAL(states.size(), frame_count);
+
+    BOOST_REQUIRE_EQUAL(states.size(), 11);
+    BOOST_CHECK(states[0].m_kind == ScriptTraceFrameKind::BEGIN);
+    BOOST_CHECK(states[3].m_kind == ScriptTraceFrameKind::END);
+    BOOST_CHECK(states[4].m_kind == ScriptTraceFrameKind::BEGIN);
+    BOOST_CHECK(states[10].m_kind == ScriptTraceFrameKind::END);
+    for (int i : {1, 2, 5, 6, 7, 8, 9}) {
+        BOOST_CHECK(states[i].m_kind == ScriptTraceFrameKind::STEP);
+    }
+    BOOST_CHECK_EQUAL(states[3].m_script_error, 0);
+    BOOST_CHECK_EQUAL(states[10].m_script_error, 0);
+
+    ScriptTraceSetCallback(std::make_unique<ScriptTracer>(states));
+    BOOST_CHECK(legacy_spent_script_pubkey.Verify(
+        /*amount=*/0,
+        /*tx_to=*/legacy_spending_tx,
+        /*precomputed_txdata=*/nullptr,
+        /*input_index=*/0,
+        VERIFY_ALL_PRE_TAPROOT,
+        status));
+    BOOST_CHECK_EQUAL(states.size(), 22);
+    ScriptTraceUnsetCallback();
+
+    // Checking a signet block invokes script evaluation without communicating an error code.
+    states.clear();
+    ChainParams signet_params{ChainType::SIGNET};
+    Block signet_block{hex_string_to_byte_vec(
+        "00000020f61eee3b63a380a477a063af32b2bbc97c9ff9f01f2c4225e973988108000000f575c83235984e7dc4afc1f30944c170462e84437ab6f2d52e16878a79e4678bd1914d5fae77031eccf4070001010000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff025151feffffff0200f2052a010000001600149243f727dd5343293eb83174324019ec16c2630f0000000000000000776a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf94c4fecc7daa2490047304402205e423a8754336ca99dbe16509b877ef1bf98d008836c725005b3c787c41ebe46022047246e4467ad7cc7f1ad98662afcaf14c115e0095a227c7b05c5182591c23e7e01000120000000000000000000000000000000000000000000000000000000000000000000000000")};
+    BlockValidationState validation_state;
+    ScriptTraceSetCallback(std::make_unique<ScriptTracer>(states));
+    const bool valid{signet_block.Check(signet_params.GetConsensusParams(), BlockCheckFlags::ALL, validation_state)};
+    ScriptTraceUnsetCallback();
+    BOOST_CHECK(valid);
+    BOOST_REQUIRE(!states.empty());
+    BOOST_CHECK(!states.back().m_script_error);
+
+    ScriptPubkey script_pubkey{hex_string_to_byte_vec("00636451675168675168")};
+    std::vector<bool> expected_exec{true, true, false, false, false, false, false, false, true, true};
+    const Transaction exec_tx{hex_string_to_byte_vec("020000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0100000000000000000000000000")};
+    states.clear();
+    ScriptTraceSetCallback(std::make_unique<ScriptTracer>(states));
+    BOOST_CHECK(script_pubkey.Verify(
+        /*amount=*/0,
+        /*tx_to=*/exec_tx,
+        /*precomputed_txdata=*/nullptr,
+        /*input_index=*/0,
+        VERIFY_ALL_PRE_TAPROOT,
+        status));
+    ScriptTraceUnsetCallback();
+    std::vector<bool> exec;
+    for (const auto& s : states) {
+        if (s.m_kind == ScriptTraceFrameKind::STEP) exec.push_back(s.m_exec);
+    }
+    BOOST_CHECK_EQUAL_COLLECTIONS(exec.begin(), exec.end(), expected_exec.begin(), expected_exec.end());
+#endif
+}
+
 BOOST_AUTO_TEST_CASE(btck_transaction_tests)
 {
     auto tx_data{hex_string_to_byte_vec("02000000013f7cebd65c27431a90bba7f796914fe8cc2ddfc3f2cbd6f7e5f2fc854534da95000000006b483045022100de1ac3bcdfb0332207c4a91f3832bd2c2915840165f876ab47c5f8996b971c3602201c6c053d750fadde599e6f5c4e1963df0f01fc0d97815e8157e3d59fe09ca30d012103699b464d1d8bc9e47d4fb1cdaa89a1c5783d68363c4dbc4b524ed3d857148617feffffff02836d3c01000000001976a914fc25d6d5c94003bf5b0c7b640a248e2c637fcfb088ac7ada8202000000001976a914fbed3d9b11183209a57999d54d59f67c019e756c88ac6acb0700")};
@@ -744,6 +854,12 @@ BOOST_AUTO_TEST_CASE(btck_block)
     CheckHandle(block, block_100);
     Block block_tx{hex_string_to_byte_vec(REGTEST_BLOCK_DATA[205])};
     CheckRange(block_tx.Transactions(), block_tx.CountTransactions());
+    auto transactions{block_tx.Transactions()};
+    auto transactions_copy{transactions};
+    BOOST_CHECK(transactions.begin() == transactions_copy.begin());
+    BOOST_CHECK(transactions.begin() == block_tx.Transactions().begin());
+    auto transaction_it{transactions.begin()};
+    BOOST_CHECK((*transaction_it).Txid() == block_tx.GetTransaction(0).Txid());
     auto invalid_data = hex_string_to_byte_vec("012300");
     BOOST_CHECK_THROW(Block{invalid_data}, std::runtime_error);
     auto empty_data = hex_string_to_byte_vec("");
@@ -800,6 +916,9 @@ BOOST_AUTO_TEST_CASE(btck_chainman_tests)
 
     ChainstateManagerOptions chainman_opts{context, PathToString(test_directory.m_directory), PathToString(test_directory.m_directory / "blocks")};
     chainman_opts.SetWorkerThreads(4);
+    BOOST_CHECK(!chainman_opts.SetDatabaseCacheBytes(4_MiB - 1));
+    if constexpr (sizeof(void*) == 4) BOOST_CHECK(!chainman_opts.SetDatabaseCacheBytes(2_GiB));
+    BOOST_CHECK(chainman_opts.SetDatabaseCacheBytes(4_MiB));
     BOOST_CHECK(!chainman_opts.SetWipeDbs(/*wipe_block_tree=*/true, /*wipe_chainstate=*/false));
     BOOST_CHECK(chainman_opts.SetWipeDbs(/*wipe_block_tree=*/true, /*wipe_chainstate=*/true));
     BOOST_CHECK(chainman_opts.SetWipeDbs(/*wipe_block_tree=*/false, /*wipe_chainstate=*/true));
@@ -1409,4 +1528,52 @@ BOOST_AUTO_TEST_CASE(btck_transaction_check_tests)
         "01000000020000000000000000000000000000000000000000000000000000000000000000"
         "ffffffff00ffffffff000100000000000000000000000000000000000000000000000000000000"
         "00000000000000ffffffff010000000000000000015100000000");
+}
+
+class KernelMockTime
+{
+public:
+    explicit KernelMockTime(std::chrono::seconds timestamp) { set(timestamp); }
+    ~KernelMockTime()
+    {
+        set_mock_time(std::chrono::seconds{0});
+    }
+
+    KernelMockTime(const KernelMockTime&) = delete;
+    KernelMockTime& operator=(const KernelMockTime&) = delete;
+
+    void set(std::chrono::seconds timestamp) { set_mock_time(timestamp); }
+};
+
+BOOST_AUTO_TEST_CASE(btck_set_mock_time_tests)
+{
+    // Out-of-range timestamps throw
+    BOOST_CHECK_EXCEPTION(set_mock_time(std::chrono::seconds{-1}), std::runtime_error, HasReason("timestamp out of range"));
+    constexpr std::chrono::seconds max_time{std::numeric_limits<uint32_t>::max()};
+    BOOST_CHECK_EXCEPTION(set_mock_time(max_time + std::chrono::seconds{1}), std::runtime_error, HasReason("timestamp out of range"));
+
+    // Confirm the mock time actually takes effect by exercising the header future-time check
+    auto test_directory{TestDirectory{"set_mock_time_test_bitcoin_kernel"}};
+    auto notifications{std::make_shared<TestKernelNotifications>()};
+    auto context{create_context(notifications, ChainType::REGTEST)};
+    auto chainman{create_chainman(
+        test_directory, /*reindex=*/false, /*wipe_chainstate=*/false,
+        /*block_tree_db_in_memory=*/true, /*chainstate_db_in_memory=*/true, context)};
+
+    Block block{hex_string_to_byte_vec(REGTEST_BLOCK_DATA[0])};
+    BlockHeader header{block.GetHeader()};
+    const std::chrono::seconds block_time{header.Timestamp()};
+
+    // With the time set 3h before the header, the kernel must see the header as >2h in the future and reject it
+    KernelMockTime mock_time{block_time - std::chrono::hours{3}};
+    BlockValidationState future_state{chainman->ProcessBlockHeader(header)};
+    BOOST_CHECK(future_state.GetValidationMode() == ValidationMode::INVALID);
+    BOOST_CHECK(future_state.GetBlockValidationResult() == BlockValidationResult::TIME_FUTURE);
+
+    // At the upper bound the header is far in the past and must be accepted; this also
+    // confirms the future-time check's "now + 2h" computation doesn't overflow when now is at its max.
+    mock_time.set(max_time);
+    BlockValidationState ok_state{chainman->ProcessBlockHeader(header)};
+    BOOST_CHECK(ok_state.GetValidationMode() == ValidationMode::VALID);
+    BOOST_CHECK(ok_state.GetBlockValidationResult() == BlockValidationResult::UNSET);
 }

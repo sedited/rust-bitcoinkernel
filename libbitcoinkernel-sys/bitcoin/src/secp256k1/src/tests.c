@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #include <time.h>
@@ -194,9 +195,6 @@ static void run_ec_illegal_argument_tests(void) {
 }
 
 static void run_static_context_tests(int use_prealloc) {
-    /* Check that deprecated secp256k1_context_no_precomp is an alias to secp256k1_context_static. */
-    CHECK(secp256k1_context_no_precomp == secp256k1_context_static);
-
     {
         unsigned char seed[32] = {0x17};
 
@@ -372,7 +370,6 @@ static void run_scratch_tests(void) {
     size_t checkpoint;
     size_t checkpoint_2;
     secp256k1_scratch_space *scratch;
-    secp256k1_scratch_space local_scratch;
 
     /* Test public API */
     scratch = secp256k1_scratch_space_create(CTX, 1000);
@@ -412,16 +409,7 @@ static void run_scratch_tests(void) {
     CHECK_ERROR_VOID(CTX, secp256k1_scratch_apply_checkpoint(&CTX->error_callback, scratch, checkpoint_2)); /* checkpoint_2 is after checkpoint */
     CHECK_ERROR_VOID(CTX, secp256k1_scratch_apply_checkpoint(&CTX->error_callback, scratch, (size_t) -1)); /* this is just wildly invalid */
 
-    /* try to use badly initialized scratch space */
-    secp256k1_scratch_space_destroy(CTX, scratch);
-    memset(&local_scratch, 0, sizeof(local_scratch));
-    scratch = &local_scratch;
-    CHECK_ERROR(CTX, secp256k1_scratch_max_allocation(&CTX->error_callback, scratch, 0));
-    CHECK_ERROR(CTX, secp256k1_scratch_alloc(&CTX->error_callback, scratch, 500));
-    CHECK_ERROR_VOID(CTX, secp256k1_scratch_space_destroy(CTX, scratch));
-
     /* Test that large integers do not wrap around in a bad way */
-    scratch = secp256k1_scratch_space_create(CTX, 1000);
     /* Try max allocation with a large number of objects. Only makes sense if
      * ALIGNMENT is greater than 1 because otherwise the objects take no extra
      * space. */
@@ -434,6 +422,21 @@ static void run_scratch_tests(void) {
 
     /* cleanup */
     secp256k1_scratch_space_destroy(CTX, NULL); /* no-op */
+}
+
+/* try to use badly initialized scratch space */
+static void run_invalid_scratch_space_tests(void) {
+    secp256k1_scratch_space* scratch = checked_malloc(&CTX->error_callback, sizeof(*scratch));
+    size_t magic_size = sizeof(scratch->magic);
+    memset(scratch, 0, sizeof(*scratch));
+    /* catch accesses beyond the magic */
+    SECP256K1_CHECKMEM_UNDEFINE((unsigned char*)scratch + magic_size, sizeof(*scratch) - magic_size);
+
+    CHECK_ERROR(CTX, secp256k1_scratch_max_allocation(&CTX->error_callback, scratch, 0));
+    CHECK_ERROR(CTX, secp256k1_scratch_alloc(&CTX->error_callback, scratch, 500));
+    CHECK_ERROR_VOID(CTX, secp256k1_scratch_space_destroy(CTX, scratch));
+
+    free(scratch);
 }
 
 /* A compression function that does nothing */
@@ -481,6 +484,79 @@ static void run_plug_sha256_compression_tests(void) {
 
     secp256k1_context_destroy(ctx);
     secp256k1_context_destroy(ctx_cloned);
+}
+
+/* Hashes the first block over and over instead of moving on. */
+static void sha256_transform_noadvance(uint32_t *s, const unsigned char *chunk, size_t blocks) {
+    size_t i;
+    for (i = 0; i < blocks; i++) {
+        secp256k1_sha256_transform(s, chunk, 1);
+    }
+}
+
+/* Drops the last block of a multi-block call. */
+static void sha256_transform_short(uint32_t *s, const unsigned char *chunk, size_t blocks) {
+    secp256k1_sha256_transform(s, chunk, blocks > 0 ? blocks - 1 : 0);
+}
+
+/* Starts from the IV instead of the state it was given. */
+static void sha256_transform_ivreset(uint32_t *s, const unsigned char *chunk, size_t blocks) {
+    secp256k1_sha256 h;
+    secp256k1_sha256_initialize(&h);
+    memcpy(s, h.s, sizeof(h.s));
+    secp256k1_sha256_transform(s, chunk, blocks);
+}
+
+/* Correct only on multiples of four blocks. */
+static void sha256_transform_batch4(uint32_t *s, const unsigned char *chunk, size_t blocks) {
+    secp256k1_sha256_transform(s, chunk, blocks - (blocks & 3));
+}
+
+/* Right digest, one bit off. */
+static void sha256_transform_corrupt(uint32_t *s, const unsigned char *chunk, size_t blocks) {
+    secp256k1_sha256_transform(s, chunk, blocks);
+    s[0] ^= 1;
+}
+
+#ifdef UINTPTR_MAX
+
+/* Wrong when input is 64-byte aligned, like a broken SIMD fast path. */
+static void sha256_transform_align64_fail(uint32_t *s, const unsigned char *chunk, size_t blocks) {
+    int aligned = ((uintptr_t)chunk % 64) == 0;
+    secp256k1_sha256_transform(s, chunk, blocks);
+    if (aligned) s[0] ^= 1;
+}
+
+/* Wrong when input is 32-byte aligned but not 64 */
+static void sha256_transform_align32_fail(uint32_t *s, const unsigned char *chunk, size_t blocks) {
+    int align32_not64 = (((uintptr_t)chunk % 32) == 0) && (((uintptr_t)chunk % 64) != 0);
+    secp256k1_sha256_transform(s, chunk, blocks);
+    if (align32_not64) {
+        s[0] ^= 1;
+    }
+}
+
+/* Wrong on any unaligned input. */
+static void sha256_transform_unaligned_fail(uint32_t *s, const unsigned char *chunk, size_t blocks) {
+    int aligned = ((uintptr_t)chunk % 64) == 0;
+    secp256k1_sha256_transform(s, chunk, blocks);
+    if (!aligned) s[0] ^= 1;
+}
+
+#endif /* UINTPTR_MAX */
+
+static void run_sha256_compression_smoke_test_tests(void) {
+    CHECK(secp256k1_sha256_smoke_test(sha256_transform_noadvance) == 0);
+    CHECK(secp256k1_sha256_smoke_test(sha256_transform_short) == 0);
+    CHECK(secp256k1_sha256_smoke_test(sha256_transform_ivreset) == 0);
+    CHECK(secp256k1_sha256_smoke_test(sha256_transform_batch4) == 0);
+    CHECK(secp256k1_sha256_smoke_test(sha256_transform_corrupt) == 0);
+#ifdef UINTPTR_MAX
+    CHECK(secp256k1_sha256_smoke_test(sha256_transform_align64_fail) == 0);
+    CHECK(secp256k1_sha256_smoke_test(sha256_transform_align32_fail) == 0);
+    CHECK(secp256k1_sha256_smoke_test(sha256_transform_unaligned_fail) == 0);
+#endif
+    CHECK(secp256k1_sha256_smoke_test(good_sha256_compression) == 1);
 }
 
 static void run_sha256_multi_block_compression_tests(void) {
@@ -3057,6 +3133,18 @@ static int fe_equal(const secp256k1_fe *a, const secp256k1_fe *b) {
     secp256k1_fe bn = *b;
     secp256k1_fe_normalize_weak(&an);
     return secp256k1_fe_equal(&an, &bn);
+}
+
+static void run_fe_equal_magnitude_boundaries(void) {
+    int i;
+    secp256k1_fe a, b;
+    for (i = 0; i < 100 * COUNT; ++i) {
+        testutil_random_fe(&a);
+        b = a;
+        testutil_random_fe_magnitude(&a, 1);
+        testutil_random_fe_magnitude(&b, 30);
+        CHECK(secp256k1_fe_equal(&a, &b));
+    }
 }
 
 static void run_field_convert(void) {
@@ -6856,7 +6944,7 @@ static void test_sort_helper(secp256k1_pubkey *pk, size_t *pk_order, size_t n_pk
     for (i = 0; i < n_pk; i++) {
         pk_test[i] = &pk[pk_order[i]];
     }
-    secp256k1_ec_pubkey_sort(CTX, pk_test, n_pk);
+    CHECK(secp256k1_ec_pubkey_sort(CTX, pk_test, n_pk) == 1);
     for (i = 0; i < n_pk; i++) {
         CHECK(secp256k1_memcmp_var(pk_test[i], &pk[i], sizeof(*pk_test[i])) == 0);
     }
@@ -6945,7 +7033,7 @@ static void test_sort(void) {
             testutil_random_pubkey_test(&pk[j]);
             pk_ptr[j] = &pk[j];
         }
-        secp256k1_ec_pubkey_sort(CTX, pk_ptr, 5);
+        CHECK(secp256k1_ec_pubkey_sort(CTX, pk_ptr, 5) == 1);
         for (j = 1; j < 5; j++) {
             CHECK(secp256k1_ec_pubkey_sort_cmp(&pk_ptr[j - 1], &pk_ptr[j], CTX) <= 0);
         }
@@ -7710,6 +7798,10 @@ static void run_ecdsa_wycheproof(void) {
 # include "modules/ellswift/tests_impl.h"
 #endif
 
+#ifdef ENABLE_MODULE_SILENTPAYMENTS
+# include "modules/silentpayments/tests_impl.h"
+#endif
+
 static void run_secp256k1_memczero_test(void) {
     unsigned char buf1[6] = {1, 2, 3, 4, 5, 6};
     unsigned char buf2[sizeof(buf1)];
@@ -7935,7 +8027,9 @@ static const struct tf_test_entry tests_general[] = {
     CASE(all_static_context_tests),
     CASE(deprecated_context_flags_test),
     CASE(scratch_tests),
+    CASE(invalid_scratch_space_tests),
     CASE(plug_sha256_compression_tests),
+    CASE(sha256_compression_smoke_test_tests),
     CASE(sha256_multi_block_compression_tests),
 };
 
@@ -7964,6 +8058,7 @@ static const struct tf_test_entry tests_scalar[] = {
 static const struct tf_test_entry tests_field[] = {
     CASE(field_half),
     CASE(field_misc),
+    CASE(fe_equal_magnitude_boundaries),
     CASE(field_convert),
     CASE(field_be32_overflow),
     CASE(fe_mul),
@@ -8048,6 +8143,9 @@ static const struct tf_test_module registry_modules[] = {
 #endif
 #ifdef ENABLE_MODULE_ELLSWIFT
     MAKE_TEST_MODULE(ellswift),
+#endif
+#ifdef ENABLE_MODULE_SILENTPAYMENTS
+    MAKE_TEST_MODULE(silentpayments),
 #endif
     MAKE_TEST_MODULE(utils),
 };

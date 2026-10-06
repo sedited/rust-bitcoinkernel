@@ -19,6 +19,13 @@ TRACEPOINT_SEMAPHORE(utxocache, add);
 TRACEPOINT_SEMAPHORE(utxocache, spent);
 TRACEPOINT_SEMAPHORE(utxocache, uncache);
 
+SaltedCoinsCacheHasher::SaltedCoinsCacheHasher(bool deterministic)
+    : m_hasher{
+          deterministic ? 0x8e819f2607a18de6 : FastRandomContext().rand64(),
+          deterministic ? 0xf4020d2e3983b0eb : FastRandomContext().rand64()}
+{
+}
+
 CoinsViewEmpty& CoinsViewEmpty::Get()
 {
     static CoinsViewEmpty instance;
@@ -35,7 +42,7 @@ std::optional<Coin> CCoinsViewCache::PeekCoin(const COutPoint& outpoint) const
 
 CCoinsViewCache::CCoinsViewCache(CCoinsView* in_base, bool deterministic) :
     CCoinsViewBacked(in_base), m_deterministic(deterministic),
-    cacheCoins(0, SaltedOutpointHasher(/*deterministic=*/deterministic), CCoinsMap::key_equal{}, &m_cache_coins_memory_resource)
+    cacheCoins(0, SaltedCoinsCacheHasher{/*deterministic=*/deterministic}, CCoinsMap::key_equal{}, &m_cache_coins_memory_resource)
 {
     m_sentinel.second.SelfRef(m_sentinel);
 }
@@ -113,9 +120,9 @@ void CCoinsViewCache::AddCoin(const COutPoint &outpoint, Coin&& coin, bool possi
            (bool)it->second.coin.IsCoinBase());
 }
 
-void CCoinsViewCache::EmplaceCoinInternalDANGER(COutPoint&& outpoint, Coin&& coin) {
+void CCoinsViewCache::EmplaceCoinInternalDANGER(const COutPoint& outpoint, Coin&& coin) {
     const auto mem_usage{coin.DynamicMemoryUsage()};
-    auto [it, inserted] = cacheCoins.try_emplace(std::move(outpoint), std::move(coin));
+    auto [it, inserted] = cacheCoins.try_emplace(outpoint, std::move(coin));
     if (inserted) {
         CCoinsCacheEntry::SetDirty(*it, m_sentinel);
         ++m_dirty_count;
@@ -331,7 +338,7 @@ void CCoinsViewCache::ReallocateCache()
     cacheCoins.~CCoinsMap();
     m_cache_coins_memory_resource.~CCoinsMapMemoryResource();
     ::new (&m_cache_coins_memory_resource) CCoinsMapMemoryResource{};
-    ::new (&cacheCoins) CCoinsMap{0, SaltedOutpointHasher{/*deterministic=*/m_deterministic}, CCoinsMap::key_equal{}, &m_cache_coins_memory_resource};
+    ::new (&cacheCoins) CCoinsMap{0, SaltedCoinsCacheHasher{/*deterministic=*/m_deterministic}, CCoinsMap::key_equal{}, &m_cache_coins_memory_resource};
 }
 
 void CCoinsViewCache::SanityCheck() const
@@ -376,7 +383,7 @@ CCoinsViewCache::ResetGuard CoinsViewOverlay::StartFetching(const CBlock& block 
         // Loop through the block inputs and set their prevouts in the queue.
         // Filter inputs that spend outputs created earlier in the same block. These outputs will be created
         // directly in the cache from the tx that creates them, so they will not be requested from a base view.
-        std::unordered_set<Txid, SaltedTxidHasher> earlier_txids;
+        std::unordered_set<Txid, SaltedCoinsCacheHasher> earlier_txids;
         earlier_txids.reserve(block.vtx.size());
         for (const auto& tx : block.vtx | std::views::drop(1)) {
             for (const auto& input : tx->vin) {

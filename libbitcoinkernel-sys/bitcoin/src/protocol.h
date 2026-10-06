@@ -310,8 +310,8 @@ inline const std::array ALL_NET_MESSAGE_TYPES{std::to_array<std::string>({
     NetMsgType::FEATURE,
 })};
 
-static constexpr size_t MAX_FEATUREID_LENGTH{80};
-static constexpr size_t MAX_FEATUREDATA_LENGTH{512};
+inline constexpr size_t MAX_FEATUREID_LENGTH{80};
+inline constexpr size_t MAX_FEATUREDATA_LENGTH{512};
 
 namespace NetMsgFeature {
 //inline constexpr std::string_view FOO{"BIP-FOO"};
@@ -364,6 +364,14 @@ std::vector<std::string> serviceFlagsToStr(uint64_t flags);
  * desired service flags (compatible with our new flags).
  */
 constexpr ServiceFlags SeedsServiceFlags() { return ServiceFlags(NODE_NETWORK | NODE_WITNESS); }
+
+/**
+ * Service flags we assume for addresses obtained from the DNS seeds and the
+ * fixed seeds, which don't come with service flags attached.
+ * BIP324 support can be safely assumed because the vast majority of listening nodes signals NODE_P2P_V2, and if the
+ * assumption is wrong for a given peer we simply reconnect using v1 transport.
+ */
+constexpr ServiceFlags SeedsAssumedServiceFlags() { return ServiceFlags(SeedsServiceFlags() | NODE_P2P_V2); }
 
 /**
  * Checks if a peer with the given service flags may be capable of having a
@@ -479,8 +487,8 @@ public:
 };
 
 /** getdata message type flags */
-const uint32_t MSG_WITNESS_FLAG = 1 << 30;
-const uint32_t MSG_TYPE_MASK = 0xffffffff >> 2;
+inline constexpr uint32_t MSG_WITNESS_FLAG = 1 << 30;
+inline constexpr uint32_t MSG_TYPE_MASK = 0xffffffff >> 2;
 
 /** getdata / inv message types.
  * These numbers are defined by the protocol. When adding a new value, be sure

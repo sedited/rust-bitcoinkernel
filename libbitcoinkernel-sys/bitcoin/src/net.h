@@ -56,49 +56,51 @@ class CScheduler;
 struct bilingual_str;
 
 /** Time after which to disconnect, after waiting for a ping response (or inactivity). */
-static constexpr std::chrono::minutes TIMEOUT_INTERVAL{20};
+inline constexpr std::chrono::minutes TIMEOUT_INTERVAL{20};
 /** Run the feeler connection loop once every 2 minutes. **/
-static constexpr auto FEELER_INTERVAL = 2min;
+inline constexpr auto FEELER_INTERVAL = 2min;
 /** Run the extra block-relay-only connection loop once every 5 minutes. **/
-static constexpr auto EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL = 5min;
+inline constexpr auto EXTRA_BLOCK_RELAY_ONLY_PEER_INTERVAL = 5min;
 /** Maximum length of incoming protocol messages (no message over 4 MB is currently acceptable). */
-static const unsigned int MAX_PROTOCOL_MESSAGE_LENGTH = 4 * 1000 * 1000;
+inline constexpr unsigned int MAX_PROTOCOL_MESSAGE_LENGTH = 4 * 1000 * 1000;
 /** Maximum length of the user agent string in `version` message */
-static const unsigned int MAX_SUBVERSION_LENGTH = 256;
+inline constexpr unsigned int MAX_SUBVERSION_LENGTH = 256;
 /** Maximum number of automatic outgoing nodes over which we'll relay everything (blocks, tx, addrs, etc) */
-static const int MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8;
+inline constexpr int MAX_OUTBOUND_FULL_RELAY_CONNECTIONS = 8;
 /** Maximum number of addnode outgoing nodes */
-static const int MAX_ADDNODE_CONNECTIONS = 8;
+inline constexpr int MAX_ADDNODE_CONNECTIONS = 8;
 /** Maximum number of block-relay-only outgoing connections */
-static const int MAX_BLOCK_RELAY_ONLY_CONNECTIONS = 2;
+inline constexpr int MAX_BLOCK_RELAY_ONLY_CONNECTIONS = 2;
 /** Maximum number of feeler connections */
-static const int MAX_FEELER_CONNECTIONS = 1;
+inline constexpr int MAX_FEELER_CONNECTIONS = 1;
 /** Maximum number of private broadcast connections */
-static constexpr size_t MAX_PRIVATE_BROADCAST_CONNECTIONS{64};
+inline constexpr size_t MAX_PRIVATE_BROADCAST_CONNECTIONS{64};
 /** -listen default */
-static const bool DEFAULT_LISTEN = true;
+inline constexpr bool DEFAULT_LISTEN = true;
 /** The maximum number of peer connections to maintain. */
-static const unsigned int DEFAULT_MAX_PEER_CONNECTIONS = 125;
+inline constexpr unsigned int DEFAULT_MAX_PEER_CONNECTIONS{200};
+/** Default percentage of inbound connection slots that tx-relaying peers can use */
+inline constexpr int DEFAULT_FULL_RELAY_INBOUND_PCT{50};
 /** The default for -maxuploadtarget. 0 = Unlimited */
-static const std::string DEFAULT_MAX_UPLOAD_TARGET{"0M"};
+inline const std::string DEFAULT_MAX_UPLOAD_TARGET{"0M"};
 /** Default for blocks only*/
-static const bool DEFAULT_BLOCKSONLY = false;
+inline constexpr bool DEFAULT_BLOCKSONLY = false;
 /** -peertimeout default */
-static const int64_t DEFAULT_PEER_CONNECT_TIMEOUT = 60;
+inline constexpr int64_t DEFAULT_PEER_CONNECT_TIMEOUT = 60;
 /** Default for -privatebroadcast. */
-static constexpr bool DEFAULT_PRIVATE_BROADCAST{false};
+inline constexpr bool DEFAULT_PRIVATE_BROADCAST{false};
 /** Number of file descriptors required for message capture **/
-static const int NUM_FDS_MESSAGE_CAPTURE = 1;
+inline constexpr int NUM_FDS_MESSAGE_CAPTURE = 1;
 /** Interval for ASMap Health Check **/
-static constexpr std::chrono::hours ASMAP_HEALTH_CHECK_INTERVAL{24};
+inline constexpr std::chrono::hours ASMAP_HEALTH_CHECK_INTERVAL{24};
 
-static constexpr bool DEFAULT_FORCEDNSSEED{false};
-static constexpr bool DEFAULT_DNSSEED{true};
-static constexpr bool DEFAULT_FIXEDSEEDS{true};
-static const size_t DEFAULT_MAXRECEIVEBUFFER = 5 * 1000;
-static const size_t DEFAULT_MAXSENDBUFFER    = 1 * 1000;
+inline constexpr bool DEFAULT_FORCEDNSSEED{false};
+inline constexpr bool DEFAULT_DNSSEED{true};
+inline constexpr bool DEFAULT_FIXEDSEEDS{true};
+inline constexpr size_t DEFAULT_MAXRECEIVEBUFFER = 5 * 1000;
+inline constexpr size_t DEFAULT_MAXSENDBUFFER    = 1 * 1000;
 
-static constexpr bool DEFAULT_V2_TRANSPORT{true};
+inline constexpr bool DEFAULT_V2_TRANSPORT{true};
 
 typedef int64_t NodeId;
 
@@ -1086,7 +1088,8 @@ public:
     struct Options
     {
         ServiceFlags m_local_services = NODE_NONE;
-        int m_max_automatic_connections = 0;
+        int m_max_automatic_connections = DEFAULT_MAX_PEER_CONNECTIONS;
+        int m_full_relay_inbound_percent = DEFAULT_FULL_RELAY_INBOUND_PCT;
         CClientUIInterface* uiInterface = nullptr;
         NetEventsInterface* m_msgproc = nullptr;
         BanMan* m_banman = nullptr;
@@ -1122,6 +1125,7 @@ public:
         m_max_outbound_block_relay = std::min(MAX_BLOCK_RELAY_ONLY_CONNECTIONS, m_max_automatic_connections - m_max_outbound_full_relay);
         m_max_automatic_outbound = m_max_outbound_full_relay + m_max_outbound_block_relay + m_max_feeler;
         m_max_inbound = std::max(0, m_max_automatic_connections - m_max_automatic_outbound);
+        m_max_inbound_full_relay = std::max(0, static_cast<int>(connOptions.m_full_relay_inbound_percent / 100.0 * m_max_inbound));
         m_use_addrman_outgoing = connOptions.m_use_addrman_outgoing;
         m_client_interface = connOptions.uiInterface;
         m_banman = connOptions.m_banman;
@@ -1343,6 +1347,16 @@ public:
     int GetExtraFullOutboundCount() const EXCLUSIVE_LOCKS_REQUIRED(!m_nodes_mutex);
     // Count the number of block-relay-only peers we have over our limit.
     int GetExtraBlockRelayCount() const EXCLUSIVE_LOCKS_REQUIRED(!m_nodes_mutex);
+    /**
+     * If we are at capacity for inbound tx-relay peers, attempt to evict one.
+     * @param[in]   protect_peer      NodeId of a peer we want to protect
+     * @return      bool              Returns true if successful (either there is
+     *                                no need for eviction, or a peer was evicted).
+     *                                Returns false, if we are full but couldn't find
+     *                                a peer to evict (all eligible peers are protected)
+     *                                so that the caller can deal with this.
+     */
+    bool EvictTxPeerIfFull(std::optional<NodeId> protect_peer = std::nullopt) EXCLUSIVE_LOCKS_REQUIRED(!m_nodes_mutex);
 
     bool AddNode(const AddedNodeParams& add) EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
     bool RemoveAddedNode(std::string_view node) EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex);
@@ -1541,7 +1555,13 @@ private:
      */
     bool AlreadyConnectedToAddress(const CNetAddr& addr) const EXCLUSIVE_LOCKS_REQUIRED(!m_nodes_mutex);
 
-    bool AttemptToEvictConnection() EXCLUSIVE_LOCKS_REQUIRED(!m_nodes_mutex);
+    /**
+     * Try to find an inbound connection to evict.
+     * @param[in] evict_tx_relay_peer_only  Whether to only select full relay peers for eviction
+     * @param[in] protect_peer              Protect peer with node id
+     * @return                              True if a node was marked for disconnect
+     */
+    bool AttemptToEvictConnection(bool evict_tx_relay_peer_only, std::optional<NodeId> protect_peer = std::nullopt) EXCLUSIVE_LOCKS_REQUIRED(!m_nodes_mutex);
 
     /**
      * Open a new P2P connection.
@@ -1714,6 +1734,7 @@ private:
     int m_max_feeler{MAX_FEELER_CONNECTIONS};
     int m_max_automatic_outbound;
     int m_max_inbound;
+    int m_max_inbound_full_relay;
 
     bool m_use_addrman_outgoing;
     CClientUIInterface* m_client_interface;

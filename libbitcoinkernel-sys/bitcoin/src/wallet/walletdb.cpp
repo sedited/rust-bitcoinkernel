@@ -52,6 +52,7 @@ const std::string POOL{"pool"};
 const std::string PURPOSE{"purpose"};
 const std::string SETTINGS{"settings"};
 const std::string TX{"tx"};
+const std::string WTX_VARIANT{"wtxvariant"};
 const std::string VERSION{"version"};
 const std::string WALLETDESCRIPTOR{"walletdescriptor"};
 const std::string WALLETDESCRIPTORCACHE{"walletdescriptorcache"};
@@ -97,12 +98,24 @@ bool WalletBatch::ErasePurpose(const std::string& strAddress)
 
 bool WalletBatch::WriteTx(const CWalletTx& wtx)
 {
-    return WriteIC(std::make_pair(DBKeys::TX, wtx.GetHash()), wtx);
+    const Txid txid = wtx.GetHash();
+    // Persist all witness variants. Including the canonical one
+    for (const auto& [wtxid, tx] : wtx.GetTxs()) {
+        if (!WriteWtxVariant(txid, tx)) return false;
+    }
+    return WriteIC(std::make_pair(DBKeys::TX, txid), wtx);
 }
 
 bool WalletBatch::EraseTx(Txid hash)
 {
-    return EraseIC(std::make_pair(DBKeys::TX, hash.ToUint256()));
+    if (!EraseIC(std::make_pair(DBKeys::TX, hash.ToUint256()))) return false;
+    // Drop all witness variant records too, so none are left dangling
+    return m_batch->ErasePrefix(DataStream() << DBKeys::WTX_VARIANT << hash);
+}
+
+bool WalletBatch::WriteWtxVariant(const Txid& txid, const CTransactionRef& tx)
+{
+    return WriteIC(std::make_pair(DBKeys::WTX_VARIANT, std::make_pair(txid, tx->GetWitnessHash())), TX_WITH_WITNESS(tx));
 }
 
 bool WalletBatch::WriteKeyMetadata(const CKeyMetadata& meta, const CPubKey& pubkey, const bool overwrite)
@@ -164,14 +177,6 @@ bool WalletBatch::WriteWatchOnly(const CScript &dest, const CKeyMetadata& keyMet
         return false;
     }
     return WriteIC(std::make_pair(DBKeys::WATCHS, dest), uint8_t{'1'});
-}
-
-bool WalletBatch::EraseWatchOnly(const CScript &dest)
-{
-    if (!EraseIC(std::make_pair(DBKeys::WATCHMETA, dest))) {
-        return false;
-    }
-    return EraseIC(std::make_pair(DBKeys::WATCHS, dest));
 }
 
 bool WalletBatch::WriteBestBlock(const CBlockLocator& locator)
@@ -622,20 +627,20 @@ static DBErrors LoadLegacyWalletRecords(CWallet* pwallet, DatabaseBatch& batch, 
                     strErr = "Error reading wallet database: keymeta found with unexpected path";
                     return DBErrors::NONCRITICAL_ERROR;
                 }
-                if (path[0] != 0x80000000) {
+                if (path[0] != BIP32_HARDENED_FLAG) {
                     strErr = strprintf("Unexpected path index of 0x%08x (expected 0x80000000) for the element at index 0", path[0]);
                     return DBErrors::NONCRITICAL_ERROR;
                 }
-                if (path[1] != 0x80000000 && path[1] != (1 | 0x80000000)) {
+                if (path[1] != BIP32_HARDENED_FLAG && path[1] != (1 | BIP32_HARDENED_FLAG)) {
                     strErr = strprintf("Unexpected path index of 0x%08x (expected 0x80000000 or 0x80000001) for the element at index 1", path[1]);
                     return DBErrors::NONCRITICAL_ERROR;
                 }
-                if ((path[2] & 0x80000000) == 0) {
+                if ((path[2] & BIP32_HARDENED_FLAG) == 0) {
                     strErr = strprintf("Unexpected path index of 0x%08x (expected to be greater than or equal to 0x80000000)", path[2]);
                     return DBErrors::NONCRITICAL_ERROR;
                 }
-                internal = path[1] == (1 | 0x80000000);
-                index = path[2] & ~0x80000000;
+                internal = path[1] == (1 | BIP32_HARDENED_FLAG);
+                index = path[2] & ~BIP32_HARDENED_FLAG;
             }
 
             // Insert a new CHDChain, or get the one that already exists
@@ -667,7 +672,7 @@ static DBErrors LoadLegacyWalletRecords(CWallet* pwallet, DatabaseBatch& batch, 
                 }
             }
         } else {
-            pwallet->WalletLogPrintf("Inactive HD Chains found but no Legacy ScriptPubKeyMan\n");
+            pwallet->WalletLogPrintf("Inactive HD chains found but no LegacyDataSPKM\n");
             result = DBErrors::CORRUPT;
         }
     }
@@ -980,6 +985,37 @@ static DBErrors LoadAddressBookRecords(CWallet* pwallet, DatabaseBatch& batch) E
     return result;
 }
 
+static std::map<Wtxid, CTransactionRef> ReadWtxVariants(DatabaseBatch& batch, const Txid& txid)
+{
+    std::map<Wtxid, CTransactionRef> variants;
+
+    DataStream prefix;
+    prefix << DBKeys::WTX_VARIANT << txid;
+    std::unique_ptr<DatabaseCursor> cursor = batch.GetNewPrefixCursor(prefix);
+    if (!cursor) {
+        throw std::runtime_error(strprintf("Error getting database cursor for '%s' records", DBKeys::WTX_VARIANT));
+    }
+
+    DataStream key;
+    DataStream value;
+    while (true) {
+        DatabaseCursor::Status status = cursor->Next(key, value);
+        if (status == DatabaseCursor::Status::DONE) break;
+        if (status == DatabaseCursor::Status::FAIL) {
+            throw std::runtime_error(strprintf("Error reading '%s' record", DBKeys::WTX_VARIANT));
+        }
+        CTransactionRef tx;
+        value >> TX_WITH_WITNESS(tx);
+        if (tx->GetHash() != txid) {
+            throw std::runtime_error(strprintf("Corrupted witness variant, tx hash differs"));
+        }
+        if (!variants.emplace(tx->GetWitnessHash(), std::move(tx)).second) {
+            throw std::runtime_error(strprintf("Duplicate witness variant"));
+        }
+    }
+    return variants;
+}
+
 static DBErrors LoadTxRecords(CWallet* pwallet, DatabaseBatch& batch, bool& any_unordered) EXCLUSIVE_LOCKS_REQUIRED(pwallet->cs_wallet)
 {
     AssertLockHeld(pwallet->cs_wallet);
@@ -988,31 +1024,27 @@ static DBErrors LoadTxRecords(CWallet* pwallet, DatabaseBatch& batch, bool& any_
     // Load tx record
     any_unordered = false;
     LoadResult tx_res = LoadRecords(pwallet, batch, DBKeys::TX,
-        [&any_unordered] (CWallet* pwallet, DataStream& key, DataStream& value, std::string& err) EXCLUSIVE_LOCKS_REQUIRED(pwallet->cs_wallet) {
+        [&any_unordered, &batch] (CWallet* pwallet, DataStream& key, DataStream& value, std::string& err) EXCLUSIVE_LOCKS_REQUIRED(pwallet->cs_wallet) {
         DBErrors result = DBErrors::LOAD_OK;
         Txid hash;
         key >> hash;
-        // LoadToWallet call below creates a new CWalletTx that fill_wtx
-        // callback fills with transaction metadata.
-        auto fill_wtx = [&](CWalletTx& wtx, bool new_tx) {
-            if(!new_tx) {
-                // There's some corruption here since the tx we just tried to load was already in the wallet.
-                err = "Error: Corrupt transaction found. This can be fixed by removing transactions from wallet and rescanning.";
-                result = DBErrors::CORRUPT;
-                return false;
+        try {
+            CWalletTx wtx{deserialize, value, ReadWtxVariants(batch, hash)};
+            if (wtx.GetHash() != hash) {
+                result = std::max(result, DBErrors::NEED_RESCAN);
             }
-            value >> wtx;
-            if (wtx.GetHash() != hash)
-                return false;
 
-            if (wtx.nOrderPos == -1)
+            if (wtx.nOrderPos == -1) {
                 any_unordered = true;
+            }
 
-            return true;
-        };
-        if (!pwallet->LoadToWallet(hash, fill_wtx)) {
-            // Use std::max as fill_wtx may have already set result to CORRUPT
-            result = std::max(result, DBErrors::NEED_RESCAN);
+            if (!pwallet->LoadToWallet(std::move(wtx))) {
+                err = "Error: Corrupt transaction found. This can be fixed by removing transactions from wallet and rescanning.";
+                return DBErrors::CORRUPT;
+            }
+        } catch (const std::exception& e) {
+            err = strprintf("Error: Corrupt tx record found: %s" ,e.what());
+            return DBErrors::CORRUPT;
         }
         return result;
     });
