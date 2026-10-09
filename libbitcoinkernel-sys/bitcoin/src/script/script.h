@@ -26,43 +26,51 @@
 #include <vector>
 
 // Maximum number of bytes pushable to the stack
-static const unsigned int MAX_SCRIPT_ELEMENT_SIZE = 520;
+inline constexpr unsigned int MAX_SCRIPT_ELEMENT_SIZE = 520;
 
 // Maximum number of non-push operations per script
-static const int MAX_OPS_PER_SCRIPT = 201;
+inline constexpr int MAX_OPS_PER_SCRIPT = 201;
 
 // Maximum number of public keys per multisig
-static const int MAX_PUBKEYS_PER_MULTISIG = 20;
+inline constexpr int MAX_PUBKEYS_PER_MULTISIG = 20;
 
 /** The limit of keys in OP_CHECKSIGADD-based scripts. It is due to the stack limit in BIP342. */
-static constexpr unsigned int MAX_PUBKEYS_PER_MULTI_A = 999;
+inline constexpr unsigned int MAX_PUBKEYS_PER_MULTI_A = 999;
 
 // Maximum script length in bytes
-static const int MAX_SCRIPT_SIZE = 10000;
+inline constexpr int MAX_SCRIPT_SIZE{10'000};
 
 // Maximum number of values on script interpreter stack
-static const int MAX_STACK_SIZE = 1000;
+inline constexpr int MAX_STACK_SIZE = 1000;
+
+// Maximum number of values on script interpreter stack (Tapscript v2)
+static constexpr int MAX_TAPSCRIPT_V2_STACK_SIZE = 32'768;
+
+// BIP 441 increases the individual stack element limit to 4,000,000 bytes
+// and limits all stack and altstack elements to 8,000,000 bytes in total.
+static constexpr int MAX_TAPSCRIPT_V2_STACK_ELEMENT_SIZE = 4'000'000;
+static constexpr int MAX_TAPSCRIPT_V2_TOTAL_STACK_SIZE = 2 * MAX_TAPSCRIPT_V2_STACK_ELEMENT_SIZE;
 
 // Threshold for nLockTime: below this value it is interpreted as block number,
 // otherwise as UNIX timestamp.
-static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20 1985 UTC
+inline constexpr unsigned int LOCKTIME_THRESHOLD{500'000'000}; // Tue Nov  5 00:53:20 1985 UTC
 
 // Maximum nLockTime. Since a lock time indicates the last invalid timestamp, a
 // transaction with this lock time will never be valid unless lock time
 // checking is disabled (by setting all input sequence numbers to
 // SEQUENCE_FINAL).
-static const uint32_t LOCKTIME_MAX = 0xFFFFFFFFU;
+inline constexpr uint32_t LOCKTIME_MAX = 0xFFFFFFFFU;
 
 // Tag for input annex. If there are at least two witness elements for a transaction input,
 // and the first byte of the last element is 0x50, this last element is called annex, and
 // has meanings independent of the script
-static constexpr unsigned int ANNEX_TAG = 0x50;
+inline constexpr unsigned int ANNEX_TAG = 0x50;
 
 // Validation weight per passing signature (Tapscript only, see BIP 342).
-static constexpr int64_t VALIDATION_WEIGHT_PER_SIGOP_PASSED{50};
+inline constexpr int64_t VALIDATION_WEIGHT_PER_SIGOP_PASSED{50};
 
 // How much weight budget is added to the witness size (Tapscript only, see BIP 342).
-static constexpr int64_t VALIDATION_WEIGHT_OFFSET{50};
+inline constexpr int64_t VALIDATION_WEIGHT_OFFSET{50};
 
 template <typename T>
 std::vector<unsigned char> ToByteVector(const T& in)
@@ -214,9 +222,33 @@ enum opcodetype
 };
 
 // Maximum value that an opcode can be
-static const unsigned int MAX_OPCODE = OP_NOP10;
+inline constexpr unsigned int MAX_OPCODE = OP_NOP10;
 
 std::string GetOpName(opcodetype opcode);
+
+enum class SigVersion
+{
+    BASE = 0,        //!< Bare scripts and BIP16 P2SH-wrapped redeemscripts
+    WITNESS_V0 = 1,  //!< Witness v0 (P2WPKH and P2WSH); see BIP 141
+    TAPROOT = 2,     //!< Witness v1 with 32-byte program, not BIP16 P2SH-wrapped, key path spending; see BIP 341
+    TAPSCRIPT = 3,   //!< Witness v1 with 32-byte program, not BIP16 P2SH-wrapped, script path spending, leaf version 0xc0; see BIP 342
+    TAPSCRIPT_V2 = 4,   //!< Witness v1 with 32-byte program, not BIP16 P2SH-wrapped, script path spending, leaf version 0xc2; see BIP 441
+};
+
+/** Whether the signature version executes a Taproot script path. */
+constexpr bool IsTapscript(SigVersion sigversion)
+{
+    switch (sigversion) {
+    case SigVersion::BASE:
+    case SigVersion::WITNESS_V0:
+    case SigVersion::TAPROOT:
+        return false;
+    case SigVersion::TAPSCRIPT:
+    case SigVersion::TAPSCRIPT_V2:
+        return true;
+    }
+    assert(false);
+}
 
 class scriptnum_error : public std::runtime_error
 {
@@ -241,7 +273,7 @@ public:
         m_value = n;
     }
 
-    static const size_t nDefaultMaxNumSize = 4;
+    static constexpr size_t nDefaultMaxNumSize{4};
 
     explicit CScriptNum(const std::vector<unsigned char>& vch, bool fRequireMinimal,
                         const size_t nMaxNumSize = nDefaultMaxNumSize)
@@ -601,8 +633,8 @@ public:
     explicit CScriptID(const uint160& in) : BaseHash(in) {}
 };
 
-/** Test for OP_SUCCESSx opcodes as defined by BIP342. */
-bool IsOpSuccess(const opcodetype& opcode);
+/** Test for OP_SUCCESSx opcodes in the given Tapscript version. */
+bool IsOpSuccess(const opcodetype& opcode, SigVersion sigversion);
 
 bool CheckMinimalPush(const std::vector<unsigned char>& data, opcodetype opcode);
 

@@ -158,9 +158,9 @@ use libbitcoinkernel_sys::{
     btck_ScriptVerificationFlags_ALL, btck_ScriptVerificationFlags_CHECKLOCKTIMEVERIFY,
     btck_ScriptVerificationFlags_CHECKSEQUENCEVERIFY, btck_ScriptVerificationFlags_DERSIG,
     btck_ScriptVerificationFlags_NONE, btck_ScriptVerificationFlags_NULLDUMMY,
-    btck_ScriptVerificationFlags_P2SH, btck_ScriptVerificationFlags_TAPROOT,
-    btck_ScriptVerificationFlags_WITNESS, btck_ScriptVerifyStatus,
-    btck_ScriptVerifyStatus_ERROR_INVALID_FLAGS_COMBINATION,
+    btck_ScriptVerificationFlags_P2SH, btck_ScriptVerificationFlags_SCRIPT_RESTORATION,
+    btck_ScriptVerificationFlags_TAPROOT, btck_ScriptVerificationFlags_WITNESS,
+    btck_ScriptVerifyStatus, btck_ScriptVerifyStatus_ERROR_INVALID_FLAGS_COMBINATION,
     btck_ScriptVerifyStatus_ERROR_SPENT_OUTPUTS_REQUIRED, btck_ScriptVerifyStatus_OK,
     btck_TransactionOutput, btck_precomputed_transaction_data_copy,
     btck_precomputed_transaction_data_create, btck_precomputed_transaction_data_destroy,
@@ -199,6 +199,10 @@ pub const VERIFY_WITNESS: ScriptVerificationFlags = btck_ScriptVerificationFlags
 
 /// Validate Taproot spends (BIP 341/342). Requires spent outputs.
 pub const VERIFY_TAPROOT: ScriptVerificationFlags = btck_ScriptVerificationFlags_TAPROOT;
+
+/// Enable BIP 440/441 script restoration and tapscript v2. Requires Taproot.
+pub const VERIFY_SCRIPT_RESTORATION: ScriptVerificationFlags =
+    btck_ScriptVerificationFlags_SCRIPT_RESTORATION;
 
 /// All consensus rules.
 pub const VERIFY_ALL: ScriptVerificationFlags = btck_ScriptVerificationFlags_ALL;
@@ -566,6 +570,10 @@ mod tests {
         );
         assert_eq!(VERIFY_WITNESS, btck_ScriptVerificationFlags_WITNESS);
         assert_eq!(VERIFY_TAPROOT, btck_ScriptVerificationFlags_TAPROOT);
+        assert_eq!(
+            VERIFY_SCRIPT_RESTORATION,
+            btck_ScriptVerificationFlags_SCRIPT_RESTORATION
+        );
         assert_eq!(VERIFY_ALL, btck_ScriptVerificationFlags_ALL);
     }
 
@@ -601,6 +609,7 @@ mod tests {
         assert!((VERIFY_ALL & VERIFY_CHECKSEQUENCEVERIFY) != 0);
         assert!((VERIFY_ALL & VERIFY_WITNESS) != 0);
         assert!((VERIFY_ALL & VERIFY_TAPROOT) != 0);
+        assert!((VERIFY_ALL & VERIFY_SCRIPT_RESTORATION) != 0);
     }
 
     #[test]

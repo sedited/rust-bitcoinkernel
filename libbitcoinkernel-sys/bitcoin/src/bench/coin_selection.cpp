@@ -14,7 +14,6 @@
 #include <util/check.h>
 #include <util/result.h>
 #include <wallet/coinselection.h>
-#include <wallet/db.h>
 #include <wallet/spend.h>
 #include <wallet/sqlite.h>
 #include <wallet/transaction.h>
@@ -76,7 +75,7 @@ static void CoinSelection(benchmark::Bench& bench)
     // Create coins from the amounts assigning them various output types
     wallet::CoinsResult available_coins;
     for (const auto& wtx : wtxs) {
-        const auto txout = wtx->tx->vout.at(0);
+        const auto txout = wtx->GetTx()->vout.at(0);
         OutputType outtype;
         int input_bytes;
         int y{det_rand.randrange(100)};

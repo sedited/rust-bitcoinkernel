@@ -1,26 +1,18 @@
 (use-modules (gnu packages)
              ((gnu packages bash) #:select (bash-minimal))
-             (gnu packages bison)
              ((gnu packages cmake) #:select (cmake-minimal))
              (gnu packages commencement)
-             ((gnu packages compression) #:select (gzip xz zip))
+             ((gnu packages compression) #:select (gzip))
              (gnu packages cross-base)
-             (gnu packages gawk)
              (gnu packages gcc)
-             ((gnu packages installers) #:select (nsis-x86_64))
              ((gnu packages linux) #:select (linux-libre-headers-6.1))
              (gnu packages llvm)
              (gnu packages mingw)
-             (gnu packages ninja)
-             (gnu packages pkg-config)
-             ((gnu packages python) #:select (python-minimal))
-             ((gnu packages python-xyz) #:select (python-lief))
              ((gnu packages version-control) #:select (git-minimal))
              (guix build-system trivial)
              (guix download)
              (guix gexp)
              (guix git-download)
-             ((guix licenses) #:prefix license:)
              (guix packages)
              ((guix utils) #:select (substitute-keyword-arguments)))
 
@@ -135,13 +127,41 @@ desirable for building Bitcoin Core release binaries."
   (package-with-extra-patches mingw-w64-x86_64-winpthreads
     (search-our-patches "winpthreads-remap-guix-store.patch")))
 
+(define (mingw-force-ucrt mingw)
+  (package
+    (inherit mingw) ;; 13.0.0
+    (name (string-append (package-name mingw) "-ucrt"))
+    (arguments
+     (substitute-keyword-arguments (package-arguments mingw)
+       ((#:configure-flags flags)
+        #~(map (lambda (flag)
+                 (if (string-prefix? "--with-default-msvcrt" flag)
+                     "--with-default-msvcrt=ucrt"
+                     flag))
+               #$flags))))))
+
+(define (make-mingw-w64-ucrt machine xgcc)
+  "Return a UCRT variant of mingw-w64 for targeting MACHINE using XGCC cross-compiler."
+  (let ((base-mingw-winpthreads
+         (make-mingw-w64 machine
+                         #:xgcc xgcc
+                         #:with-winpthreads? #t))
+        (base-mingw-sans-winpthreads
+         (make-mingw-w64 machine
+                         #:xgcc xgcc)))
+    (mingw-force-ucrt
+     (package
+       (inherit base-mingw-winpthreads)
+       (native-inputs
+        (modify-inputs (package-native-inputs base-mingw-winpthreads)
+          (replace "xlibc" (mingw-force-ucrt base-mingw-sans-winpthreads))))))))
+
 (define (make-mingw-pthreads-cross-toolchain target)
   "Create a cross-compilation toolchain package for TARGET"
   (let* ((xbinutils (binutils-mingw-patches (base-binutils target)))
          (machine (substring target 0 (string-index target #\-)))
-         (pthreads-xlibc (winpthreads-patches (make-mingw-w64 machine
-                                         #:xgcc (cross-gcc target #:xgcc base-gcc)
-                                         #:with-winpthreads? #t)))
+         (pthreads-xlibc (winpthreads-patches (make-mingw-w64-ucrt machine
+                                                                   (cross-gcc target #:xgcc base-gcc))))
          (pthreads-xgcc (cross-gcc target
                                     #:xgcc mingw-w64-base-gcc
                                     #:xbinutils xbinutils
@@ -171,14 +191,18 @@ chain for " target " development."))
     (arguments
       (substitute-keyword-arguments (package-arguments base-gcc)
         ((#:configure-flags flags)
-          `(append ,flags
+          #~(append #$flags
             ;; https://gcc.gnu.org/install/configure.html
-            (list "--enable-threads=posix",
-                  "--enable-default-ssp=yes",
-                  "--enable-host-bind-now=yes",
-                  "--disable-gcov",
-                  "--disable-libgomp",
-                  building-on)))))))
+            (list "--enable-default-ssp=yes"
+                  "--enable-gprofng=no"
+                  "--enable-host-bind-now=yes"
+                  "--enable-threads=posix"
+                  "--disable-gcov"
+                  "--disable-libgomp"
+                  "--disable-libsanitizer"
+                  "--disable-lto"
+                  "--disable-nls"
+                  #$building-on)))))))
 
 (define-public linux-base-gcc
   (package
@@ -186,22 +210,25 @@ chain for " target " development."))
     (arguments
       (substitute-keyword-arguments (package-arguments base-gcc)
         ((#:configure-flags flags)
-          `(append ,flags
+           #~(append #$flags
             ;; https://gcc.gnu.org/install/configure.html
-            (list "--enable-initfini-array=yes",
-                  "--enable-default-ssp=yes",
-                  "--enable-default-pie=yes",
-                  "--enable-host-bind-now=yes",
-                  "--enable-standard-branch-protection=yes",
-                  "--enable-cet=yes",
-                  "--enable-gprofng=no",
-                  "--disable-gcov",
-                  "--disable-libgomp",
-                  "--disable-libquadmath",
-                  "--disable-libsanitizer",
-                  building-on)))
+            (list "--enable-cet=yes"
+                  "--enable-default-ssp=yes"
+                  "--enable-default-pie=yes"
+                  "--enable-gprofng=no"
+                  "--enable-host-bind-now=yes"
+                  "--enable-initfini-array=yes"
+                  "--enable-standard-branch-protection=yes"
+                  "--disable-gcov"
+                  "--disable-libgomp"
+                  "--disable-libquadmath"
+                  "--disable-libsanitizer"
+                  "--disable-lto"
+                  "--disable-nls"
+                  "--disable-tm-clone-registry"
+                  #$building-on)))
         ((#:phases phases)
-          `(modify-phases ,phases
+          #~(modify-phases #$phases
             ;; Given a XGCC package, return a modified package that replace each instance of
             ;; -rpath in the default system spec that's inserted by Guix with -rpath-link
             (add-after 'pre-configure 'replace-rpath-with-rpath-link
@@ -215,7 +242,7 @@ chain for " target " development."))
 (define-public glibc-2.31
   (let ((commit "28eb5caf895ced5d895cb02757e109004a2d33e5"))
   (package
-    (inherit glibc) ;; 2.39
+    (inherit glibc) ;; 2.41
     (version "2.31")
     (source (origin
               (method git-fetch)
@@ -233,12 +260,13 @@ chain for " target " development."))
         ((#:configure-flags flags)
           `(append ,flags
             ;; https://www.gnu.org/software/libc/manual/html_node/Configuring-and-compiling.html
-            (list "--enable-stack-protector=all",
+            (list "--enable-bind-now",
                   "--enable-cet",
-                  "--enable-bind-now",
-                  "--disable-werror",
-                  "--disable-timezone-tools",
+                  "--enable-kernel=3.17.0",
+                  "--enable-stack-protector=all",
                   "--disable-profile",
+                  "--disable-timezone-tools",
+                  "--disable-werror",
                   building-on)))
     ((#:phases phases)
         `(modify-phases ,phases
@@ -262,40 +290,28 @@ chain for " target " development."))
         coreutils-minimal
         ;; File(system) inspection
         grep
-        diffutils
         findutils
         ;; File transformation
         patch
-        gawk
         sed
         ;; Compression and archiving
         tar
         gzip
-        xz
         ;; Build tools
-        gcc-toolchain-14
         cmake-minimal
         gnu-make
-        ninja
-        ;; Scripting
-        python-minimal ;; (3.11)
         ;; Git
-        git-minimal
-        ;; Tests
-        python-lief)
+        git-minimal)
   (let ((target (getenv "HOST")))
     (cond ((string-suffix? "-mingw32" target)
-           (list (make-mingw-pthreads-cross-toolchain "x86_64-w64-mingw32")
-                 nsis-x86_64
-                 zip))
+           (list gcc-toolchain-14
+                 (make-mingw-pthreads-cross-toolchain target)))
           ((string-contains target "-linux-")
-           (list bison
-                 pkg-config
+           (list gcc-toolchain-14
                  (list gcc-toolchain-14 "static")
                  (make-bitcoin-cross-toolchain target)))
           ((string-contains target "darwin")
            (list clang-toolchain-19
-                 lld-19
-                 (make-lld-wrapper lld-19 #:lld-as-ld? #t)
-                 zip))
+                 libcxx ;; 19.1.7
+                 lld-19))
           (else '())))))

@@ -72,7 +72,8 @@ PSBTAnalysis AnalyzePSBT(PartiallySignedTransaction psbtx)
 
             // Figure out what is missing
             SignatureData outdata;
-            bool complete = SignPSBTInput(DUMMY_SIGNING_PROVIDER, psbtx, i, &txdata, /*options=*/{}, &outdata) == PSBTError::OK;
+            const auto sign_result = SignPSBTInput(DUMMY_SIGNING_PROVIDER, psbtx, i, &txdata, /*options*/{}, &outdata);
+            bool complete = sign_result.has_value();
 
             // Things are missing
             if (!complete) {
@@ -103,6 +104,11 @@ PSBTAnalysis AnalyzePSBT(PartiallySignedTransaction psbtx)
     }
     assert(result.next > PSBTRole::CREATOR);
 
+    if (result.next == PSBTRole::EXTRACTOR && !PSBTInputsSignedAndVerified(psbtx, txdata)) {
+        result.SetInvalid("PSBT is not valid. Finalized transaction exceeds the varops budget");
+        return result;
+    }
+
     if (calc_fee) {
         // Get the output amount
         CAmount out_amt = std::accumulate(psbtx.outputs.begin(), psbtx.outputs.end(), CAmount(0),
@@ -130,7 +136,8 @@ PSBTAnalysis AnalyzePSBT(PartiallySignedTransaction psbtx)
             PSBTInput& input = psbtx.inputs[i];
             Coin newcoin;
 
-            if (SignPSBTInput(DUMMY_SIGNING_PROVIDER, psbtx, i, nullptr, /*options=*/{}) != PSBTError::OK || !input.GetUTXO(newcoin.out)) {
+            const auto sign_result = SignPSBTInput(DUMMY_SIGNING_PROVIDER, psbtx, i, nullptr, /*options=*/{});
+            if (!sign_result.has_value() || !input.GetUTXO(newcoin.out)) {
                 success = false;
                 break;
             } else {

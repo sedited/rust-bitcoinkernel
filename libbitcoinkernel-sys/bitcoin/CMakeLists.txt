@@ -27,7 +27,7 @@ get_directory_property(precious_variables CACHE_VARIABLES)
 # Project / Package metadata
 #=============================
 set(CLIENT_NAME "Bitcoin Core")
-set(CLIENT_VERSION_MAJOR 31)
+set(CLIENT_VERSION_MAJOR 32)
 set(CLIENT_VERSION_MINOR 99)
 set(CLIENT_VERSION_BUILD 0)
 set(CLIENT_VERSION_RC 0)
@@ -330,10 +330,6 @@ if(WIN32)
       /Zc:__cplusplus
       /sdl
     )
-    target_link_options(core_interface INTERFACE
-      # We embed our own manifests.
-      /MANIFEST:NO
-    )
     # Improve parallelism in MSBuild.
     # See: https://devblogs.microsoft.com/cppblog/improved-parallelism-in-msbuild/.
     list(APPEND CMAKE_VS_GLOBALS "UseMultiToolTask=true")
@@ -375,7 +371,6 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SIZEOF_VOID_P EQUAL 4)
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-  target_compile_definitions(core_interface INTERFACE OBJC_OLD_DISPATCH_PROTOTYPES=0)
   # These flags are specific to ld64, and may cause issues with other linkers.
   # For example: GNU ld will interpret -dead_strip as -de and then try and use
   # "ad_strip" as the symbol for the entry point.
@@ -471,7 +466,6 @@ if(MSVC)
   try_append_cxx_flags("/wd4805" TARGET warn_interface SKIP_LINK)
   target_compile_definitions(warn_interface INTERFACE
     _CRT_SECURE_NO_WARNINGS
-    _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
   )
 else()
   try_append_cxx_flags("-Wall" TARGET warn_interface SKIP_LINK)
@@ -601,6 +595,7 @@ endif()
 
 if(REDUCE_EXPORTS)
   set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+  set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
   try_append_linker_flag("-Wl,--exclude-libs,ALL" TARGET core_interface)
   try_append_linker_flag("-Wl,-no_exported_symbols" VAR CMAKE_EXE_LINKER_FLAGS)
 endif()

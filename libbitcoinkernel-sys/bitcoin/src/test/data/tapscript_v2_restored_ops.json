@@ -1,0 +1,216 @@
+[
+  {
+    "category": "OP_LEFT and OP_RIGHT tests",
+    "tests": [
+      {"name":"OP_LEFT - basic functionality","initial stack":["68656C6C6F","03"],"opcodes":["OP_LEFT"],"final stack":["68656C"],"varops cost":16,"description":"LENGTHCONV: W(len(OFFSET)=1)*2 = 8*2 = 16"},
+      {"name":"OP_RIGHT - basic functionality","initial stack":["68656C6C6F","02"],"opcodes":["OP_RIGHT"],"final stack":["6C6F"],"varops cost":22,"description":"LENGTHCONV + COPYING: W(len(OFFSET)=1)*2 + min(value(OFFSET)=2, len(A)=5)*3 = 8*2 + 2*3 = 22"},
+      {"name":"OP_LEFT with zero offset","initial stack":["74657374",""],"opcodes":["OP_LEFT"],"final stack":[""],"varops cost":0,"description":"LENGTHCONV: W(len(OFFSET)=0)*2 = 0*2 = 0"},
+      {"name":"OP_RIGHT with zero offset","initial stack":["74657374",""],"opcodes":["OP_RIGHT"],"final stack":[""],"varops cost":0,"description":"LENGTHCONV + COPYING: W(len(OFFSET)=0)*2 + min(value(OFFSET)=0, len(A)=4)*3 = 0*2 + 0*3 = 0"},
+      {"name":"OP_LEFT with offset equal to string length","initial stack":["616263","03"],"opcodes":["OP_LEFT"],"final stack":["616263"],"varops cost":16,"description":"LENGTHCONV: W(len(OFFSET)=1)*2 = 8*2 = 16"},
+      {"name":"OP_RIGHT with offset equal to string length","initial stack":["616263","03"],"opcodes":["OP_RIGHT"],"final stack":["616263"],"varops cost":25,"description":"LENGTHCONV + COPYING: W(len(OFFSET)=1)*2 + min(value(OFFSET)=3, len(A)=3)*3 = 8*2 + 3*3 = 25"},
+      {"name":"OP_LEFT with offset greater than string length","initial stack":["6869","0A"],"opcodes":["OP_LEFT"],"final stack":["6869"],"varops cost":16,"description":"LENGTHCONV: W(len(OFFSET)=1)*2 = 8*2 = 16"},
+      {"name":"OP_RIGHT with offset greater than string length","initial stack":["6869","0A"],"opcodes":["OP_RIGHT"],"final stack":["6869"],"varops cost":22,"description":"LENGTHCONV + COPYING: W(len(OFFSET)=1)*2 + min(value(OFFSET)=10, len(A)=2)*3 = 8*2 + 2*3 = 22"}
+    ]
+  },
+  {
+    "category": "OP_CAT tests",
+    "tests": [
+      {"name":"OP_CAT - basic concatenation","initial stack":["616263","646566"],"opcodes":["OP_CAT"],"final stack":["616263646566"],"varops cost":18,"description":"COPYING: len(A) + len(B) = 3 + 3 = 6"},
+      {"name":"OP_CAT with empty first operand","initial stack":["","68656C6C6F"],"opcodes":["OP_CAT"],"final stack":["68656C6C6F"],"varops cost":15,"description":"COPYING: len(A) + len(B) = 0 + 5 = 5"},
+      {"name":"OP_CAT with empty second operand","initial stack":["74657374",""],"opcodes":["OP_CAT"],"final stack":["74657374"],"varops cost":12,"description":"COPYING: len(A) + len(B) = 4 + 0 = 4"},
+      {"name":"OP_CAT with both operands empty","initial stack":["",""],"opcodes":["OP_CAT"],"final stack":[""],"varops cost":0,"description":"COPYING: len(A) + len(B) = 0 + 0 = 0"},
+      {"name":"OP_CAT at the size limit should succeed","initial stack":["CC{2000000}","DD{2000000}"],"opcodes":["OP_CAT"],"final stack":["CC{2000000}DD{2000000}"],"varops cost":12000000,"description":"COPYING: len(A) + len(B) = 2000000 + 2000000 = 4000000"}
+    ]
+  },
+  {
+    "category": "OP_SUBSTR tests",
+    "tests": [
+      {"name":"OP_SUBSTR - basic substring extraction","initial stack":["68656C6C6F","01","03"],"opcodes":["OP_SUBSTR"],"final stack":["656C6C"],"varops cost":41,"description":"LENGTHCONV + COPYING: (W(len(BEGIN)=1) + W(len(LEN)=1))*2 + min(value(LEN)=3, max(len(A)=5 - value(BEGIN)=1, 0))*3 = (8 + 8)*2 + 3*3 = 41"},
+      {"name":"OP_SUBSTR - extract from beginning","initial stack":["74657374","","02"],"opcodes":["OP_SUBSTR"],"final stack":["7465"],"varops cost":22,"description":"LENGTHCONV + COPYING: (W(len(BEGIN)=0) + W(len(LEN)=1))*2 + min(value(LEN)=2, max(len(A)=4 - value(BEGIN)=0, 0))*3 = (0 + 8)*2 + 2*3 = 22"},
+      {"name":"OP_SUBSTR - extract to end","initial stack":["626974636F696E","03","04"],"opcodes":["OP_SUBSTR"],"final stack":["636F696E"],"varops cost":44,"description":"LENGTHCONV + COPYING: (W(len(BEGIN)=1) + W(len(LEN)=1))*2 + min(value(LEN)=4, max(len(A)=7 - value(BEGIN)=3, 0))*3 = (8 + 8)*2 + 4*3 = 44"},
+      {"name":"OP_SUBSTR with zero length","initial stack":["68656C6C6F","02",""],"opcodes":["OP_SUBSTR"],"final stack":[""],"varops cost":16,"description":"LENGTHCONV + COPYING: (W(len(BEGIN)=1) + W(len(LEN)=0))*2 + min(value(LEN)=0, max(len(A)=5 - value(BEGIN)=2, 0))*3 = (8 + 0)*2 + 0*3 = 16"},
+      {"name":"OP_SUBSTR - begin at end of string","initial stack":["616263","03","01"],"opcodes":["OP_SUBSTR"],"final stack":[""],"varops cost":32,"description":"LENGTHCONV + COPYING: (W(len(BEGIN)=1) + W(len(LEN)=1))*2 + min(value(LEN)=1, max(len(A)=3 - value(BEGIN)=3, 0))*3 = (8 + 8)*2 + 0*3 = 32"},
+      {"name":"OP_SUBSTR - begin beyond string length","initial stack":["6869","0A","05"],"opcodes":["OP_SUBSTR"],"final stack":[""],"varops cost":32,"description":"LENGTHCONV + COPYING: (W(len(BEGIN)=1) + W(len(LEN)=1))*2 + min(value(LEN)=5, max(len(A)=2 - value(BEGIN)=10, 0))*3 = (8 + 8)*2 + 0*3 = 32"},
+      {"name":"OP_SUBSTR - length extends beyond string","initial stack":["74657374","02","0A"],"opcodes":["OP_SUBSTR"],"final stack":["7374"],"varops cost":38,"description":"LENGTHCONV + COPYING: (W(len(BEGIN)=1) + W(len(LEN)=1))*2 + min(value(LEN)=10, max(len(A)=4 - value(BEGIN)=2, 0))*3 = (8 + 8)*2 + 2*3 = 38"},
+      {"name":"OP_SUBSTR with empty string","initial stack":["","","01"],"opcodes":["OP_SUBSTR"],"final stack":[""],"varops cost":16,"description":"LENGTHCONV + COPYING: (W(len(BEGIN)=0) + W(len(LEN)=1))*2 + min(value(LEN)=1, max(len(A)=0 - value(BEGIN)=0, 0))*3 = (0 + 8)*2 + 0*3 = 16"}
+    ]
+  },
+  {
+    "category": "OP_INVERT tests",
+    "tests": [
+      {"name":"OP_INVERT - basic bitwise inversion","initial stack":["FF"],"opcodes":["OP_INVERT"],"final stack":["00"],"varops cost":32,"description":"OTHER: W(len(A)=1)*4 = 8*4 = 32"},
+      {"name":"OP_INVERT with empty element","initial stack":[""],"opcodes":["OP_INVERT"],"final stack":[""],"varops cost":0,"description":"OTHER: W(len(A)=0)*4 = 0*4 = 0"},
+      {"name":"OP_INVERT with multi-byte value","initial stack":["FF12"],"opcodes":["OP_INVERT"],"final stack":["00ED"],"varops cost":32,"description":"OTHER: W(len(A)=2)*4 = 8*4 = 32"},
+      {"name":"OP_INVERT with all ones","initial stack":["FFFFFFFFFFFFFFFF"],"opcodes":["OP_INVERT"],"final stack":["0000000000000000"],"varops cost":32,"description":"OTHER: W(len(A)=8)*4 = 8*4 = 32"},
+      {"name":"OP_INVERT with alternating bit pattern","initial stack":["AAAAAAAAAAAAAAAA"],"opcodes":["OP_INVERT"],"final stack":["5555555555555555"],"varops cost":32,"description":"OTHER: W(len(A)=8)*4 = 8*4 = 32"}
+    ]
+  },
+  {
+    "category": "Binary bitwise operations",
+    "tests": [
+      {"name":"OP_AND: 0xFF & 0xF0 = 0xF0","initial stack":["FF","F0"],"opcodes":["OP_AND"],"final stack":["F0"],"varops cost":32,"description":"OTHER + ZEROING: (W(len(A)=1) + W(len(B)=1))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_OR: 0x0F | 0xF0 = 0xFF","initial stack":["0F","F0"],"opcodes":["OP_OR"],"final stack":["FF"],"varops cost":32,"description":"OTHER: (min(len(A), len(B)) + 7) / 8 * 8 * 4 = (min(1,1)+7)/8*8*4 = 32 (word granularity)"},
+      {"name":"OP_XOR: 0xFF ^ 0x0F = 0xF0","initial stack":["FF","0F"],"opcodes":["OP_XOR"],"final stack":["F0"],"varops cost":32,"description":"OTHER: (min(len(A), len(B)) + 7) / 8 * 8 * 4 = (min(1,1)+7)/8*8*4 = 32 (word granularity)"}
+    ]
+  },
+  {
+    "category": "Stack Manipulation",
+    "tests": [
+      {"name":"OP_ROT: 0x01, 0x02, 0x03, 0x04","initial stack":["0x01","0x02","0x03","0x04"],"opcodes":["OP_ROT"],"final stack":["0x01","0x03","0x04","0x02"],"varops cost":0,"description":""},
+      {"name":"OP_SWAP 0x01, 0x02, 0x03","initial stack":["0x01","0x02","0x03"],"opcodes":["OP_SWAP"],"final stack":["0x01","0x03","0x02"],"varops cost":0},
+      {"name":"OP_SIZE 0x01, 0x02, 0x03","initial stack":["0x01","0x02","0x03"],"opcodes":["OP_SIZE"],"final stack":["0x01","0x02","0x03","0x01"],"varops cost":0,"description":"No variable-length operand processing is charged for this opcode; varops cost = 0"},
+      {"name":"OP_DEPTH 0x01, 0x02, 0x03, 0x04, 0x05","initial stack":["0x01","0x02","0x03","0x04","0x05"],"opcodes":["OP_DEPTH"],"final stack":["0x01","0x02","0x03","0x04","0x05","0x05"],"varops cost":0,"description":"No variable-length operand processing is charged for this opcode; varops cost = 0"}
+    ]
+  },
+  {
+    "category": "OP_DIV tests",
+    "tests": [
+      {"name":"OP_DIV: 10 / 3 = 3","initial stack":["0x0a","0x03"],"opcodes":["OP_DIV"],"final stack":["0x03"],"varops cost":218,"description":"DIV/MOD: W(len(A)=1)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_DIV: 256 / 2 = 128","initial stack":["0x0001","0x02"],"opcodes":["OP_DIV"],"final stack":["0x80"],"varops cost":218,"description":"DIV/MOD: W(len(A)=2)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_DIV: 0 / 1 = 0","initial stack":["0x","0x01"],"opcodes":["OP_DIV"],"final stack":["0x"],"varops cost":32,"description":"DIV/MOD: W(len(A)=0)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 0*18 + 8*4 + 0^2*2/3 = 32"},
+      {"name":"OP_DIV: 1 / 1 = 1","initial stack":["0x01","0x01"],"opcodes":["OP_DIV"],"final stack":["0x01"],"varops cost":218,"description":"DIV/MOD: W(len(A)=1)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_DIV: 1 / 2 = 0","initial stack":["0x01","0x02"],"opcodes":["OP_DIV"],"final stack":["0x"],"varops cost":218,"description":"DIV/MOD: W(len(A)=1)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_DIV: 4-byte / 2-byte (16777217 / 256 = 65536)","initial stack":["0x01000001","0x0001"],"opcodes":["OP_DIV"],"final stack":["0x000001"],"varops cost":218,"description":"DIV/MOD: W(len(A)=4)*18 + W(len(B)=2)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_DIV: 8-byte / 1-byte","initial stack":["0x0100000000000001","0x02"],"opcodes":["OP_DIV"],"final stack":["0x00000000000080"],"varops cost":218,"description":"DIV/MOD: W(len(A)=8)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_DIV: Knuth D6 add-back correction","initial stack":["0x710a7f30344d1398b115d564acc89d565a64dc1121f7227cf97f16bcebe89585","0xcd072cd8be6f9f62ac4c09c28206e7e35594aa6b342f5d8a"],"opcodes":["OP_DIV"],"final stack":["0x395e4842fab428f7"],"varops cost":1354,"description":"DIV/MOD: W(len(A)=32)*18 + W(len(B)=24)*4 + W(len(A))^2*2/3 = 32*18 + 24*4 + 32^2*2/3 = 1354"}
+    ]
+  },
+  {
+    "category": "OP_MOD tests",
+    "tests": [
+      {"name":"OP_MOD: 10 % 3 = 1","initial stack":["0x0a","0x03"],"opcodes":["OP_MOD"],"final stack":["0x01"],"varops cost":218,"description":"DIV/MOD: W(len(A)=1)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_MOD: 7 % 7 = 0","initial stack":["0x07","0x07"],"opcodes":["OP_MOD"],"final stack":["0x"],"varops cost":218,"description":"DIV/MOD: W(len(A)=1)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_MOD: 256 % 10 = 6","initial stack":["0x0001","0x0a"],"opcodes":["OP_MOD"],"final stack":["0x06"],"varops cost":218,"description":"DIV/MOD: W(len(A)=2)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_MOD: 0 % 1 = 0","initial stack":["0x","0x01"],"opcodes":["OP_MOD"],"final stack":["0x"],"varops cost":32,"description":"DIV/MOD: W(len(A)=0)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 0*18 + 8*4 + 0^2*2/3 = 32"},
+      {"name":"OP_MOD: 1 % 2 = 1","initial stack":["0x01","0x02"],"opcodes":["OP_MOD"],"final stack":["0x01"],"varops cost":218,"description":"DIV/MOD: W(len(A)=1)*18 + W(len(B)=1)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_MOD: 65535 % 256 = 255","initial stack":["0xffff","0x0001"],"opcodes":["OP_MOD"],"final stack":["0xff"],"varops cost":218,"description":"DIV/MOD: W(len(A)=2)*18 + W(len(B)=2)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_MOD: 4-byte % 2-byte","initial stack":["0x05000001","0x0001"],"opcodes":["OP_MOD"],"final stack":["0x05"],"varops cost":218,"description":"DIV/MOD: W(len(A)=4)*18 + W(len(B)=2)*4 + W(len(A))^2*2/3 = 8*18 + 8*4 + 8^2*2/3 = 218"},
+      {"name":"OP_MOD: Knuth D6 add-back correction","initial stack":["0x710a7f30344d1398b115d564acc89d565a64dc1121f7227cf97f16bcebe89585","0xcd072cd8be6f9f62ac4c09c28206e7e35594aa6b342f5d8a"],"opcodes":["OP_MOD"],"final stack":["0xcc072cd8be6f9f62ac4c09c28206e7e35594aa6b342f5d8a"],"varops cost":1354,"description":"DIV/MOD: W(len(A)=32)*18 + W(len(B)=24)*4 + W(len(A))^2*2/3 = 32*18 + 24*4 + 32^2*2/3 = 1354"}
+    ]
+  },
+  {
+    "category": "OP_LSHIFT (UPSHIFT) tests",
+    "tests": [
+      {"name":"OP_LSHIFT: byte-aligned shift by 8 bits","initial stack":["0xFF","0x08"],"opcodes":["OP_LSHIFT"],"final stack":["0x00FF"],"varops cost":21,"description":"LENGTHCONV + ZEROING + COPYING: W(len(BITS)=1)*2 + floor(value(BITS)=8/8)*2 + len(A)*3 = 8*2 + 1*2 + 1*3 = 21"},
+      {"name":"OP_LSHIFT: non-aligned shift by 1 bit","initial stack":["0x01","0x01"],"opcodes":["OP_LSHIFT"],"final stack":["0x0200"],"varops cost":51,"description":"LENGTHCONV + ZEROING + COPYING: W(len(BITS)=1)*2 + floor(value(BITS)=1/8)*2 + len(A)*3 + W(len(A)+floor(value(BITS)/8)=1)*4 = 8*2 + 0*2 + 1*3 + 8*4 = 51"},
+      {"name":"OP_LSHIFT: shift by 0 bits (no-op)","initial stack":["0xABCD","0x"],"opcodes":["OP_LSHIFT"],"final stack":["0xABCD"],"varops cost":6,"description":"LENGTHCONV + ZEROING + COPYING: W(len(BITS)=0)*2 + floor(value(BITS)=0/8)*2 + len(A)*3 = 0*2 + 0*2 + 2*3 = 6"},
+      {"name":"OP_LSHIFT: shift empty element by 8","initial stack":["0x","0x08"],"opcodes":["OP_LSHIFT"],"final stack":["0x00"],"varops cost":18,"description":"LENGTHCONV + ZEROING + COPYING: W(len(BITS)=1)*2 + floor(value(BITS)=8/8)*2 + len(A)*3 = 8*2 + 1*2 + 0*3 = 18"},
+      {"name":"OP_LSHIFT: non-aligned shift by 9 bits","initial stack":["0x01","0x09"],"opcodes":["OP_LSHIFT"],"final stack":["0x000200"],"varops cost":53,"description":"LENGTHCONV + ZEROING + COPYING: W(len(BITS)=1)*2 + floor(value(BITS)=9/8)*2 + len(A)*3 + W(len(A)+floor(value(BITS)/8)=2)*4 = 8*2 + 1*2 + 1*3 + 8*4 = 53"},
+      {"name":"OP_LSHIFT: near-maximum non-aligned shift","initial stack":["0x01","0xF747E801"],"opcodes":["OP_LSHIFT"],"final stack":["0x00{3999998}8000"],"varops cost":24000015,"description":"LENGTHCONV + ZEROING + COPYING: W(len(BITS)=4)*2 + floor(value(BITS)=31999991/8)*2 + len(A)*3 + W(len(A)+floor(value(BITS)/8)=3999999)*4 = 8*2 + 3999998*2 + 1*3 + 4000000*4 = 24000015"},
+      {"name":"OP_LSHIFT: multi-byte BITS operand (shift by 256)","initial stack":["0x01","0x0001"],"opcodes":["OP_LSHIFT"],"final stack":["0x00{32}01"],"varops cost":83,"description":"LENGTHCONV + ZEROING + COPYING: W(len(BITS)=2)*2 + floor(value(BITS)=256/8)*2 + len(A)*3 = 8*2 + 32*2 + 1*3 = 83"}
+    ]
+  },
+  {
+    "category": "OP_RSHIFT (DOWNSHIFT) tests",
+    "tests": [
+      {"name":"OP_RSHIFT: byte-aligned shift by 8 bits","initial stack":["0x00FF","0x08"],"opcodes":["OP_RSHIFT"],"final stack":["0xFF"],"varops cost":19,"description":"LENGTHCONV + COPYING: W(len(BITS)=1)*2 + max(len(A)=2 - floor(value(BITS)=8/8), 0)*3 = 8*2 + 1*3 = 19. 2 bytes, remove 1"},
+      {"name":"OP_RSHIFT: non-aligned shift by 1 bit","initial stack":["0x02","0x01"],"opcodes":["OP_RSHIFT"],"final stack":["0x01"],"varops cost":19,"description":"LENGTHCONV + COPYING: W(len(BITS)=1)*2 + max(len(A)=1 - floor(value(BITS)=1/8), 0)*3 = 8*2 + 1*3 = 19. LE 2 >> 1 = 1"},
+      {"name":"OP_RSHIFT: shift by 0 bits (no-op)","initial stack":["0xABCD","0x"],"opcodes":["OP_RSHIFT"],"final stack":["0xABCD"],"varops cost":6,"description":"LENGTHCONV + COPYING: W(len(BITS)=0)*2 + max(len(A)=2 - floor(value(BITS)=0/8), 0)*3 = 0*2 + 2*3 = 6"},
+      {"name":"OP_RSHIFT: shift all bits out (result empty)","initial stack":["0xFF","0x08"],"opcodes":["OP_RSHIFT"],"final stack":["0x"],"varops cost":16,"description":"LENGTHCONV + COPYING: W(len(BITS)=1)*2 + max(len(A)=1 - floor(value(BITS)=8/8), 0)*3 = 8*2 + 0*3 = 16. bytes(1) >= m_realsize(1), result empty"},
+      {"name":"OP_RSHIFT: shift more than element size (result empty)","initial stack":["0xFF","0x40"],"opcodes":["OP_RSHIFT"],"final stack":["0x"],"varops cost":16,"description":"LENGTHCONV + COPYING: W(len(BITS)=1)*2 + max(len(A)=1 - floor(value(BITS)=64/8), 0)*3 = 8*2 + 0*3 = 16. bytes(8) >= m_realsize(1), result empty"},
+      {"name":"OP_RSHIFT: empty element shift","initial stack":["0x","0x08"],"opcodes":["OP_RSHIFT"],"final stack":["0x"],"varops cost":16,"description":"LENGTHCONV + COPYING: W(len(BITS)=1)*2 + max(len(A)=0 - floor(value(BITS)=8/8), 0)*3 = 8*2 + 0*3 = 16. m_realsize=0, bytes(1) >= 0, result empty"},
+      {"name":"OP_RSHIFT: non-aligned shift by 9 bits","initial stack":["0x000002","0x09"],"opcodes":["OP_RSHIFT"],"final stack":["0x0001"],"varops cost":22,"description":"LENGTHCONV + COPYING: W(len(BITS)=1)*2 + max(len(A)=3 - floor(value(BITS)=9/8), 0)*3 = 8*2 + 2*3 = 22. LE 0x020000=131072, >>9 = 256"},
+      {"name":"OP_RSHIFT: does NOT normalize trailing zeros","initial stack":["0x0100","0x08"],"opcodes":["OP_RSHIFT"],"final stack":["0x00"],"varops cost":19,"description":"LENGTHCONV + COPYING: W(len(BITS)=1)*2 + max(len(A)=2 - floor(value(BITS)=8/8), 0)*3 = 8*2 + 1*3 = 19. m_realsize=2, remove 1 byte, result [0x00] not empty"}
+    ]
+  },
+  {
+    "category": "OP_2MUL tests",
+    "tests": [
+      {"name":"OP_2MUL: 0x80 overflows to 2 bytes","initial stack":["0x80"],"opcodes":["OP_2MUL"],"final stack":["0x0001"],"varops cost":56,"description":"OTHER + COPYING: W(len(A)=1)*7 = 8*7 = 56. LE 0x80=128, *2=256, LE [0x00,0x01]"},
+      {"name":"OP_2MUL: 0x7F stays 1 byte","initial stack":["0x7F"],"opcodes":["OP_2MUL"],"final stack":["0xFE"],"varops cost":56,"description":"OTHER + COPYING: W(len(A)=1)*7 = 8*7 = 56. LE 0x7F=127, *2=254=0xFE"},
+      {"name":"OP_2MUL: 0xFF overflows","initial stack":["0xFF"],"opcodes":["OP_2MUL"],"final stack":["0xFE01"],"varops cost":56,"description":"OTHER + COPYING: W(len(A)=1)*7 = 8*7 = 56. LE 0xFF=255, *2=510, LE [0xFE,0x01]"},
+      {"name":"OP_2MUL: empty element stays empty","initial stack":["0x"],"opcodes":["OP_2MUL"],"final stack":["0x"],"varops cost":0,"description":"OTHER + COPYING: W(len(A)=0)*7 = 0*7 = 0. Zero stays zero"},
+      {"name":"OP_2MUL: multi-byte value 0x8001","initial stack":["0x8001"],"opcodes":["OP_2MUL"],"final stack":["0x0003"],"varops cost":56,"description":"OTHER + COPYING: W(len(A)=2)*7 = 8*7 = 56. LE 0x0180=384, *2=768, LE [0x00,0x03]"},
+      {"name":"OP_2MUL: overflow adds byte, result normalized","initial stack":["0x0080"],"opcodes":["OP_2MUL"],"final stack":["0x000001"],"varops cost":56,"description":"OTHER + COPYING: W(len(A)=2)*7 = 8*7 = 56. LE 0x8000=32768, *2=65536, LE [0x00,0x00,0x01]"}
+    ]
+  },
+  {
+    "category": "OP_2DIV tests",
+    "tests": [
+      {"name":"OP_2DIV: 6 / 2 = 3","initial stack":["0x06"],"opcodes":["OP_2DIV"],"final stack":["0x03"],"varops cost":32,"description":"OTHER: W(len(A)=1)*4 = 8*4 = 32"},
+      {"name":"OP_2DIV: 1 / 2 = 0 (normalized to empty)","initial stack":["0x01"],"opcodes":["OP_2DIV"],"final stack":["0x"],"varops cost":32,"description":"OTHER: W(len(A)=1)*4 = 8*4 = 32. Result 0 normalized to empty"},
+      {"name":"OP_2DIV: 0xFF / 2 = 0x7F","initial stack":["0xFF"],"opcodes":["OP_2DIV"],"final stack":["0x7F"],"varops cost":32,"description":"OTHER: W(len(A)=1)*4 = 8*4 = 32. LE 255/2 = 127"},
+      {"name":"OP_2DIV: empty element stays empty","initial stack":["0x"],"opcodes":["OP_2DIV"],"final stack":["0x"],"varops cost":0,"description":"OTHER: W(len(A)=0)*4 = 0*4 = 0"},
+      {"name":"OP_2DIV: 0x0001 (LE 256) / 2 = 0x80","initial stack":["0x0001"],"opcodes":["OP_2DIV"],"final stack":["0x80"],"varops cost":32,"description":"OTHER: W(len(A)=2)*4 = 8*4 = 32. LE 256/2 = 128 = 0x80, normalized to 1 byte"},
+      {"name":"OP_2DIV: 0x0002 (LE 512) / 2 = 0x0001","initial stack":["0x0002"],"opcodes":["OP_2DIV"],"final stack":["0x0001"],"varops cost":32,"description":"OTHER: W(len(A)=2)*4 = 8*4 = 32. LE 512/2 = 256, LE [0x00,0x01]"}
+    ]
+  },
+  {
+    "category": "OP_ADD tests",
+    "tests": [
+      {"name":"OP_ADD: 3 + 4 = 7","initial stack":["0x03","0x04"],"opcodes":["OP_ADD"],"final stack":["0x07"],"varops cost":72,"description":"ARITH + COPYING: max(W(len(A)=1), W(len(B)=1))*9 = max(8, 8)*9 = 72"},
+      {"name":"OP_ADD: 0xFF + 0x01 carry to 2 bytes","initial stack":["0xFF","0x01"],"opcodes":["OP_ADD"],"final stack":["0x0001"],"varops cost":72,"description":"ARITH + COPYING: max(W(len(A)=1), W(len(B)=1))*9 = max(8, 8)*9 = 72. LE 255+1=256, LE [0x00,0x01]"},
+      {"name":"OP_ADD: 0 + 0 = empty","initial stack":["0x","0x"],"opcodes":["OP_ADD"],"final stack":["0x"],"varops cost":0,"description":"ARITH + COPYING: max(W(len(A)=0), W(len(B)=0))*9 = max(0, 0)*9 = 0"},
+      {"name":"OP_ADD: 0 + 5 = 5","initial stack":["0x","0x05"],"opcodes":["OP_ADD"],"final stack":["0x05"],"varops cost":72,"description":"ARITH + COPYING: max(W(len(A)=0), W(len(B)=1))*9 = max(0, 8)*9 = 72"},
+      {"name":"OP_ADD: asymmetric lengths 1+2 bytes","initial stack":["0x01","0x0001"],"opcodes":["OP_ADD"],"final stack":["0x0101"],"varops cost":72,"description":"ARITH + COPYING: max(W(len(A)=1), W(len(B)=2))*9 = max(8, 8)*9 = 72. LE 1+256=257, LE [0x01,0x01]"},
+      {"name":"OP_ADD: large carry propagation","initial stack":["0xFFFF","0x01"],"opcodes":["OP_ADD"],"final stack":["0x000001"],"varops cost":72,"description":"ARITH + COPYING: max(W(len(A)=2), W(len(B)=1))*9 = max(8, 8)*9 = 72. LE 0xFFFF+1=0x10000, LE [0x00,0x00,0x01]"}
+    ]
+  },
+  {
+    "category": "OP_SUB tests",
+    "tests": [
+      {"name":"OP_SUB: 5 - 3 = 2","initial stack":["0x05","0x03"],"opcodes":["OP_SUB"],"final stack":["0x02"],"varops cost":48,"description":"ARITH: max(W(len(A)=1), W(len(B)=1))*6 = max(8, 8)*6 = 48"},
+      {"name":"OP_SUB: 5 - 5 = 0 (empty)","initial stack":["0x05","0x05"],"opcodes":["OP_SUB"],"final stack":["0x"],"varops cost":48,"description":"ARITH: max(W(len(A)=1), W(len(B)=1))*6 = max(8, 8)*6 = 48. Result 0 normalized to empty"},
+      {"name":"OP_SUB: 0x0001 (LE 256) - 0x01 = 0xFF","initial stack":["0x0001","0x01"],"opcodes":["OP_SUB"],"final stack":["0xFF"],"varops cost":48,"description":"ARITH: max(W(len(A)=2), W(len(B)=1))*6 = max(8, 8)*6 = 48. LE 256-1=255, normalized to 1 byte"},
+      {"name":"OP_SUB: 0 - 0 = empty","initial stack":["0x","0x"],"opcodes":["OP_SUB"],"final stack":["0x"],"varops cost":0,"description":"ARITH: max(W(len(A)=0), W(len(B)=0))*6 = max(0, 0)*6 = 0"},
+      {"name":"OP_SUB: borrow propagation normalizes","initial stack":["0x0201","0x0101"],"opcodes":["OP_SUB"],"final stack":["0x01"],"varops cost":48,"description":"ARITH: max(W(len(A)=2), W(len(B)=2))*6 = max(8, 8)*6 = 48. LE 258-257=1, normalized to 1 byte"}
+    ]
+  },
+  {
+    "category": "OP_1ADD tests",
+    "tests": [
+      {"name":"OP_1ADD: 5 + 1 = 6","initial stack":["0x05"],"opcodes":["OP_1ADD"],"final stack":["0x06"],"varops cost":72,"description":"ARITH + COPYING: max(W(1), W(len(A)=1))*9 = max(8, 8)*9 = 72"},
+      {"name":"OP_1ADD: 0xFF carry to 2 bytes","initial stack":["0xFF"],"opcodes":["OP_1ADD"],"final stack":["0x0001"],"varops cost":72,"description":"ARITH + COPYING: max(W(1), W(len(A)=1))*9 = max(8, 8)*9 = 72. LE 255+1=256"},
+      {"name":"OP_1ADD: 0 + 1 = 1","initial stack":["0x"],"opcodes":["OP_1ADD"],"final stack":["0x01"],"varops cost":72,"description":"ARITH + COPYING: max(W(1), W(len(A)=0))*9 = max(8, 0)*9 = 72"},
+      {"name":"OP_1ADD: 0xFFFF carry propagation","initial stack":["0xFFFF"],"opcodes":["OP_1ADD"],"final stack":["0x000001"],"varops cost":72,"description":"ARITH + COPYING: max(W(1), W(len(A)=2))*9 = max(8, 8)*9 = 72. LE 0xFFFF+1=0x10000"}
+    ]
+  },
+  {
+    "category": "OP_1SUB tests",
+    "tests": [
+      {"name":"OP_1SUB: 5 - 1 = 4","initial stack":["0x05"],"opcodes":["OP_1SUB"],"final stack":["0x04"],"varops cost":48,"description":"ARITH: max(W(1), W(len(A)=1))*6 = max(8, 8)*6 = 48"},
+      {"name":"OP_1SUB: 1 - 1 = 0 (empty)","initial stack":["0x01"],"opcodes":["OP_1SUB"],"final stack":["0x"],"varops cost":48,"description":"ARITH: max(W(1), W(len(A)=1))*6 = max(8, 8)*6 = 48. Normalized to empty"},
+      {"name":"OP_1SUB: 0x0001 (LE 256) - 1 = 0xFF","initial stack":["0x0001"],"opcodes":["OP_1SUB"],"final stack":["0xFF"],"varops cost":48,"description":"ARITH: max(W(1), W(len(A)=2))*6 = max(8, 8)*6 = 48. LE 256-1=255, normalized to 1 byte"}
+    ]
+  },
+  {
+    "category": "OP_MUL tests",
+    "tests": [
+      {"name":"OP_MUL: 3 * 4 = 12","initial stack":["0x03","0x04"],"opcodes":["OP_MUL"],"final stack":["0x0C"],"varops cost":222,"description":"(1+1)*3 + (1+7)/8*((1+7)/8*8)*27 = 6+1*8*27 = 6+216 = 222 (word granularity)"},
+      {"name":"OP_MUL: multiply by 0 = empty","initial stack":["0xFF","0x"],"opcodes":["OP_MUL"],"final stack":["0x"],"varops cost":3,"description":"(1+0)*3 + (1+7)/8*0*27 = 3+0 = 3"},
+      {"name":"OP_MUL: 0 * value = empty","initial stack":["0x","0xFF"],"opcodes":["OP_MUL"],"final stack":["0x"],"varops cost":3,"description":"(0+1)*3 + (0+7)/8*1*27 = 3+0 = 3. (0+7)/8=0"},
+      {"name":"OP_MUL: identity (multiply by 1)","initial stack":["0xABCD","0x01"],"opcodes":["OP_MUL"],"final stack":["0xABCD"],"varops cost":225,"description":"(2+1)*3 + (2+7)/8*((1+7)/8*8)*27 = 9+1*8*27 = 9+216 = 225 (word granularity)"},
+      {"name":"OP_MUL: 0xFF * 0xFF = 0x01FE","initial stack":["0xFF","0xFF"],"opcodes":["OP_MUL"],"final stack":["0x01FE"],"varops cost":222,"description":"(1+1)*3 + (1+7)/8*((1+7)/8*8)*27 = 6+1*8*27 = 222 (word granularity). LE 255*255=65025"},
+      {"name":"OP_MUL: 2-byte * 2-byte","initial stack":["0x0001","0x0001"],"opcodes":["OP_MUL"],"final stack":["0x000001"],"varops cost":228,"description":"(2+2)*3 + (2+7)/8*((2+7)/8*8)*27 = 12+1*8*27 = 228 (word granularity). LE 256*256=65536"}
+    ]
+  },
+  {
+    "category": "OP_AND/OR/XOR asymmetric length tests",
+    "tests": [
+      {"name":"OP_AND: 3-byte AND 1-byte zeros extended bytes","initial stack":["0xFF0102","0x0F"],"opcodes":["OP_AND"],"final stack":["0x0F0000"],"varops cost":32,"description":"OTHER + ZEROING: (W(len(A)=3) + W(len(B)=1))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_AND: 1-byte AND 3-byte (swapped internally)","initial stack":["0x0F","0xFF0102"],"opcodes":["OP_AND"],"final stack":["0x0F0000"],"varops cost":32,"description":"OTHER + ZEROING: (W(len(A)=1) + W(len(B)=3))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_AND: empty AND non-empty zeros all","initial stack":["0x","0xFFFF"],"opcodes":["OP_AND"],"final stack":["0x0000"],"varops cost":16,"description":"OTHER + ZEROING: (W(len(A)=0) + W(len(B)=2))*2 = (0 + 8)*2 = 16"},
+      {"name":"OP_AND: does NOT normalize trailing zeros","initial stack":["0xFF00","0xFF00"],"opcodes":["OP_AND"],"final stack":["0xFF00"],"varops cost":32,"description":"OTHER + ZEROING: (W(len(A)=2) + W(len(B)=2))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_OR: 3-byte OR 1-byte preserves longer","initial stack":["0x000102","0xFF"],"opcodes":["OP_OR"],"final stack":["0xFF0102"],"varops cost":32,"description":"(min(3,1)+7)/8*8*4 = 1*8*4 = 32 (word granularity)"},
+      {"name":"OP_OR: 1-byte OR 3-byte (swapped internally)","initial stack":["0xFF","0x000102"],"opcodes":["OP_OR"],"final stack":["0xFF0102"],"varops cost":32,"description":"(min(1,3)+7)/8*8*4 = 1*8*4 = 32 (word granularity)"},
+      {"name":"OP_OR: empty OR non-empty preserves value","initial stack":["0x","0xABCD"],"opcodes":["OP_OR"],"final stack":["0xABCD"],"varops cost":0,"description":"MIN(0,2)*4 = 0"},
+      {"name":"OP_OR: does NOT normalize trailing zeros","initial stack":["0x0100","0x0100"],"opcodes":["OP_OR"],"final stack":["0x0100"],"varops cost":32,"description":"(min(2,2)+7)/8*8*4 = 1*8*4 = 32 (word granularity). Trailing 0x00 preserved"},
+      {"name":"OP_XOR: 3-byte XOR 1-byte preserves longer","initial stack":["0xFF0102","0xFF"],"opcodes":["OP_XOR"],"final stack":["0x000102"],"varops cost":32,"description":"(min(3,1)+7)/8*8*4 = 1*8*4 = 32 (word granularity). Only first byte XORed"},
+      {"name":"OP_XOR: self-XOR produces zeros (not normalized)","initial stack":["0xAB0100","0xAB0100"],"opcodes":["OP_XOR"],"final stack":["0x000000"],"varops cost":32,"description":"(min(3,3)+7)/8*8*4 = 1*8*4 = 32 (word granularity). All zeros, trailing zeros NOT stripped"},
+      {"name":"OP_XOR: empty XOR non-empty preserves value","initial stack":["0x","0xABCD"],"opcodes":["OP_XOR"],"final stack":["0xABCD"],"varops cost":0,"description":"MIN(0,2)*4 = 0"}
+    ]
+  },
+  {
+    "category": "OP_RIPEMD160 and OP_SHA1 size limit tests",
+    "tests": [
+      {"name":"OP_RIPEMD160: 520 bytes succeeds","initial stack":["0xFF{520}"],"opcodes":["OP_RIPEMD160"],"final stack":["f90bcda0ef62ed3dea826da3cba407b27b3db90c"],"varops cost":0,"description":"RIPEMD160 has no varops cost because it is restricted to 520 bytes"},
+      {"name":"OP_SHA1: 520 bytes succeeds","initial stack":["0xFF{520}"],"opcodes":["OP_SHA1"],"final stack":["c3d314475a71b54360065881513fb599e26cf15d"],"varops cost":0,"description":"SHA1 has no varops cost because it is restricted to 520 bytes"}
+    ]
+  },
+  {
+    "category": "Size and budget limit tests",
+    "tests": [
+      {"name":"OP_LSHIFT: result exactly 4MB succeeds","initial stack":["0xFF{3999999}","0x08"],"opcodes":["OP_LSHIFT"],"final stack":["0x00FF{3999999}"],"varops cost":12000015,"description":"LENGTHCONV + ZEROING + COPYING: W(len(BITS)=1)*2 + floor(value(BITS)=8/8)*2 + len(A)*3 = 8*2 + 1*2 + 3999999*3 = 12000015"}
+    ]
+  }
+]

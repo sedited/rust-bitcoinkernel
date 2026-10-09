@@ -32,6 +32,13 @@ function(add_boost_if_needed)
   find_package(Boost 1.74.0 REQUIRED CONFIG)
   mark_as_advanced(Boost_INCLUDE_DIR boost_headers_DIR)
   set_target_properties(Boost::headers PROPERTIES IMPORTED_GLOBAL TRUE)
+
+  # vcpkg installs Boost libraries into isolated package directories, so the
+  # generic Boost::headers target cannot expose Multiprecision on its own.
+  if((BUILD_TESTS OR BUILD_FUZZ_BINARY) AND DEFINED VCPKG_TARGET_TRIPLET)
+    find_package(boost_multiprecision ${Boost_VERSION} EXACT REQUIRED CONFIG)
+    set_target_properties(Boost::multiprecision PROPERTIES IMPORTED_GLOBAL TRUE)
+  endif()
   target_compile_definitions(Boost::headers INTERFACE
     # We don't use multi_index serialization.
     BOOST_MULTI_INDEX_DISABLE_SERIALIZATION

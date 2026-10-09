@@ -206,7 +206,7 @@ static std::vector<CAddress> ConvertSeeds(const std::vector<uint8_t> &vSeedsIn)
     while (!s.empty()) {
         CService endpoint;
         s >> endpoint;
-        CAddress addr{endpoint, SeedsServiceFlags()};
+        CAddress addr{endpoint, SeedsAssumedServiceFlags()};
         addr.nTime = rng.rand_uniform_delay(Now<NodeSeconds>() - one_week, -one_week);
         LogDebug(BCLog::NET, "Added hardcoded seed: %s\n", addr.ToStringAddrPort());
         vSeedsOut.push_back(addr);
@@ -1440,8 +1440,9 @@ std::optional<std::string> V2Transport::GetMessageType(std::span<const uint8_t>&
 
     size_t msg_type_len{0};
     while (msg_type_len < CMessageHeader::MESSAGE_TYPE_SIZE && contents[msg_type_len] != 0) {
-        // Verify that message type bytes before the first 0x00 are in range.
-        if (contents[msg_type_len] < ' ' || contents[msg_type_len] > 0x7F) {
+        // Verify that message type bytes before the first 0x00 are in range. BIP324 specifies the
+        // long message type encoding as "an ASCII message type (as in the v1 P2P protocol)".
+        if (contents[msg_type_len] < ' ' || contents[msg_type_len] > 0x7E) {
             return {};
         }
         ++msg_type_len;
@@ -1683,7 +1684,7 @@ std::pair<size_t, bool> CConnman::SocketSendData(CNode& node) const
     return {nSentSize, data_left};
 }
 
-/** Try to find a connection to evict when the node is full.
+/** Try to find an inbound connection to evict.
  *  Extreme care must be taken to avoid opening the node to attacker
  *   triggered network partitioning.
  *  The strategy used here is to protect a small number of peers
@@ -1691,7 +1692,7 @@ std::pair<size_t, bool> CConnman::SocketSendData(CNode& node) const
  *   to forge.  In order to partition a node the attacker must be
  *   simultaneously better at all of them than honest peers.
  */
-bool CConnman::AttemptToEvictConnection()
+bool CConnman::AttemptToEvictConnection(bool evict_tx_relay_peer_only, std::optional<NodeId> protect_peer)
 {
     AssertLockNotHeld(m_nodes_mutex);
 
@@ -1702,6 +1703,12 @@ bool CConnman::AttemptToEvictConnection()
         for (const CNode* node : m_nodes) {
             if (node->fDisconnect)
                 continue;
+            if (protect_peer.has_value() && node->GetId() == protect_peer) {
+                continue;
+            }
+            if (evict_tx_relay_peer_only && !node->m_relays_txs) {
+                continue;
+            }
             NodeEvictionCandidate candidate{
                 .id = node->GetId(),
                 .m_connected = node->m_connected,
@@ -1830,7 +1837,7 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
 
     if (nInbound >= m_max_inbound)
     {
-        if (!AttemptToEvictConnection()) {
+        if (!AttemptToEvictConnection(/*evict_tx_relay_peer_only=*/false)) {
             // No connection to evict, disconnect the new connection
             LogDebug(BCLog::NET, "failed to find an eviction candidate - connection dropped (full)\n");
             return;
@@ -1891,9 +1898,11 @@ bool CConnman::AddConnection(const std::string& address, ConnectionType conn_typ
     std::optional<int> max_connections;
     switch (conn_type) {
     case ConnectionType::INBOUND:
-    case ConnectionType::MANUAL:
     case ConnectionType::PRIVATE_BROADCAST:
         return false;
+    // no separate per-type limit for MANUAL because semAddnode limits them
+    case ConnectionType::MANUAL:
+        break;
     case ConnectionType::OUTBOUND_FULL_RELAY:
         max_connections = m_max_outbound_full_relay;
         break;
@@ -1915,8 +1924,8 @@ bool CConnman::AddConnection(const std::string& address, ConnectionType conn_typ
     // Max connections of specified type already exist
     if (max_connections != std::nullopt && existing_connections >= max_connections) return false;
 
-    // Max total outbound connections already exist
-    CountingSemaphoreGrant<> grant(*semOutbound, true);
+    // Max total automatic outbound or manual connections already exist
+    CountingSemaphoreGrant<> grant(conn_type == ConnectionType::MANUAL ? *semAddnode : *semOutbound, true);
     if (!grant) return false;
 
     OpenNetworkConnection(/*addrConnect=*/CAddress{},
@@ -2400,7 +2409,7 @@ void CConnman::ThreadDNSAddressSeed()
                 const auto addresses{LookupHost(host, nMaxIPs, true)};
                 if (!addresses.empty()) {
                     for (const CNetAddr& ip : addresses) {
-                        CAddress addr = CAddress(CService(ip, m_params.GetDefaultPort()), requiredServiceBits);
+                        CAddress addr = CAddress(CService(ip, m_params.GetDefaultPort()), SeedsAssumedServiceFlags());
                         addr.nTime = rng.rand_uniform_delay(Now<NodeSeconds>() - 3 * 24h, -4 * 24h); // use a random age between 3 and 7 days old
                         vAdd.push_back(addr);
                         found++;
@@ -2527,6 +2536,23 @@ int CConnman::GetExtraBlockRelayCount() const
         }
     }
     return std::max(block_relay_peers - m_max_outbound_block_relay, 0);
+}
+
+bool CConnman::EvictTxPeerIfFull(std::optional<NodeId> protect_peer)
+{
+    int tx_inbound_peers{0};
+    {
+        LOCK(m_nodes_mutex);
+        for (const CNode* pnode : m_nodes) {
+            if (!pnode->fDisconnect && pnode->IsInboundConn() && pnode->m_relays_txs) {
+                ++tx_inbound_peers;
+            }
+        }
+    }
+    if (tx_inbound_peers > m_max_inbound_full_relay) {
+        return AttemptToEvictConnection(/*evict_tx_relay_peer_only=*/true, protect_peer);
+    }
+    return true;
 }
 
 std::unordered_set<Network> CConnman::GetReachableEmptyNetworks() const
@@ -3898,13 +3924,13 @@ bool CConnman::DisconnectNode(std::string_view strNode)
     return false;
 }
 
-bool CConnman::DisconnectNode(const CSubNet& subnet)
+bool CConnman::DisconnectNode(const CSubNet& subnet, bool disconnect_private_broadcast)
 {
     AssertLockNotHeld(m_nodes_mutex);
     bool disconnected = false;
     LOCK(m_nodes_mutex);
     for (CNode* pnode : m_nodes) {
-        if (subnet.Match(pnode->addr)) {
+        if (subnet.Match(pnode->addr) && (disconnect_private_broadcast || !pnode->IsPrivateBroadcastConn())) {
             LogDebug(BCLog::NET, "disconnect by subnet%s match, %s", (fLogIPs ? strprintf("=%s", subnet.ToString()) : ""), pnode->DisconnectMsg());
             pnode->fDisconnect = true;
             disconnected = true;
