@@ -229,6 +229,7 @@ dependencies = [
  "bitcoin",
  "bitcoinkernel",
  "env_logger",
+ "hex",
  "log",
  "secp256k1",
  "silentpayments",

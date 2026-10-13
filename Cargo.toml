@@ -26,3 +26,10 @@ members = [
     "fuzz",
     "libbitcoinkernel-sys"
 ]
+
+[features]
+script-trace = ["libbitcoinkernel-sys/script-trace"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

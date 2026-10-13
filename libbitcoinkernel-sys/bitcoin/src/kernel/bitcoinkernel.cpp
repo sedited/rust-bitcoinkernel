@@ -11,6 +11,7 @@
 #include <consensus/tx_check.h>
 #include <consensus/validation.h>
 #include <dbwrapper.h>
+#include <hash.h>
 #include <kernel/caches.h>
 #include <kernel/chainparams.h>
 #include <kernel/checks.h>
@@ -24,6 +25,9 @@
 #include <primitives/transaction.h>
 #include <script/interpreter.h>
 #include <script/script.h>
+#include <script/script_error.h>
+#include <script/trace.h>
+#include <script/varops.h>
 #include <script/verify_flags.h>
 #include <serialize.h>
 #include <streams.h>
@@ -35,6 +39,7 @@
 #include <util/result.h>
 #include <util/signalinterrupt.h>
 #include <util/task_runner.h>
+#include <util/time.h>
 #include <util/translation.h>
 #include <validation.h>
 #include <validationinterface.h>
@@ -43,6 +48,7 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <list>
 #include <memory>
 #include <optional>
@@ -229,6 +235,36 @@ btck_Warning cast_btck_warning(kernel::Warning warning)
         return btck_Warning_UNKNOWN_NEW_RULES_ACTIVATED;
     case kernel::Warning::LARGE_WORK_INVALID_CHAIN:
         return btck_Warning_LARGE_WORK_INVALID_CHAIN;
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
+
+btck_ScriptTraceFrameKind cast_btck_trace_frame_kind(ScriptTraceFrameKind kind)
+{
+    switch (kind) {
+    case ScriptTraceFrameKind::Begin:
+        return btck_ScriptTraceFrameKind_BEGIN;
+    case ScriptTraceFrameKind::Step:
+        return btck_ScriptTraceFrameKind_STEP;
+    case ScriptTraceFrameKind::End:
+        return btck_ScriptTraceFrameKind_END;
+    } // no default case, so the compiler can warn about missing cases
+    assert(false);
+}
+
+btck_SigVersion cast_btck_sig_version(SigVersion version)
+{
+    switch (version) {
+    case SigVersion::BASE:
+        return btck_SigVersion_BASE;
+    case SigVersion::TAPSCRIPT:
+        return btck_SigVersion_TAPSCRIPT;
+    case SigVersion::TAPROOT:
+        return btck_SigVersion_TAPROOT;
+    case SigVersion::WITNESS_V0:
+        return btck_SigVersion_WITNESS_V0;
+    case SigVersion::TAPSCRIPT_V2:
+        return btck_SigVersion_TAPSCRIPT_V2;
     } // no default case, so the compiler can warn about missing cases
     assert(false);
 }
@@ -455,6 +491,7 @@ struct ChainstateManagerOptions {
     node::BlockManager::Options m_blockman_options GUARDED_BY(m_mutex);
     std::shared_ptr<const Context> m_context;
     node::ChainstateLoadOptions m_chainstate_load_options GUARDED_BY(m_mutex);
+    uint64_t m_db_cache_bytes GUARDED_BY(m_mutex){DEFAULT_KERNEL_CACHE};
 
     ChainstateManagerOptions(const std::shared_ptr<const Context>& context, const fs::path& data_dir, const fs::path& blocks_dir)
         : m_chainman_options{ChainstateManager::Options{
@@ -503,9 +540,14 @@ struct btck_TransactionInput : Handle<btck_TransactionInput, CTxIn> {};
 struct btck_WitnessStack : Handle<btck_WitnessStack, CScriptWitness> {};
 struct btck_TransactionOutPoint: Handle<btck_TransactionOutPoint, COutPoint> {};
 struct btck_Txid: Handle<btck_Txid, Txid> {};
+struct btck_Wtxid: Handle<btck_Wtxid, Wtxid> {};
 struct btck_PrecomputedTransactionData : Handle<btck_PrecomputedTransactionData, PrecomputedTransactionData> {};
 struct btck_BlockHeader: Handle<btck_BlockHeader, CBlockHeader> {};
 struct btck_ConsensusParams: Handle<btck_ConsensusParams, Consensus::Params> {};
+struct btck_ScriptTraceFrame: Handle<btck_ScriptTraceFrame, ScriptTraceFrame> {};
+struct btck_ScriptEvalStack : Handle<btck_ScriptEvalStack, std::span<const std::vector<unsigned char>>> {};
+struct btck_ScriptEvalStackItem : Handle<btck_ScriptEvalStackItem, std::vector<unsigned char>> {};
+struct btck_ScriptStack : Handle<btck_ScriptStack, std::vector<std::vector<unsigned char>>> {};
 
 btck_Transaction* btck_transaction_create(const void* raw_transaction, size_t raw_transaction_len)
 {
@@ -541,6 +583,11 @@ const btck_TransactionInput* btck_transaction_get_input_at(const btck_Transactio
     return btck_TransactionInput::ref(&btck_Transaction::get(transaction)->vin[input_index]);
 }
 
+uint32_t btck_transaction_get_version(const btck_Transaction* transaction)
+{
+    return btck_Transaction::get(transaction)->version;
+}
+
 uint32_t btck_transaction_get_locktime(const btck_Transaction* transaction)
 {
     return btck_Transaction::get(transaction)->nLockTime;
@@ -549,6 +596,16 @@ uint32_t btck_transaction_get_locktime(const btck_Transaction* transaction)
 const btck_Txid* btck_transaction_get_txid(const btck_Transaction* transaction)
 {
     return btck_Txid::ref(&btck_Transaction::get(transaction)->GetHash());
+}
+
+int btck_transaction_has_witness(const btck_Transaction* transaction)
+{
+    return btck_Transaction::get(transaction)->HasWitness() ? 1 : 0;
+}
+
+const btck_Wtxid* btck_transaction_get_wtxid(const btck_Transaction* transaction)
+{
+    return btck_Wtxid::ref(&btck_Transaction::get(transaction)->GetWitnessHash());
 }
 
 btck_Transaction* btck_transaction_copy(const btck_Transaction* transaction)
@@ -683,13 +740,14 @@ int btck_script_pubkey_verify(const btck_ScriptPubkey* script_pubkey,
     }
 
     if (status) *status = btck_ScriptVerifyStatus_OK;
+    ScriptError error = ScriptError::SCRIPT_ERR_OK;
 
     bool result = VerifyScript(tx.vin[input_index].scriptSig,
                                btck_ScriptPubkey::get(script_pubkey),
                                &tx.vin[input_index].scriptWitness,
                                script_verify_flags::from_int(flags),
                                TransactionSignatureChecker(&tx, input_index, amount, txdata, MissingDataBehavior::FAIL),
-                               nullptr);
+                               &error);
     return result ? 1 : 0;
 }
 
@@ -784,6 +842,26 @@ int btck_txid_equals(const btck_Txid* txid1, const btck_Txid* txid2)
 void btck_txid_destroy(btck_Txid* txid)
 {
     delete txid;
+}
+
+btck_Wtxid* btck_wtxid_copy(const btck_Wtxid* wtxid)
+{
+    return btck_Wtxid::copy(wtxid);
+}
+
+void btck_wtxid_to_bytes(const btck_Wtxid* wtxid, unsigned char output[32])
+{
+    std::memcpy(output, btck_Wtxid::get(wtxid).begin(), 32);
+}
+
+int btck_wtxid_equals(const btck_Wtxid* wtxid1, const btck_Wtxid* wtxid2)
+{
+    return btck_Wtxid::get(wtxid1) == btck_Wtxid::get(wtxid2);
+}
+
+void btck_wtxid_destroy(btck_Wtxid* wtxid)
+{
+    delete wtxid;
 }
 
 void btck_logging_set_options(const btck_LoggingOptions options)
@@ -1031,6 +1109,20 @@ void btck_chainstate_manager_options_set_worker_threads_num(btck_ChainstateManag
     btck_ChainstateManagerOptions::get(opts).m_chainman_options.worker_threads_num = worker_threads;
 }
 
+int btck_chainstate_manager_options_set_database_cache_bytes(btck_ChainstateManagerOptions* chainman_opts, uint64_t database_cache_bytes)
+{
+    if (database_cache_bytes < MIN_DBCACHE_BYTES || database_cache_bytes > MAX_DBCACHE_BYTES) {
+        LogError("Failed to set database cache: size is outside the supported range.");
+        return -1;
+    }
+
+    auto& opts{btck_ChainstateManagerOptions::get(chainman_opts)};
+    LOCK(opts.m_mutex);
+    opts.m_db_cache_bytes = database_cache_bytes;
+    opts.m_blockman_options.block_tree_db_params.cache_bytes = kernel::CacheSizes{database_cache_bytes}.block_tree_db;
+    return 0;
+}
+
 void btck_chainstate_manager_options_destroy(btck_ChainstateManagerOptions* options)
 {
     delete options;
@@ -1083,7 +1175,7 @@ btck_ChainstateManager* btck_chainstate_manager_create(
     try {
         const auto chainstate_load_opts{WITH_LOCK(opts.m_mutex, return opts.m_chainstate_load_options)};
 
-        kernel::CacheSizes cache_sizes{DEFAULT_KERNEL_CACHE};
+        const kernel::CacheSizes cache_sizes{WITH_LOCK(opts.m_mutex, return opts.m_db_cache_bytes)};
         auto [status, chainstate_err]{node::LoadChainstate(*chainman, cache_sizes, chainstate_load_opts)};
         if (status != node::ChainstateLoadStatus::SUCCESS) {
             LogError("Failed to load chain state from your data directory: %s", chainstate_err.original);
@@ -1453,6 +1545,11 @@ const btck_BlockHash* btck_block_header_get_prev_hash(const btck_BlockHeader* he
     return btck_BlockHash::ref(&btck_BlockHeader::get(header).hashPrevBlock);
 }
 
+void btck_block_header_get_merkle_root(const btck_BlockHeader* header, unsigned char output[32])
+{
+    std::memcpy(output, btck_BlockHeader::get(header).hashMerkleRoot.begin(), 32);
+}
+
 uint32_t btck_block_header_get_timestamp(const btck_BlockHeader* header)
 {
     return btck_BlockHeader::get(header).nTime;
@@ -1532,4 +1629,258 @@ int btck_transaction_check(const btck_Transaction* tx, btck_TxValidationState* v
     state = TxValidationState{};
     const bool ok = CheckTransaction(*btck_Transaction::get(tx), state);
     return ok ? 1 : 0;
+}
+
+int btck_set_mock_time(int64_t timestamp)
+{
+    constexpr int64_t max_time{std::numeric_limits<uint32_t>::max()};
+    if (timestamp < 0 || timestamp > max_time) {
+        return -1;
+    }
+    SetMockTime(std::chrono::seconds{timestamp});
+    return 0;
+}
+
+int btck_script_trace_register_callback(btck_ScriptTraceCallback callback, void* user_data, btck_DestroyCallback user_data_destroy_callback)
+{
+#ifndef ENABLE_SCRIPT_TRACE
+    (void)callback;
+    if (user_data && user_data_destroy_callback) user_data_destroy_callback(user_data);
+    return 1;
+#else
+    std::shared_ptr<void> owned_user_data{user_data, [user_data_destroy_callback](void* user_data) {
+        if (user_data && user_data_destroy_callback) user_data_destroy_callback(user_data);
+    }};
+
+    auto wrapper = [owned_user_data, callback](const ScriptTraceFrame& frame) {
+        callback(owned_user_data.get(), btck_ScriptTraceFrame::ref(&frame));
+    };
+
+    ScriptTraceRegisterCallback(std::move(wrapper));
+    return 0;
+#endif // ENABLE_SCRIPT_TRACE
+}
+
+btck_ScriptTraceFrameKind btck_script_trace_frame_get_kind(const btck_ScriptTraceFrame* frame)
+{
+    return cast_btck_trace_frame_kind(btck_ScriptTraceFrame::get(frame).kind);
+}
+
+const btck_ScriptEvalStack* btck_script_trace_frame_get_stack(const btck_ScriptTraceFrame* frame)
+{
+    return btck_ScriptEvalStack::ref(&btck_ScriptTraceFrame::get(frame).stack);
+}
+
+const btck_ScriptEvalStack* btck_script_trace_frame_get_altstack(const btck_ScriptTraceFrame* frame)
+{
+    return btck_ScriptEvalStack::ref(&btck_ScriptTraceFrame::get(frame).altstack);
+}
+
+size_t btck_script_eval_stack_count_items(const btck_ScriptEvalStack* stack)
+{
+    return btck_ScriptEvalStack::get(stack).size();
+}
+
+const btck_ScriptEvalStackItem* btck_script_eval_stack_get_item_at(const btck_ScriptEvalStack* stack, size_t index)
+{
+    const auto& items{btck_ScriptEvalStack::get(stack)};
+    assert(index < items.size());
+    return btck_ScriptEvalStackItem::ref(&items[index]);
+}
+
+int btck_script_eval_stack_item_to_bytes(const btck_ScriptEvalStackItem* item, btck_WriteBytes writer, void* user_data)
+{
+    const auto& bytes{btck_ScriptEvalStackItem::get(item)};
+    return writer(bytes.data(), bytes.size(), user_data);
+}
+
+int btck_script_trace_frame_get_script(const btck_ScriptTraceFrame* frame, btck_WriteBytes writer, void* user_data)
+{
+    const CScript& script{btck_ScriptTraceFrame::get(frame).script};
+    return writer(script.data(), script.size(), user_data);
+}
+
+uint32_t btck_script_trace_frame_get_opcode_pos(const btck_ScriptTraceFrame* frame)
+{
+    return btck_ScriptTraceFrame::get(frame).opcode_pos;
+}
+
+int btck_script_trace_frame_get_exec(const btck_ScriptTraceFrame* frame)
+{
+    return btck_ScriptTraceFrame::get(frame).exec ? 1 : 0;
+}
+
+uint8_t btck_script_trace_frame_get_opcode(const btck_ScriptTraceFrame* frame)
+{
+    return btck_ScriptTraceFrame::get(frame).opcode;
+}
+
+int btck_script_trace_frame_get_op_count(const btck_ScriptTraceFrame* frame)
+{
+    return btck_ScriptTraceFrame::get(frame).op_count;
+}
+
+uint64_t btck_script_trace_frame_get_varops(const btck_ScriptTraceFrame* frame)
+{
+    return btck_ScriptTraceFrame::get(frame).varops;
+}
+
+btck_SigVersion btck_script_trace_frame_get_sig_version(const btck_ScriptTraceFrame* frame)
+{
+    return cast_btck_sig_version(static_cast<SigVersion>(btck_ScriptTraceFrame::get(frame).sig_version));
+}
+
+int btck_script_trace_frame_get_tapleaf_hash(const btck_ScriptTraceFrame* frame, unsigned char output[32])
+{
+    const auto* hash{btck_ScriptTraceFrame::get(frame).tapleaf_hash};
+    if (!hash) return -1;
+    std::memcpy(output, hash, 32);
+    return 0;
+}
+
+uint32_t btck_script_trace_frame_get_codeseparator_pos(const btck_ScriptTraceFrame* frame)
+{
+    return btck_ScriptTraceFrame::get(frame).codeseparator_pos;
+}
+
+int32_t btck_script_trace_frame_get_script_error(const btck_ScriptTraceFrame* frame)
+{
+    const auto& script_error{btck_ScriptTraceFrame::get(frame).script_error};
+    return script_error ? static_cast<int32_t>(*script_error) : -1;
+}
+
+void btck_script_trace_unregister_callback()
+{
+#ifdef ENABLE_SCRIPT_TRACE
+    ScriptTraceRegisterCallback(nullptr);
+#endif // ENABLE_SCRIPT_TRACE
+}
+
+btck_ScriptStack* btck_script_stack_create()
+{
+    return btck_ScriptStack::create();
+}
+
+btck_ScriptStack* btck_script_stack_copy(const btck_ScriptStack* stack)
+{
+    return btck_ScriptStack::copy(stack);
+}
+
+void btck_script_stack_push(btck_ScriptStack* stack, const void* element, size_t element_len)
+{
+    auto& items{btck_ScriptStack::get(stack)};
+    if (element_len == 0) {
+        items.emplace_back();
+        return;
+    }
+    assert(element);
+    const auto* bytes{static_cast<const unsigned char*>(element)};
+    items.emplace_back(bytes, bytes + element_len);
+}
+
+size_t btck_script_stack_count_items(const btck_ScriptStack* stack)
+{
+    return btck_ScriptStack::get(stack).size();
+}
+
+int btck_script_stack_item_to_bytes(const btck_ScriptStack* stack, size_t index, btck_WriteBytes writer, void* user_data)
+{
+    const auto& items{btck_ScriptStack::get(stack)};
+    assert(index < items.size());
+    const auto& bytes{items[index]};
+    return writer(bytes.data(), bytes.size(), user_data);
+}
+
+void btck_script_stack_destroy(btck_ScriptStack* stack)
+{
+    delete stack;
+}
+
+int btck_tapscript_v2_eval(const btck_ScriptPubkey* script,
+                           const btck_ScriptStack* stack,
+                           const btck_ScriptVerificationFlags flags,
+                           const btck_TapscriptV2SpendContext* spend_context,
+                           const uint64_t varops_budget,
+                           uint64_t* varops_remaining,
+                           int32_t* script_error,
+                           btck_TapscriptV2EvalStatus* status)
+{
+    // Assert that all specified flags are part of the interface before continuing
+    assert((flags & ~btck_ScriptVerificationFlags_ALL) == 0);
+
+    if (script_error) *script_error = static_cast<int32_t>(SCRIPT_ERR_UNKNOWN_ERROR);
+
+    const auto fail{[&](btck_TapscriptV2EvalStatus error) {
+        if (status) *status = error;
+        return 0;
+    }};
+
+    const auto verify_flags{script_verify_flags::from_int(flags)};
+
+    if (!is_valid_flag_combination(verify_flags)) {
+        return fail(btck_TapscriptV2EvalStatus_ERROR_INVALID_FLAGS_COMBINATION);
+    }
+    if (!(flags & btck_ScriptVerificationFlags_SCRIPT_RESTORATION)) {
+        return fail(btck_TapscriptV2EvalStatus_ERROR_SCRIPT_RESTORATION_REQUIRED);
+    }
+
+    ScriptExecutionData execdata;
+    execdata.m_annex_present = false;
+    execdata.m_annex_init = true;
+
+    static const BaseSignatureChecker no_signature_checker{};
+    const BaseSignatureChecker* checker{&no_signature_checker};
+    std::optional<TransactionSignatureChecker> tx_checker;
+
+    if (spend_context) {
+        if (spend_context->tapleaf_hash) {
+            execdata.m_tapleaf_hash = uint256{std::span{spend_context->tapleaf_hash, 32}};
+            execdata.m_tapleaf_hash_init = true;
+        }
+        if (spend_context->annex) {
+            const auto* annex_bytes{static_cast<const unsigned char*>(spend_context->annex)};
+            const std::vector<unsigned char> annex{annex_bytes, annex_bytes + spend_context->annex_len};
+            execdata.m_annex_hash = (HashWriter{} << annex).GetSHA256();
+            execdata.m_annex_present = true;
+        }
+
+        if (spend_context->tx_to) {
+            const CTransaction& tx{*btck_Transaction::get(spend_context->tx_to)};
+            if (spend_context->input_index >= tx.vin.size()) {
+                return fail(btck_TapscriptV2EvalStatus_ERROR_INVALID_INPUT_INDEX);
+            }
+            if (!execdata.m_tapleaf_hash_init) {
+                return fail(btck_TapscriptV2EvalStatus_ERROR_TAPLEAF_HASH_REQUIRED);
+            }
+            if (!spend_context->precomputed_txdata) {
+                return fail(btck_TapscriptV2EvalStatus_ERROR_SPENT_OUTPUTS_REQUIRED);
+            }
+            const PrecomputedTransactionData& txdata{btck_PrecomputedTransactionData::get(spend_context->precomputed_txdata)};
+            if (txdata.m_spent_outputs.empty()) {
+                return fail(btck_TapscriptV2EvalStatus_ERROR_SPENT_OUTPUTS_REQUIRED);
+            }
+            tx_checker.emplace(&tx, spend_context->input_index, spend_context->amount, txdata, MissingDataBehavior::FAIL);
+            checker = &tx_checker.value();
+        }
+    }
+
+    if (status) *status = btck_TapscriptV2EvalStatus_OK;
+
+    varops::Budget budget = varops_budget == btck_VaropsBudget_UNMETERED
+                                ? varops::Budget::Unmetered()
+                                : varops::Budget{varops_budget};
+
+    ScriptError error{SCRIPT_ERR_UNKNOWN_ERROR};
+    const bool result{ExecuteTapscriptV2(btck_ScriptStack::get(stack),
+                                         btck_ScriptPubkey::get(script),
+                                         verify_flags,
+                                         *checker,
+                                         execdata,
+                                         budget,
+                                         &error)};
+
+    if (script_error) *script_error = static_cast<int32_t>(error);
+    if (varops_remaining) *varops_remaining = budget.Remaining().value_or(btck_VaropsBudget_UNMETERED);
+
+    return result ? 1 : 0;
 }

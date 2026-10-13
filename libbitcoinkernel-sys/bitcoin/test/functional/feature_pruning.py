@@ -350,14 +350,14 @@ class PruneTest(BitcoinTestFramework):
         self.log.info("Stop and start pruning node to trigger wallet rescan")
         self.restart_node(2, extra_args=["-prune=550"])
 
-        self.wait_until(lambda: self.nodes[2].getwalletinfo()["scanning"] == False)
+        self.wait_until(lambda: self.nodes[2].getwalletinfo()["scanning"] is False)
         self.wait_until(lambda: self.nodes[2].getwalletinfo()["lastprocessedblock"]["height"] == self.nodes[2].getblockcount())
 
         # check that wallet loads successfully when restarting a pruned node after IBD.
         # this was reported to fail in #7494.
         self.restart_node(5, extra_args=["-prune=550", "-blockfilterindex=1"]) # restart to trigger rescan
 
-        self.wait_until(lambda: self.nodes[5].getwalletinfo()["scanning"] == False)
+        self.wait_until(lambda: self.nodes[5].getwalletinfo()["scanning"] is False)
         self.wait_until(lambda: self.nodes[5].getwalletinfo()["lastprocessedblock"]["height"] == self.nodes[0].getblockcount())
 
     def run_test(self):
@@ -469,6 +469,11 @@ class PruneTest(BitcoinTestFramework):
         self.log.info("Syncing node 5 to node 0")
         self.connect_nodes(0, 5)
         self.sync_blocks([self.nodes[0], self.nodes[5]], wait=5, timeout=300)
+
+        self.log.info("Test prune with a new index")
+        self.restart_node(0, extra_args=["-prune=550", "-blockfilterindex=1"])
+        node = self.nodes[0]
+        self.wait_until(lambda: node.getindexinfo()["basic block filter index"]["best_block_height"] >= 10, timeout=300)
 
         if self.is_wallet_compiled():
             self.log.info("Test wallet re-scan")

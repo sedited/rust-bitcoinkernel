@@ -6,7 +6,6 @@
 Test how locally submitted transactions are sent to the network when private broadcast is used.
 """
 
-import re
 import time
 import threading
 
@@ -47,6 +46,13 @@ from test_framework.wallet import (
 
 P2P_PRIVATE_VERSION = 70016
 NUM_PRIVATE_BROADCAST_PER_TX = 3
+MAX_PRIVATE_BROADCAST_ATTEMPTS = 1000
+
+
+class NoRelayP2PInterface(P2PInterface):
+    def peer_connect_send_version(self, services):
+        super().peer_connect_send_version(services)
+        self.on_connection_send_msg.relay = 0
 
 
 class P2PPrivateBroadcast(BitcoinTestFramework):
@@ -59,33 +65,35 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
 
         self.destinations_lock = threading.Lock()
 
-        def find_connection_type_in_debug_log(to_addr, to_port):
-            """
-            Scan the debug log of tx_originator for a connection attempt to to_addr:to_port.
-            Return the connection type (outbound-full-relay, private-broadcast, etc) or
-            None if there is no connection attempt to to_addr:to_port.
-            """
-            with open(self.tx_originator_debug_log_path, mode="r", encoding="utf-8") as debug_log:
-                for line in debug_log.readlines():
-                    match = re.match(f".*trying v. connection \\((.+)\\) to \\[?{to_addr}]?:{to_port},.*", line)
-                    if match:
-                        return match.group(1)
-            return None
+        self.trigger_no_relay_peer = False
+        self.no_relay_peer = None
 
-        def destinations_factory(requested_to_addr, requested_to_port):
+        def destinations_factory(requested_to_addr, requested_to_port, proxy_client):
             """
             Instruct the SOCKS5 proxy to redirect connections:
             * The first automatic outbound connection -> P2PDataStore
             * The first private broadcast connection -> nodes[1]
             * Anything else -> P2PInterface
+
+            proxy_client is the client's socket address as seen by the proxy (host:port),
+            equal to the node's addrbind for this connection.
             """
             conn_type = None
-            def found_connection_in_debug_log():
-                nonlocal conn_type
-                conn_type = find_connection_type_in_debug_log(requested_to_addr, requested_to_port)
-                return conn_type is not None
+            # SOCKS handlers run in separate threads, so each needs its own RPC connection.
+            rpc = self.nodes[0].create_new_rpc_connection()
 
-            self.wait_until(found_connection_in_debug_log)
+            def connection_type_found():
+                nonlocal conn_type
+                # The proxy has already replied SUCCESS to the SOCKS5 request, so the node
+                # has finished ConnectNode and registered the peer (or is about to).
+                # The proxy client address equals the node's addrbind for this connection.
+                for peer in rpc.getpeerinfo():
+                    if peer.get("addrbind") == proxy_client:
+                        conn_type = peer["connection_type"]
+                        return True
+                return False
+
+            self.wait_until(connection_type_found)
 
             with self.destinations_lock:
                 i = len(self.destinations)
@@ -106,6 +114,11 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
                     if conn_type == "outbound-full-relay" and not any(dest["conn_type"] == "outbound-full-relay" for dest in self.destinations):
                         listener = P2PDataStore()
                         target_name = "Python P2PDataStore"
+                    elif conn_type == "private-broadcast" and self.trigger_no_relay_peer:
+                        listener = NoRelayP2PInterface()
+                        target_name = "Python NoRelayP2PInterface"
+                        self.trigger_no_relay_peer = False
+                        self.no_relay_peer = listener
                     else:
                         listener = P2PInterface()
                         target_name = "Python P2PInterface"
@@ -213,13 +226,13 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
         assert_equal(len(pending), 1)
         assert_equal(pending[0]["hex"].lower(), tx["hex"].lower())
         peers = pending[0]["peers"]
-        assert len(peers) >= NUM_PRIVATE_BROADCAST_PER_TX
+        assert_greater_than_or_equal(len(peers), NUM_PRIVATE_BROADCAST_PER_TX)
+        assert_equal(pending[0]["attempts_remaining"], MAX_PRIVATE_BROADCAST_ATTEMPTS - len(peers))
         assert all("address" in p and "sent" in p for p in peers)
         assert_greater_than_or_equal(sum(1 for p in peers if "received" in p), broadcasts_to_expect)
 
     def run_test(self):
         tx_originator = self.nodes[0]
-        self.tx_originator_debug_log_path = tx_originator.debug_log_path
         tx_receiver = self.nodes[1]
         far_observer = tx_receiver.add_p2p_connection(P2PInterface())
 
@@ -378,6 +391,19 @@ class P2PPrivateBroadcast(BitcoinTestFramework):
             tx_originator.abortprivatebroadcast,
             "0" * 64,
         )
+
+        self.log.info("Checking that a private broadcast destination signaling relay=false gets disconnected")
+        tx_no_relay = wallet.create_self_transfer()
+        disconnect_msg = "Disconnecting: does not support transaction relay (connected in vain)"
+        with tx_originator.assert_debug_log(expected_msgs=[disconnect_msg]):
+            with self.destinations_lock:
+                self.no_relay_peer = None
+                self.trigger_no_relay_peer = True
+            tx_originator.sendrawtransaction(hexstring=tx_no_relay["hex"], maxfeerate=0.1)
+            self.wait_until(lambda: self.no_relay_peer is not None)
+            self.no_relay_peer.wait_until(lambda: self.no_relay_peer.message_count["version"] == 1, check_connected=False)
+            self.no_relay_peer.wait_for_disconnect()
+        assert_equal(self.no_relay_peer.message_count, {"version": 1})
 
         # Stop the SOCKS5 proxy server to avoid it being upset by the bitcoin
         # node disconnecting in the middle of the SOCKS5 handshake when we

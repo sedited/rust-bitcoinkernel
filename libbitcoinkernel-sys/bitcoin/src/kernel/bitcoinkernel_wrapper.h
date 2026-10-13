@@ -8,6 +8,7 @@
 #include <kernel/bitcoinkernel.h>
 
 #include <array>
+#include <chrono>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -95,6 +96,15 @@ enum class TxValidationResult : btck_TxValidationResult {
     UNKNOWN             = btck_TxValidationResult_UNKNOWN
 };
 
+enum class TapscriptV2EvalStatus : btck_TapscriptV2EvalStatus {
+    OK = btck_TapscriptV2EvalStatus_OK,
+    ERROR_INVALID_FLAGS_COMBINATION = btck_TapscriptV2EvalStatus_ERROR_INVALID_FLAGS_COMBINATION,
+    ERROR_SCRIPT_RESTORATION_REQUIRED = btck_TapscriptV2EvalStatus_ERROR_SCRIPT_RESTORATION_REQUIRED,
+    ERROR_SPENT_OUTPUTS_REQUIRED = btck_TapscriptV2EvalStatus_ERROR_SPENT_OUTPUTS_REQUIRED,
+    ERROR_TAPLEAF_HASH_REQUIRED = btck_TapscriptV2EvalStatus_ERROR_TAPLEAF_HASH_REQUIRED,
+    ERROR_INVALID_INPUT_INDEX = btck_TapscriptV2EvalStatus_ERROR_INVALID_INPUT_INDEX,
+};
+
 enum class ScriptVerifyStatus : btck_ScriptVerifyStatus {
     OK = btck_ScriptVerifyStatus_OK,
     ERROR_INVALID_FLAGS_COMBINATION = btck_ScriptVerifyStatus_ERROR_INVALID_FLAGS_COMBINATION,
@@ -110,6 +120,7 @@ enum class ScriptVerificationFlags : btck_ScriptVerificationFlags {
     CHECKSEQUENCEVERIFY = btck_ScriptVerificationFlags_CHECKSEQUENCEVERIFY,
     WITNESS = btck_ScriptVerificationFlags_WITNESS,
     TAPROOT = btck_ScriptVerificationFlags_TAPROOT,
+    SCRIPT_RESTORATION = btck_ScriptVerificationFlags_SCRIPT_RESTORATION,
     ALL = btck_ScriptVerificationFlags_ALL
 };
 
@@ -118,6 +129,20 @@ enum class BlockCheckFlags : btck_BlockCheckFlags {
     POW = btck_BlockCheckFlags_POW,
     MERKLE = btck_BlockCheckFlags_MERKLE,
     ALL = btck_BlockCheckFlags_ALL
+};
+
+enum class ScriptTraceFrameKind : btck_ScriptTraceFrameKind {
+    BEGIN = btck_ScriptTraceFrameKind_BEGIN,
+    STEP = btck_ScriptTraceFrameKind_STEP,
+    END = btck_ScriptTraceFrameKind_END,
+};
+
+enum class SigVersion : btck_SigVersion {
+    BASE = btck_SigVersion_BASE,
+    WITNESS_V0 = btck_SigVersion_WITNESS_V0,
+    TAPROOT = btck_SigVersion_TAPROOT,
+    TAPSCRIPT = btck_SigVersion_TAPSCRIPT,
+    TAPSCRIPT_V2 = btck_SigVersion_TAPSCRIPT_V2,
 };
 
 template <typename T>
@@ -189,7 +214,7 @@ T check(T ptr)
     return ptr;
 }
 
-template <typename Collection, typename ValueType>
+template <typename Collection, typename ValueType, auto GetFunc>
 class Iterator
 {
 public:
@@ -208,8 +233,7 @@ public:
     Iterator(const Collection* ptr, size_t idx) : m_collection{ptr}, m_idx{idx} {}
 
     // This is just a view, so return a copy.
-    auto operator*() const { return (*m_collection)[m_idx]; }
-    auto operator->() const { return (*m_collection)[m_idx]; }
+    auto operator*() const { return std::invoke(GetFunc, *m_collection, m_idx); }
 
     auto& operator++() { m_idx++; return *this; }
     auto operator++(int) { Iterator tmp = *this; ++(*this); return tmp; }
@@ -225,7 +249,7 @@ public:
 
     auto operator-(const Iterator& other) const { return static_cast<difference_type>(m_idx) - static_cast<difference_type>(other.m_idx); }
 
-    ValueType operator[](difference_type n) const { return (*m_collection)[m_idx + n]; }
+    ValueType operator[](difference_type n) const { return *(*this + n); }
 
     auto operator<=>(const Iterator& other) const { return m_idx <=> other.m_idx; }
 
@@ -248,7 +272,7 @@ class Range
 public:
     using value_type = std::invoke_result_t<decltype(GetFunc), const Container&, size_t>;
     using difference_type = std::ptrdiff_t;
-    using iterator = Iterator<Range, value_type>;
+    using iterator = Iterator<Container, value_type, GetFunc>;
     using const_iterator = iterator;
 
 private:
@@ -260,8 +284,8 @@ public:
         static_assert(std::ranges::random_access_range<Range>);
     }
 
-    iterator begin() const { return iterator(this, 0); }
-    iterator end() const { return iterator(this, size()); }
+    iterator begin() const { return iterator(m_container, 0); }
+    iterator end() const { return iterator(m_container, size()); }
 
     const_iterator cbegin() const { return begin(); }
     const_iterator cend() const { return end(); }
@@ -528,6 +552,50 @@ public:
 };
 
 template <typename Derived>
+class WtxidApi
+{
+private:
+    auto impl() const
+    {
+        return static_cast<const Derived*>(this)->get();
+    }
+
+    friend Derived;
+    WtxidApi() = default;
+
+public:
+    bool operator==(const WtxidApi& other) const
+    {
+        return btck_wtxid_equals(impl(), other.impl()) != 0;
+    }
+
+    bool operator!=(const WtxidApi& other) const
+    {
+        return btck_wtxid_equals(impl(), other.impl()) == 0;
+    }
+
+    std::array<std::byte, 32> ToBytes() const
+    {
+        std::array<std::byte, 32> hash;
+        btck_wtxid_to_bytes(impl(), reinterpret_cast<unsigned char*>(hash.data()));
+        return hash;
+    }
+};
+
+class WtxidView : public View<btck_Wtxid>, public WtxidApi<WtxidView>
+{
+public:
+    explicit WtxidView(const btck_Wtxid* ptr) : View{ptr} {}
+};
+
+class Wtxid : public Handle<btck_Wtxid, btck_wtxid_copy, btck_wtxid_destroy>, public WtxidApi<Wtxid>
+{
+public:
+    Wtxid(const WtxidView& view)
+        : Handle(view) {}
+};
+
+template <typename Derived>
 class OutPointApi
 {
 private:
@@ -684,14 +752,29 @@ public:
         return TransactionInputView{btck_transaction_get_input_at(impl(), index)};
     }
 
+    uint32_t GetVersion() const
+    {
+        return btck_transaction_get_version(impl());
+    }
+
     uint32_t GetLocktime() const
     {
         return btck_transaction_get_locktime(impl());
     }
 
+    bool HasWitness() const
+    {
+        return btck_transaction_has_witness(impl()) != 0;
+    }
+
     TxidView Txid() const
     {
         return TxidView{btck_transaction_get_txid(impl())};
+    }
+
+    WtxidView Wtxid() const
+    {
+        return WtxidView{btck_transaction_get_wtxid(impl())};
     }
 
     MAKE_RANGE_METHOD(Outputs, Derived, &TransactionApi<Derived>::CountOutputs, &TransactionApi<Derived>::GetOutput, *static_cast<const Derived*>(this))
@@ -818,6 +901,13 @@ public:
     BlockHashView PrevHash() const
     {
         return BlockHashView{btck_block_header_get_prev_hash(impl())};
+    }
+
+    std::array<std::byte, 32> MerkleRoot() const
+    {
+        std::array<std::byte, 32> merkle_root;
+        btck_block_header_get_merkle_root(impl(), reinterpret_cast<unsigned char*>(merkle_root.data()));
+        return merkle_root;
     }
 
     uint32_t Timestamp() const
@@ -1200,6 +1290,11 @@ public:
         btck_chainstate_manager_options_set_worker_threads_num(get(), worker_threads);
     }
 
+    bool SetDatabaseCacheBytes(uint64_t database_cache_bytes)
+    {
+        return btck_chainstate_manager_options_set_database_cache_bytes(get(), database_cache_bytes) == 0;
+    }
+
     bool SetWipeDbs(bool wipe_block_tree, bool wipe_chainstate)
     {
         return btck_chainstate_manager_options_set_wipe_dbs(get(), wipe_block_tree, wipe_chainstate) == 0;
@@ -1410,6 +1505,174 @@ public:
         return btck_block_spent_outputs_read(get(), entry.get());
     }
 };
+
+inline void set_mock_time(std::chrono::seconds timestamp)
+{
+    if (btck_set_mock_time(timestamp.count()) != 0) {
+        throw std::runtime_error("timestamp out of range");
+    }
+}
+
+class ScriptEvalStackItemView : public View<btck_ScriptEvalStackItem>
+{
+public:
+    explicit ScriptEvalStackItemView(const btck_ScriptEvalStackItem* ptr) : View{ptr} {}
+
+    std::vector<std::byte> ToBytes() const
+    {
+        return write_bytes(get(), btck_script_eval_stack_item_to_bytes);
+    }
+};
+
+class ScriptEvalStackView : public View<btck_ScriptEvalStack>
+{
+public:
+    explicit ScriptEvalStackView(const btck_ScriptEvalStack* ptr) : View{ptr} {}
+
+    size_t CountItems() const { return btck_script_eval_stack_count_items(get()); }
+
+    ScriptEvalStackItemView GetItem(size_t index) const
+    {
+        return ScriptEvalStackItemView{btck_script_eval_stack_get_item_at(get(), index)};
+    }
+
+    MAKE_RANGE_METHOD(Items, ScriptEvalStackView, &ScriptEvalStackView::CountItems, &ScriptEvalStackView::GetItem, *this)
+};
+
+class ScriptTraceFrameView : public View<btck_ScriptTraceFrame>
+{
+public:
+    explicit ScriptTraceFrameView(const btck_ScriptTraceFrame* ptr) : View{ptr} {}
+
+    ScriptTraceFrameKind Kind() const { return static_cast<ScriptTraceFrameKind>(btck_script_trace_frame_get_kind(get())); }
+
+    ScriptEvalStackView GetStack() const { return ScriptEvalStackView{btck_script_trace_frame_get_stack(get())}; }
+    ScriptEvalStackView GetAltstack() const { return ScriptEvalStackView{btck_script_trace_frame_get_altstack(get())}; }
+
+    std::vector<std::byte> GetScript() const
+    {
+        return write_bytes(get(), btck_script_trace_frame_get_script);
+    }
+    uint32_t OpcodePos() const { return btck_script_trace_frame_get_opcode_pos(get()); }
+    bool Exec() const { return btck_script_trace_frame_get_exec(get()) != 0; }
+    uint8_t Opcode() const { return btck_script_trace_frame_get_opcode(get()); }
+    int OpCount() const { return btck_script_trace_frame_get_op_count(get()); }
+    uint64_t Varops() const { return btck_script_trace_frame_get_varops(get()); }
+    SigVersion GetSigVersion() const { return static_cast<SigVersion>(btck_script_trace_frame_get_sig_version(get())); }
+    uint32_t CodeseparatorPos() const { return btck_script_trace_frame_get_codeseparator_pos(get()); }
+
+    std::optional<int32_t> GetScriptError() const
+    {
+        const int32_t script_error{btck_script_trace_frame_get_script_error(get())};
+        if (script_error < 0) return std::nullopt;
+        return script_error;
+    }
+
+    std::optional<std::array<unsigned char, 32>> TapleafHash() const
+    {
+        std::array<unsigned char, 32> hash;
+        if (btck_script_trace_frame_get_tapleaf_hash(get(), hash.data()) != 0) return std::nullopt;
+        return hash;
+    }
+};
+
+template <typename T>
+concept ScriptTraceT = requires(T a, const ScriptTraceFrameView& frame) {
+    { a.ScriptTrace(frame) } -> std::same_as<void>;
+};
+
+template <ScriptTraceT T>
+void ScriptTraceSetCallback(std::unique_ptr<T> trace)
+{
+    if (btck_script_trace_register_callback(
+            +[](void* user_data, const btck_ScriptTraceFrame* trace) { static_cast<T*>(user_data)->ScriptTrace(ScriptTraceFrameView{trace}); },
+            trace.release(),
+            +[](void* user_data) { delete static_cast<T*>(user_data); }) != 0) {
+        throw std::runtime_error("Script Tracing is not available. Compile bitcoin kernel with ENABLE_SCRIPT_TRACE");
+    }
+}
+
+inline void ScriptTraceUnsetCallback()
+{
+    btck_script_trace_unregister_callback();
+}
+
+class ScriptStack : public Handle<btck_ScriptStack, btck_script_stack_copy, btck_script_stack_destroy>
+{
+public:
+    ScriptStack() : Handle{btck_script_stack_create()} {}
+
+    explicit ScriptStack(std::span<const std::span<const std::byte>> elements)
+        : Handle{btck_script_stack_create()}
+    {
+        for (const auto& element : elements) Push(element);
+    }
+
+    void Push(std::span<const std::byte> element)
+    {
+        btck_script_stack_push(get(), element.data(), element.size());
+    }
+
+    size_t CountItems() const { return btck_script_stack_count_items(get()); }
+
+    std::vector<std::byte> GetItem(size_t index) const
+    {
+        struct Item { const btck_ScriptStack* stack; size_t index; };
+        Item item{get(), index};
+        return write_bytes(&item, +[](const Item* c, btck_WriteBytes w, void* ud) {
+            return btck_script_stack_item_to_bytes(c->stack, c->index, w, ud);
+        });
+    }
+
+    MAKE_RANGE_METHOD(Items, ScriptStack, &ScriptStack::CountItems, &ScriptStack::GetItem, *this)
+};
+
+/** The spending context a tapscript v2 evaluation is run in. Signature and
+ *  locktime opcodes can only succeed when a spending transaction is set. */
+struct TapscriptV2SpendContext {
+    const Transaction* tx_to{nullptr};
+    const PrecomputedTransactionData* precomputed_txdata{nullptr};
+    int64_t amount{0};
+    unsigned int input_index{0};
+    std::span<const std::byte> annex{};
+    const std::array<unsigned char, 32>* tapleaf_hash{nullptr};
+};
+
+inline constexpr uint64_t VAROPS_BUDGET_UNMETERED{btck_VaropsBudget_UNMETERED};
+
+/** Evaluate a tapscript v2 leaf script against an initial stack. Does not
+ *  verify that the script is committed to by any output. */
+inline bool EvalTapscriptV2(const ScriptPubkey& script,
+                            const ScriptStack& stack,
+                            ScriptVerificationFlags flags,
+                            const TapscriptV2SpendContext* spend_context,
+                            uint64_t varops_budget,
+                            uint64_t* varops_remaining,
+                            int32_t* script_error,
+                            TapscriptV2EvalStatus& status)
+{
+    btck_TapscriptV2SpendContext c_spend_context{};
+    if (spend_context) {
+        c_spend_context.tx_to = spend_context->tx_to ? spend_context->tx_to->get() : nullptr;
+        c_spend_context.precomputed_txdata = spend_context->precomputed_txdata ? spend_context->precomputed_txdata->get() : nullptr;
+        c_spend_context.amount = spend_context->amount;
+        c_spend_context.input_index = spend_context->input_index;
+        c_spend_context.annex = spend_context->annex.empty() ? nullptr : spend_context->annex.data();
+        c_spend_context.annex_len = spend_context->annex.size();
+        c_spend_context.tapleaf_hash = spend_context->tapleaf_hash ? spend_context->tapleaf_hash->data() : nullptr;
+    }
+
+    auto result = btck_tapscript_v2_eval(
+        script.get(),
+        stack.get(),
+        static_cast<btck_ScriptVerificationFlags>(flags),
+        spend_context ? &c_spend_context : nullptr,
+        varops_budget,
+        varops_remaining,
+        script_error,
+        reinterpret_cast<btck_TapscriptV2EvalStatus*>(&status));
+    return result == 1;
+}
 
 } // namespace btck
 

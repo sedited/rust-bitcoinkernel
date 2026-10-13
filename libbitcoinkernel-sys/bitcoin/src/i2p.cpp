@@ -352,7 +352,7 @@ void Session::CheckControlSock()
 
 void Session::DestGenerate(const Sock& sock)
 {
-    // https://geti2p.net/spec/common-structures#key-certificates
+    // https://i2p.net/en/docs/specs/common-structures/#key-certificates
     // "7" or "EdDSA_SHA512_Ed25519" - "Recent Router Identities and Destinations".
     // Use "7" because i2pd <2.24.0 does not recognize the textual form.
     // If SIGNATURE_TYPE is not specified, then the default one is DSA_SHA1.
@@ -375,7 +375,7 @@ void Session::GenerateAndSavePrivateKey(const Sock& sock)
 
 Binary Session::MyDestination() const
 {
-    // From https://geti2p.net/spec/common-structures#destination:
+    // From https://i2p.net/en/docs/specs/common-structures/#destination:
     // "They are 387 bytes plus the certificate length specified at bytes 385-386, which may be
     // non-zero"
     static constexpr size_t DEST_LEN_BASE = 387;
@@ -425,7 +425,7 @@ void Session::CreateIfNotCreatedAlready()
         const Reply& reply = SendRequestAndGetReply(
             *sock,
             strprintf("SESSION CREATE STYLE=STREAM ID=%s DESTINATION=TRANSIENT SIGNATURE_TYPE=7 "
-                      "i2cp.leaseSetEncType=4,0 inbound.quantity=1 outbound.quantity=1",
+                      "i2cp.leaseSetEncType=6,4 inbound.quantity=1 outbound.quantity=1",
                       session_id));
 
         m_private_key = DecodeI2PBase64(reply.Get("DESTINATION"));
@@ -443,7 +443,7 @@ void Session::CreateIfNotCreatedAlready()
 
         SendRequestAndGetReply(*sock,
                                strprintf("SESSION CREATE STYLE=STREAM ID=%s DESTINATION=%s "
-                                         "i2cp.leaseSetEncType=4,0 inbound.quantity=3 outbound.quantity=3",
+                                         "i2cp.leaseSetEncType=6,4 inbound.quantity=3 outbound.quantity=3",
                                          session_id,
                                          private_key_b64));
     }

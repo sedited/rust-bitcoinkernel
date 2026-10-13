@@ -15,22 +15,6 @@ The example commands below use `pkgin`.
 pkgin install git cmake boost
 ```
 
-NetBSD currently ships with an older version of `gcc` than is needed to build. You should upgrade your `gcc` and then pass this new version to the CMake configuration.
-
-For example, grab `gcc12`:
-```
-pkgin install gcc12
-```
-
-Then, when configuring, pass the following:
-```bash
-cmake -B build
-    ...
-    -DCMAKE_C_COMPILER="/usr/pkg/gcc12/bin/gcc" \
-    -DCMAKE_CXX_COMPILER="/usr/pkg/gcc12/bin/g++" \
-    ...
-```
-
 SQLite is required for the wallet:
 
 ```bash
@@ -42,7 +26,7 @@ To build Bitcoin Core without the wallet, use `-DENABLE_WALLET=OFF`.
 Cap'n Proto is needed for IPC functionality (see [multiprocess.md](multiprocess.md)):
 
 ```bash
-pkgin install capnproto
+pkgin install capnproto pkgconf
 ```
 
 Compile with `-DENABLE_IPC=OFF` if you do not need IPC functionality.
@@ -84,7 +68,7 @@ Otherwise, if you don't need QR encoding support, use the `-DWITH_QRENCODE=OFF` 
 
 Bitcoin Core can provide notifications via ZeroMQ. To compile ZMQ support, install the following dependency and pass `-DWITH_ZMQ=ON` when configuring.
 ```bash
-pkgin install zeromq pkg-config
+pkgin install zeromq pkgconf
 ```
 
 #### Test Suite Dependencies
@@ -93,7 +77,14 @@ There is an included test suite that is useful for testing code changes when dev
 To run the test suite (recommended), you will need to have Python 3 installed:
 
 ```bash
-pkgin install python313 py313-zmq
+pkgin install python313 py313-zmq lsof
+```
+
+When the `lsof` binary package was built for a different point release, it might be necessary to force its installation as follows:
+
+```bash
+echo "CHECK_OSABI=no" >> /etc/pkg_install.conf
+pkgin install lsof
 ```
 
 ## Building Bitcoin Core

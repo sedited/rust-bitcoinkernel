@@ -377,6 +377,10 @@ void BitcoinGUI::createActions()
     m_mask_values_action->setStatusTip(tr("Mask the values in the Overview tab"));
     m_mask_values_action->setCheckable(true);
 
+    m_export_watchonly_action = new QAction(tr("Export watch-only wallet"), this);
+    m_export_watchonly_action->setEnabled(false);
+    m_export_watchonly_action->setStatusTip(tr("Export a watch-only version of the current wallet that can be restored onto another node."));
+
     connect(quitAction, &QAction::triggered, this, &BitcoinGUI::quitRequested);
     connect(aboutAction, &QAction::triggered, this, &BitcoinGUI::aboutClicked);
     connect(aboutQtAction, &QAction::triggered, qApp, QApplication::aboutQt);
@@ -440,7 +444,7 @@ void BitcoinGUI::createActions()
             //: The title for Restore Wallet File Windows
             QString title_windows = tr("Load Wallet Backup");
 
-            QString backup_file = GUIUtil::getOpenFileName(this, title_windows, QString(), name_data_file + QLatin1String(" (*.dat)"), nullptr);
+            QString backup_file = GUIUtil::getOpenFileName(this, title_windows, QString(), name_data_file +  QLatin1String(" (*.dat *.wallet);;") + tr("All Files") + QLatin1String(" (*)"), nullptr);
             if (backup_file.isEmpty()) return;
 
             bool wallet_name_ok;
@@ -524,6 +528,22 @@ void BitcoinGUI::createActions()
         });
         connect(m_mask_values_action, &QAction::toggled, this, &BitcoinGUI::setPrivacy);
         connect(m_mask_values_action, &QAction::toggled, this, &BitcoinGUI::enableHistoryAction);
+        GUIUtil::ExceptionSafeConnect(m_export_watchonly_action, &QAction::triggered, [this](bool) {
+            QString destination = GUIUtil::getSaveFileName(this,
+                tr("Save Watch-only Wallet Export"), QString(),
+                //: Name of the wallet data file format.
+                tr("Wallet Data") + QLatin1String(" (*.dat)"), nullptr);
+
+            if (destination.isEmpty()) return;
+            WalletModel* model = walletFrame->currentWalletModel();
+            if (!Assume(model)) return;
+            util::Result<std::string> export_res = model->wallet().exportWatchOnlyWallet(GUIUtil::QStringToPath(destination));
+            if (export_res) {
+                QMessageBox::information(nullptr, tr("Export Successful"), tr("The wallet has been exported to ") + QString::fromStdString(*export_res));
+            } else {
+                QMessageBox::critical(nullptr, tr("Export Error"), QString::fromStdString(util::ErrorString(export_res).translated));
+            }
+        });
     }
 #endif // ENABLE_WALLET
 
@@ -547,6 +567,7 @@ void BitcoinGUI::createMenuBar()
         file->addSeparator();
         file->addAction(backupWalletAction);
         file->addAction(m_restore_wallet_action);
+        file->addAction(m_export_watchonly_action);
         file->addSeparator();
         file->addAction(openAction);
         file->addAction(signMessageAction);
@@ -832,6 +853,7 @@ void BitcoinGUI::setCurrentWallet(WalletModel* wallet_model)
             break;
         }
     }
+    m_export_watchonly_action->setEnabled(!wallet_model->wallet().privateKeysDisabled());
     updateWindowTitle();
 }
 
@@ -866,6 +888,7 @@ void BitcoinGUI::setWalletActionsEnabled(bool enabled)
     openAction->setEnabled(enabled);
     m_close_wallet_action->setEnabled(enabled);
     m_close_all_wallets_action->setEnabled(enabled);
+    m_export_watchonly_action->setEnabled(enabled);
 }
 
 void BitcoinGUI::createTrayIcon()
@@ -1721,3 +1744,5 @@ void UnitDisplayStatusBarControl::onMenuSelection(QAction* action)
         optionsModel->setDisplayUnit(action->data());
     }
 }
+
+#include <moc_bitcoingui.cpp>

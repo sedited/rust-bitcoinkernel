@@ -42,6 +42,7 @@
 #include <random.h>
 #include <script/script.h>
 #include <script/sigcache.h>
+#include <script/varops.h>
 #include <signet.h>
 #include <tinyformat.h>
 #include <txdb.h>
@@ -455,7 +456,6 @@ public:
     // We put the arguments we're handed into a struct, so we can pass them
     // around easier.
     struct ATMPArgs {
-        const CChainParams& m_chainparams;
         const int64_t m_accept_time;
         const bool m_bypass_limits;
         /*
@@ -488,11 +488,10 @@ public:
         const std::optional<CFeeRate> m_client_maxfeerate;
 
         /** Parameters for single transaction mempool validation. */
-        static ATMPArgs SingleAccept(const CChainParams& chainparams, int64_t accept_time,
+        static ATMPArgs SingleAccept(int64_t accept_time,
                                      bool bypass_limits, std::vector<COutPoint>& coins_to_uncache,
                                      bool test_accept) {
-            return ATMPArgs{/*chainparams=*/ chainparams,
-                            /*accept_time=*/ accept_time,
+            return ATMPArgs{/*accept_time=*/ accept_time,
                             /*bypass_limits=*/ bypass_limits,
                             /*coins_to_uncache=*/ coins_to_uncache,
                             /*test_accept=*/ test_accept,
@@ -505,10 +504,9 @@ public:
         }
 
         /** Parameters for test package mempool validation through testmempoolaccept. */
-        static ATMPArgs PackageTestAccept(const CChainParams& chainparams, int64_t accept_time,
+        static ATMPArgs PackageTestAccept(int64_t accept_time,
                                           std::vector<COutPoint>& coins_to_uncache) {
-            return ATMPArgs{/*chainparams=*/ chainparams,
-                            /*accept_time=*/ accept_time,
+            return ATMPArgs{/*accept_time=*/ accept_time,
                             /*bypass_limits=*/ false,
                             /*coins_to_uncache=*/ coins_to_uncache,
                             /*test_accept=*/ true,
@@ -521,10 +519,9 @@ public:
         }
 
         /** Parameters for child-with-parents package validation. */
-        static ATMPArgs PackageChildWithParents(const CChainParams& chainparams, int64_t accept_time,
+        static ATMPArgs PackageChildWithParents(int64_t accept_time,
                                                 std::vector<COutPoint>& coins_to_uncache, const std::optional<CFeeRate>& client_maxfeerate) {
-            return ATMPArgs{/*chainparams=*/ chainparams,
-                            /*accept_time=*/ accept_time,
+            return ATMPArgs{/*accept_time=*/ accept_time,
                             /*bypass_limits=*/ false,
                             /*coins_to_uncache=*/ coins_to_uncache,
                             /*test_accept=*/ false,
@@ -538,8 +535,7 @@ public:
 
         /** Parameters for a single transaction within a package. */
         static ATMPArgs SingleInPackageAccept(const ATMPArgs& package_args) {
-            return ATMPArgs{/*chainparams=*/ package_args.m_chainparams,
-                            /*accept_time=*/ package_args.m_accept_time,
+            return ATMPArgs{/*accept_time=*/ package_args.m_accept_time,
                             /*bypass_limits=*/ false,
                             /*coins_to_uncache=*/ package_args.m_coins_to_uncache,
                             /*test_accept=*/ package_args.m_test_accept,
@@ -554,8 +550,7 @@ public:
     private:
         // Private ctor to avoid exposing details to clients and allowing the possibility of
         // mixing up the order of the arguments. Use static functions above instead.
-        ATMPArgs(const CChainParams& chainparams,
-                 int64_t accept_time,
+        ATMPArgs(int64_t accept_time,
                  bool bypass_limits,
                  std::vector<COutPoint>& coins_to_uncache,
                  bool test_accept,
@@ -564,8 +559,7 @@ public:
                  bool package_submission,
                  bool package_feerates,
                  std::optional<CFeeRate> client_maxfeerate)
-            : m_chainparams{chainparams},
-              m_accept_time{accept_time},
+            : m_accept_time{accept_time},
               m_bypass_limits{bypass_limits},
               m_coins_to_uncache{coins_to_uncache},
               m_test_accept{test_accept},
@@ -681,18 +675,17 @@ private:
 
     bool PackageRBFChecks(const std::vector<CTransactionRef>& txns,
                           std::vector<Workspace>& workspaces,
-                          int64_t total_vsize,
                           PackageValidationState& package_state) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Run the script checks using our policy flags. As this can be slow, we should
     // only invoke this on transactions that have otherwise passed policy checks.
-    bool PolicyScriptChecks(const ATMPArgs& args, Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
+    bool PolicyScriptChecks(Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Re-run the script checks, using consensus flags, and try to cache the
     // result in the scriptcache. This should be done after
     // PolicyScriptChecks(). This requires that all inputs either be in our
     // utxo set or in the mempool.
-    bool ConsensusScriptChecks(const ATMPArgs& args, Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
+    bool ConsensusScriptChecks(Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Try to add the transaction to the mempool, removing any conflicts first.
     void FinalizeSubpackage(const ATMPArgs& args) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
@@ -995,8 +988,6 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
     const Txid& hash = ws.m_hash;
     TxValidationState& state = ws.m_state;
 
-    CFeeRate newFeeRate(ws.m_modified_fees, ws.m_vsize);
-
     CTxMemPool::setEntries all_conflicts;
 
     // Calculate all conflicting entries and enforce Rule #5.
@@ -1041,7 +1032,6 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
 
 bool MemPoolAccept::PackageRBFChecks(const std::vector<CTransactionRef>& txns,
                                      std::vector<Workspace>& workspaces,
-                                     const int64_t total_vsize,
                                      PackageValidationState& package_state)
 {
     AssertLockHeld(cs_main);
@@ -1137,14 +1127,18 @@ bool MemPoolAccept::PackageRBFChecks(const std::vector<CTransactionRef>& txns,
     return true;
 }
 
-bool MemPoolAccept::PolicyScriptChecks(const ATMPArgs& args, Workspace& ws)
+bool MemPoolAccept::PolicyScriptChecks(Workspace& ws)
 {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
     const CTransaction& tx = *ws.m_ptx;
     TxValidationState& state = ws.m_state;
 
-    constexpr script_verify_flags scriptVerifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
+    script_verify_flags scriptVerifyFlags{STANDARD_SCRIPT_VERIFY_FLAGS};
+    if (!DeploymentActiveAfter(m_active_chainstate.m_chain.Tip(), m_active_chainstate.m_chainman,
+                               Consensus::DEPLOYMENT_SCRIPT_RESTORATION)) {
+        scriptVerifyFlags |= SCRIPT_VERIFY_DISCOURAGE_SCRIPT_RESTORATION;
+    }
 
     // Check input scripts and signatures.
     // This is done last to help prevent CPU exhaustion denial-of-service attacks.
@@ -1160,7 +1154,7 @@ bool MemPoolAccept::PolicyScriptChecks(const ATMPArgs& args, Workspace& ws)
     return true;
 }
 
-bool MemPoolAccept::ConsensusScriptChecks(const ATMPArgs& args, Workspace& ws)
+bool MemPoolAccept::ConsensusScriptChecks(Workspace& ws)
 {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
@@ -1261,7 +1255,7 @@ bool MemPoolAccept::SubmitPackage(const ATMPArgs& args, std::vector<Workspace>& 
     // mempool or UTXO set. Submit each transaction to the mempool immediately after calling
     // ConsensusScriptChecks to make the outputs available for subsequent transactions.
     for (Workspace& ws : workspaces) {
-        if (!ConsensusScriptChecks(args, ws)) {
+        if (!ConsensusScriptChecks(ws)) {
             results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
             // Since PolicyScriptChecks() passed, this should never fail.
             Assume(false);
@@ -1386,9 +1380,9 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransactionInternal(const CTransa
 
     // Perform the inexpensive checks first and avoid hashing and signature verification unless
     // those checks pass, to mitigate CPU exhaustion denial-of-service attacks.
-    if (!PolicyScriptChecks(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
+    if (!PolicyScriptChecks(ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
-    if (!ConsensusScriptChecks(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
+    if (!ConsensusScriptChecks(ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
     const CFeeRate effective_feerate{ws.m_modified_fees, static_cast<int32_t>(ws.m_vsize)};
     // Tx was accepted, but not added
@@ -1519,7 +1513,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactionsInternal(con
     }
 
     // Apply package mempool RBF checks.
-    if (m_subpackage.m_rbf && !PackageRBFChecks(txns, workspaces, m_subpackage.m_total_vsize, package_state)) {
+    if (m_subpackage.m_rbf && !PackageRBFChecks(txns, workspaces, package_state)) {
         return PackageMempoolAcceptResult(package_state, std::move(results));
     }
 
@@ -1542,7 +1536,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactionsInternal(con
 
     for (Workspace& ws : workspaces) {
         ws.m_package_feerate = package_feerate;
-        if (!PolicyScriptChecks(args, ws)) {
+        if (!PolicyScriptChecks(ws)) {
             // Exit early to avoid doing pointless work. Update the failed tx result; the rest are unfinished.
             package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
             results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
@@ -1783,13 +1777,12 @@ MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTra
                                        int64_t accept_time, bool bypass_limits, bool test_accept)
 {
     AssertLockHeld(::cs_main);
-    const CChainParams& chainparams{active_chainstate.m_chainman.GetParams()};
     assert(active_chainstate.GetMempool() != nullptr);
     CTxMemPool& pool{*active_chainstate.GetMempool()};
 
     std::vector<COutPoint> coins_to_uncache;
 
-    auto args = MemPoolAccept::ATMPArgs::SingleAccept(chainparams, accept_time, bypass_limits, coins_to_uncache, test_accept);
+    auto args = MemPoolAccept::ATMPArgs::SingleAccept(accept_time, bypass_limits, coins_to_uncache, test_accept);
     MempoolAcceptResult result = MemPoolAccept(pool, active_chainstate).AcceptSingleTransactionAndCleanup(tx, args);
 
     if (result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
@@ -1819,14 +1812,13 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxM
     assert(std::all_of(package.cbegin(), package.cend(), [](const auto& tx){return tx != nullptr;}));
 
     std::vector<COutPoint> coins_to_uncache;
-    const CChainParams& chainparams = active_chainstate.m_chainman.GetParams();
     auto result = [&]() EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
         AssertLockHeld(cs_main);
         if (test_accept) {
-            auto args = MemPoolAccept::ATMPArgs::PackageTestAccept(chainparams, GetTime(), coins_to_uncache);
+            auto args = MemPoolAccept::ATMPArgs::PackageTestAccept(GetTime(), coins_to_uncache);
             return MemPoolAccept(pool, active_chainstate).AcceptMultipleTransactionsAndCleanup(package, args);
         } else {
-            auto args = MemPoolAccept::ATMPArgs::PackageChildWithParents(chainparams, GetTime(), coins_to_uncache, client_maxfeerate);
+            auto args = MemPoolAccept::ATMPArgs::PackageChildWithParents(GetTime(), coins_to_uncache, client_maxfeerate);
             return MemPoolAccept(pool, active_chainstate).AcceptPackage(package, args);
         }
     }();
@@ -2027,7 +2019,9 @@ std::optional<std::pair<ScriptError, std::string>> CScriptCheck::operator()() {
     const CScript &scriptSig = ptxTo->vin[nIn].scriptSig;
     const CScriptWitness *witness = &ptxTo->vin[nIn].scriptWitness;
     ScriptError error{SCRIPT_ERR_UNKNOWN_ERROR};
-    if (VerifyScript(scriptSig, m_tx_out.scriptPubKey, witness, m_flags, CachingTransactionSignatureChecker(ptxTo, nIn, m_tx_out.nValue, cacheStore, *m_signature_cache, *txdata), &error)) {
+    if (VerifyScript(scriptSig, m_tx_out.scriptPubKey, witness, m_flags,
+                     CachingTransactionSignatureChecker(ptxTo, nIn, m_tx_out.nValue, cacheStore, *m_signature_cache, *txdata),
+                     &error, *m_varops_budget)) {
         return std::nullopt;
     } else {
         auto debug_str = strprintf("input %i of %s (wtxid %s), spending %s:%i", nIn, ptxTo->GetHash().ToString(), ptxTo->GetWitnessHash().ToString(), ptxTo->vin[nIn].prevout.hash.ToString(), ptxTo->vin[nIn].prevout.n);
@@ -2109,6 +2103,8 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
     }
     assert(txdata.m_spent_outputs.size() == tx.vin.size());
 
+    auto varops_budget{std::make_shared<varops::Budget>(varops::TxBudget(GetTransactionWeight(tx)))};
+
     for (unsigned int i = 0; i < tx.vin.size(); i++) {
 
         // We very carefully only pass in things to CScriptCheck which
@@ -2118,7 +2114,8 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
         // spent being checked as a part of CScriptCheck.
 
         // Verify signature
-        CScriptCheck check(txdata.m_spent_outputs[i], tx, validation_cache.m_signature_cache, i, flags, cacheSigStore, &txdata);
+        CScriptCheck check(txdata.m_spent_outputs[i], tx, validation_cache.m_signature_cache, i,
+                           flags, cacheSigStore, &txdata, varops_budget);
         if (pvChecks) {
             pvChecks->emplace_back(std::move(check));
         } else if (auto result = check(); result.has_value()) {
@@ -2295,6 +2292,10 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
     // Enforce BIP147 NULLDUMMY (activated simultaneously with segwit)
     if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_SEGWIT)) {
         flags |= SCRIPT_VERIFY_NULLDUMMY;
+    }
+
+    if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_SCRIPT_RESTORATION)) {
+        flags |= SCRIPT_VERIFY_SCRIPT_RESTORATION;
     }
 
     return flags;
@@ -3089,14 +3090,19 @@ bool Chainstate::ConnectTip(
              Ticks<MillisecondsDouble>(time_5 - time_4),
              Ticks<SecondsDouble>(m_chainman.time_chainstate),
              Ticks<MillisecondsDouble>(m_chainman.time_chainstate) / m_chainman.num_blocks_total);
-    // Remove conflicting transactions from the mempool.;
+    // Remove conflicting transactions from the mempool.
+    std::vector<RemovedMempoolTransactionInfo> txs_removed_for_block;
     if (m_mempool) {
-        m_mempool->removeForBlock(block_to_connect->vtx, pindexNew->nHeight);
+        txs_removed_for_block = m_mempool->removeForBlock(block_to_connect->vtx);
         disconnectpool.removeForBlock(block_to_connect->vtx);
     }
     // Update m_chain & related variables.
     m_chain.SetTip(*pindexNew);
     m_chainman.UpdateIBDStatus();
+    // Not fired while IBD is active. removeForBlock() above still runs.
+    if (m_mempool && m_chainman.m_options.signals && !m_chainman.IsInitialBlockDownload()) {
+        m_chainman.m_options.signals->MempoolTransactionsRemovedForBlock(block_to_connect, std::move(txs_removed_for_block), pindexNew->nHeight);
+    }
     UpdateTip(pindexNew);
 
     const auto time_6{SteadyClock::now()};
@@ -5847,7 +5853,7 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
                     return util::Error{Untranslated(strprintf("Bad snapshot data after deserializing %d coins - bad tx out value",
                               coins_count - coins_left))};
                 }
-                coins_cache.EmplaceCoinInternalDANGER(std::move(outpoint), std::move(coin));
+                coins_cache.EmplaceCoinInternalDANGER(outpoint, std::move(coin));
 
                 --coins_left;
                 ++coins_processed;
@@ -6001,8 +6007,8 @@ SnapshotCompletionResult ChainstateManager::MaybeValidateSnapshot(Chainstate& va
             validated_cs.m_assumeutxo != Assumeutxo::VALIDATED ||
             !validated_cs.m_chain.Tip() ||
             // Or the validated chainstate is not targeting the snapshot block...
-            !validated_cs.m_target_blockhash ||
-            *validated_cs.m_target_blockhash != *unvalidated_cs.m_from_snapshot_blockhash ||
+            !validated_cs.TargetBlockHash() ||
+            *validated_cs.TargetBlockHash() != *unvalidated_cs.m_from_snapshot_blockhash ||
             // Or the validated chainstate has not reached the snapshot block yet...
             !validated_cs.ReachedTarget()) {
        // Then the snapshot cannot be validated and there is nothing to do.
@@ -6198,8 +6204,8 @@ Chainstate& ChainstateManager::AddChainstate(std::unique_ptr<Chainstate> chainst
     Chainstate& prev_chainstate{CurrentChainstate()};
     assert(prev_chainstate.m_assumeutxo == Assumeutxo::VALIDATED);
     // Set target block for historical chainstate to snapshot block.
-    assert(!prev_chainstate.m_target_blockhash);
-    prev_chainstate.m_target_blockhash = chainstate->m_from_snapshot_blockhash;
+    assert(!prev_chainstate.TargetBlockHash());
+    prev_chainstate.SetTargetBlockHash(*Assert(chainstate->m_from_snapshot_blockhash));
     m_chainstates.push_back(std::move(chainstate));
     Chainstate& curr_chainstate{CurrentChainstate()};
     assert(&curr_chainstate == m_chainstates.back().get());
@@ -6268,7 +6274,7 @@ bool ChainstateManager::DeleteChainstate(Chainstate& chainstate)
     }
     std::unique_ptr<Chainstate> prev_chainstate{Assert(RemoveChainstate(chainstate))};
     Chainstate& curr_chainstate{CurrentChainstate()};
-    assert(prev_chainstate->m_mempool->size() == 0);
+    assert(!prev_chainstate->m_mempool || prev_chainstate->m_mempool->size() == 0);
     assert(!curr_chainstate.m_mempool);
     std::swap(curr_chainstate.m_mempool, prev_chainstate->m_mempool);
     return true;

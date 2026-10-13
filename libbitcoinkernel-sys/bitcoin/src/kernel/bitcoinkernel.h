@@ -334,9 +334,39 @@ typedef struct btck_PrecomputedTransactionData btck_PrecomputedTransactionData;
 typedef struct btck_Txid btck_Txid;
 
 /**
+ * Opaque data structure for holding a btck_Wtxid.
+ *
+ * This is a type-safe identifier for a transaction that commits to witness data.
+ */
+typedef struct btck_Wtxid btck_Wtxid;
+
+/**
  * Opaque data structure for holding a btck_BlockHeader.
  */
 typedef struct btck_BlockHeader btck_BlockHeader;
+
+/**
+ * Opaque data structure for holding a btck_ScriptTraceFrame.
+ */
+typedef struct btck_ScriptTraceFrame btck_ScriptTraceFrame;
+
+/**
+ * Opaque data structure for holding a view to a stack used in script evaluation.
+ */
+typedef struct btck_ScriptEvalStack btck_ScriptEvalStack;
+
+/**
+ * Opaque data structure for holding a view to an item in the stack used in script evaluation.
+ */
+typedef struct btck_ScriptEvalStackItem btck_ScriptEvalStackItem;
+
+/**
+ * Opaque data structure for holding an owned stack of script elements. Used to
+ * supply the initial stack to a standalone script evaluation. Unlike
+ * btck_ScriptEvalStack, which is a borrowed view into a live evaluation, this
+ * type is created and destroyed by the caller.
+ */
+typedef struct btck_ScriptStack btck_ScriptStack;
 
 /** Current sync state passed to tip changed callbacks. */
 typedef uint8_t btck_SynchronizationState;
@@ -532,13 +562,15 @@ typedef uint32_t btck_ScriptVerificationFlags;
 #define btck_ScriptVerificationFlags_CHECKSEQUENCEVERIFY ((btck_ScriptVerificationFlags)(1U << 10)) //!< enable CHECKSEQUENCEVERIFY (BIP112)
 #define btck_ScriptVerificationFlags_WITNESS ((btck_ScriptVerificationFlags)(1U << 11))             //!< enable WITNESS (BIP141)
 #define btck_ScriptVerificationFlags_TAPROOT ((btck_ScriptVerificationFlags)(1U << 17))             //!< enable TAPROOT (BIPs 341 & 342)
+#define btck_ScriptVerificationFlags_SCRIPT_RESTORATION ((btck_ScriptVerificationFlags)(1U << 21))  //!< enable script restoration and tapscript v2 (BIP 440 & 441)
 #define btck_ScriptVerificationFlags_ALL ((btck_ScriptVerificationFlags)(btck_ScriptVerificationFlags_P2SH |                \
                                                                          btck_ScriptVerificationFlags_DERSIG |              \
                                                                          btck_ScriptVerificationFlags_NULLDUMMY |           \
                                                                          btck_ScriptVerificationFlags_CHECKLOCKTIMEVERIFY | \
                                                                          btck_ScriptVerificationFlags_CHECKSEQUENCEVERIFY | \
                                                                          btck_ScriptVerificationFlags_WITNESS |             \
-                                                                         btck_ScriptVerificationFlags_TAPROOT))
+                                                                         btck_ScriptVerificationFlags_TAPROOT |             \
+                                                                         btck_ScriptVerificationFlags_SCRIPT_RESTORATION))
 
 typedef uint8_t btck_ChainType;
 #define btck_ChainType_MAINNET ((btck_ChainType)(0))
@@ -664,6 +696,15 @@ BITCOINKERNEL_API size_t btck_transaction_count_inputs(
     const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
 
 /**
+ * @brief Get a transaction's version.
+ *
+ * @param[in] transaction Non-null.
+ * @return                The version.
+ */
+BITCOINKERNEL_API uint32_t btck_transaction_get_version(
+    const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
  * @brief Get a transaction's nLockTime value.
  *
  * @param[in] transaction Non-null.
@@ -680,6 +721,25 @@ BITCOINKERNEL_API uint32_t btck_transaction_get_locktime(
  * @return                The txid.
  */
 BITCOINKERNEL_API const btck_Txid* btck_transaction_get_txid(
+    const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Check whether a transaction has witness data.
+ *
+ * @param[in] transaction Non-null.
+ * @return                1 if the transaction has witness data, 0 if not.
+ */
+BITCOINKERNEL_API int btck_transaction_has_witness(
+    const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Get the wtxid of a transaction. The returned wtxid is not owned and
+ * depends on the lifetime of the transaction.
+ *
+ * @param[in] transaction Non-null.
+ * @return                The wtxid.
+ */
+BITCOINKERNEL_API const btck_Wtxid* btck_transaction_get_wtxid(
     const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
 
 /**
@@ -1194,6 +1254,22 @@ BITCOINKERNEL_API btck_ChainstateManagerOptions* BITCOINKERNEL_WARN_UNUSED_RESUL
 BITCOINKERNEL_API void btck_chainstate_manager_options_set_worker_threads_num(
     btck_ChainstateManagerOptions* chainstate_manager_options,
     int worker_threads) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Set the total database cache used by the chainstate manager.
+ *
+ * The total cache is split internally between the block tree database,
+ * chainstate database, and in-memory coins cache. If this function is not
+ * called, the total cache defaults to 450 MiB.
+ *
+ * @param[in] chainstate_manager_options Non-null, options to be set.
+ * @param[in] database_cache_bytes       The total database cache size in bytes. Values below 4 MiB are rejected.
+ *                                       On 32-bit systems, values above 1 GiB are also rejected.
+ * @return                               0 if the set was successful, non-zero if the set failed.
+ */
+BITCOINKERNEL_API int BITCOINKERNEL_WARN_UNUSED_RESULT btck_chainstate_manager_options_set_database_cache_bytes(
+    btck_ChainstateManagerOptions* chainstate_manager_options,
+    uint64_t database_cache_bytes) BITCOINKERNEL_ARG_NONNULL(1);
 
 /**
  * @brief Sets wipe db in the options. In combination with calling
@@ -1856,6 +1932,46 @@ BITCOINKERNEL_API void btck_txid_destroy(btck_Txid* txid);
 
 ///@}
 
+/** @name Wtxid
+ * Functions for working with wtxids.
+ */
+///@{
+
+/**
+ * @brief Copy a wtxid.
+ *
+ * @param[in] wtxid Non-null.
+ * @return          The copied wtxid.
+ */
+BITCOINKERNEL_API btck_Wtxid* BITCOINKERNEL_WARN_UNUSED_RESULT btck_wtxid_copy(
+    const btck_Wtxid* wtxid) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Check if two wtxids are equal.
+ *
+ * @param[in] wtxid1 Non-null.
+ * @param[in] wtxid2 Non-null.
+ * @return           0 if the wtxid is not equal.
+ */
+BITCOINKERNEL_API int btck_wtxid_equals(
+    const btck_Wtxid* wtxid1, const btck_Wtxid* wtxid2) BITCOINKERNEL_ARG_NONNULL(1, 2);
+
+/**
+ * @brief Serializes the wtxid to bytes.
+ *
+ * @param[in] wtxid    Non-null.
+ * @param[out] output  The serialized wtxid.
+ */
+BITCOINKERNEL_API void btck_wtxid_to_bytes(
+    const btck_Wtxid* wtxid, unsigned char output[32]) BITCOINKERNEL_ARG_NONNULL(1, 2);
+
+/**
+ * Destroy the wtxid.
+ */
+BITCOINKERNEL_API void btck_wtxid_destroy(btck_Wtxid* wtxid);
+
+///@}
+
 /** @name Coin
  * Functions for working with coins.
  */
@@ -1997,6 +2113,15 @@ BITCOINKERNEL_API const btck_BlockHash* btck_block_header_get_prev_hash(
     const btck_BlockHeader* header) BITCOINKERNEL_ARG_NONNULL(1);
 
 /**
+ * @brief Get the Merkle root from btck_BlockHeader.
+ *
+ * @param[in] header Non-null btck_BlockHeader.
+ * @param[out] output The 32-byte Merkle root.
+ */
+BITCOINKERNEL_API void btck_block_header_get_merkle_root(
+    const btck_BlockHeader* header, unsigned char output[32]) BITCOINKERNEL_ARG_NONNULL(1, 2);
+
+/**
  * @brief Get the timestamp from btck_BlockHeader.
  *
  * @param[in] header    Non-null btck_BlockHeader
@@ -2047,6 +2172,286 @@ BITCOINKERNEL_API int BITCOINKERNEL_WARN_UNUSED_RESULT btck_block_header_to_byte
  * Destroy the btck_BlockHeader.
  */
 BITCOINKERNEL_API void btck_block_header_destroy(btck_BlockHeader* header);
+
+///@}
+
+/** @name Testing
+ * Functions intended for testing purposes only.
+ */
+///@{
+
+/**
+ * @brief Override the current time with a fixed timestamp for testing.
+ *
+ * Affects all kernel time reads globally. The caller is responsible
+ * for gating usage (e.g. restricting to regtest) if desired.
+ *
+ * The upper bound (4294967295) matches the maximum value of a block header
+ * timestamp.
+ *
+ * @param[in] timestamp Unix epoch seconds, or 0 to restore the system clock.
+ * @return              0 on success, non-zero if timestamp is outside the
+ *                      valid [0, 4294967295] range.
+ */
+BITCOINKERNEL_API int BITCOINKERNEL_WARN_UNUSED_RESULT btck_set_mock_time(int64_t timestamp);
+
+///@}
+
+/** @name ScriptStack
+ * Functions for building the initial stack of a standalone script evaluation.
+ */
+///@{
+
+/**
+ * @brief Create an empty script stack.
+ */
+BITCOINKERNEL_API btck_ScriptStack* BITCOINKERNEL_WARN_UNUSED_RESULT btck_script_stack_create();
+
+/**
+ * @brief Copy a script stack.
+ *
+ * @param[in] stack Non-null.
+ * @return          The copied script stack.
+ */
+BITCOINKERNEL_API btck_ScriptStack* BITCOINKERNEL_WARN_UNUSED_RESULT btck_script_stack_copy(
+    const btck_ScriptStack* stack) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Append an element to the top of the stack.
+ *
+ * @param[in] stack       Non-null.
+ * @param[in] element     Nullable if element_len is zero.
+ * @param[in] element_len Length of the element data.
+ */
+BITCOINKERNEL_API void btck_script_stack_push(
+    btck_ScriptStack* stack,
+    const void* element,
+    size_t element_len) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief The number of elements on the stack.
+ */
+BITCOINKERNEL_API size_t btck_script_stack_count_items(
+    const btck_ScriptStack* stack) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Write out the bytes of one of the elements on the stack. The index
+ * must be smaller than the number of elements on the stack.
+ *
+ * @return 0 on success.
+ */
+BITCOINKERNEL_API int BITCOINKERNEL_WARN_UNUSED_RESULT btck_script_stack_item_to_bytes(
+    const btck_ScriptStack* stack,
+    size_t index,
+    btck_WriteBytes writer,
+    void* user_data) BITCOINKERNEL_ARG_NONNULL(1, 3);
+
+/**
+ * Destroy the script stack.
+ */
+BITCOINKERNEL_API void btck_script_stack_destroy(btck_ScriptStack* stack);
+
+///@}
+
+/** @name TapscriptV2
+ * Functions for evaluating tapscript v2 (BIP 440 & 441) leaf scripts directly.
+ */
+///@{
+
+/**
+ * A collection of status codes that may be issued by the tapscript v2 evaluation function.
+ */
+typedef uint8_t btck_TapscriptV2EvalStatus;
+#define btck_TapscriptV2EvalStatus_OK ((btck_TapscriptV2EvalStatus)(0))
+#define btck_TapscriptV2EvalStatus_ERROR_INVALID_FLAGS_COMBINATION ((btck_TapscriptV2EvalStatus)(1))  //!< The flags were combined in an invalid way.
+#define btck_TapscriptV2EvalStatus_ERROR_SCRIPT_RESTORATION_REQUIRED ((btck_TapscriptV2EvalStatus)(2)) //!< The script restoration flag was not set.
+#define btck_TapscriptV2EvalStatus_ERROR_SPENT_OUTPUTS_REQUIRED ((btck_TapscriptV2EvalStatus)(3))     //!< A spending transaction was provided without precomputed data containing the spent outputs.
+#define btck_TapscriptV2EvalStatus_ERROR_TAPLEAF_HASH_REQUIRED ((btck_TapscriptV2EvalStatus)(4))      //!< A spending transaction was provided without a tapleaf hash.
+#define btck_TapscriptV2EvalStatus_ERROR_INVALID_INPUT_INDEX ((btck_TapscriptV2EvalStatus)(5))        //!< The input index is out of range for the provided transaction.
+
+/** Sentinel varops budget disabling varops metering entirely. */
+#define btck_VaropsBudget_UNMETERED ((uint64_t)UINT64_MAX)
+
+/**
+ * The spending context a tapscript v2 evaluation is run in.
+ *
+ * Signature and locktime opcodes can only succeed if a spending transaction is
+ * provided. Without one they fail as if the signature were invalid, which is
+ * usually what is wanted when stepping through a script that does not depend on
+ * a signature check.
+ */
+typedef struct {
+    const btck_Transaction* tx_to;                             //!< Nullable, transaction spending the leaf script.
+    const btck_PrecomputedTransactionData* precomputed_txdata; //!< Required when tx_to is set, and must contain the spent outputs.
+    int64_t amount;                                            //!< Amount of the output being spent.
+    unsigned int input_index;                                  //!< Index of the input in tx_to spending the leaf script.
+    const void* annex;                                         //!< Nullable, the annex of that input's witness, including its 0x50 tag byte.
+    size_t annex_len;                                          //!< Length of the annex data.
+    const unsigned char* tapleaf_hash;                         //!< Nullable unless tx_to is set, 32 bytes, the BIP 341 tapleaf hash of the leaf script.
+} btck_TapscriptV2SpendContext;
+
+/**
+ * @brief Evaluate a tapscript v2 leaf script against an initial stack.
+ *
+ * This runs the full consensus path for a leaf with version 0xc2: OP_SUCCESSx
+ * handling, the initial stack limits, evaluation, and the final cleanstack and
+ * truthiness check. It does not verify a taproot commitment, so the caller is
+ * responsible for establishing that the script is committed to by the output
+ * being spent. `btck_ScriptVerificationFlags_SCRIPT_RESTORATION` must be set.
+ *
+ * The evaluation does not mutate the stack that was passed in. Intermediate and
+ * final stack states are observable through a registered script trace callback.
+ *
+ * @param[in] script            Non-null, the leaf script to evaluate.
+ * @param[in] stack             Non-null, the initial stack. The top of the stack is the last element.
+ * @param[in] flags             Bitfield of btck_ScriptVerificationFlags controlling validation constraints.
+ * @param[in] spend_context     Nullable, the spending context. Without one, signature checks fail.
+ * @param[in] varops_budget     The varops budget for this evaluation, or btck_VaropsBudget_UNMETERED
+ *                              to evaluate without metering. Consensus derives this from the weight
+ *                              of the whole transaction, so a single-script evaluation can only
+ *                              approximate it.
+ * @param[out] varops_remaining Nullable, set to the unspent budget, or to btck_VaropsBudget_UNMETERED
+ *                              if the evaluation was unmetered.
+ * @param[out] script_error     Nullable, set to the script error of the evaluation, 0 on success.
+ * @param[out] status           Nullable, will be set to an error code if the operation fails, or OK otherwise.
+ * @return                      1 if the script evaluated successfully, 0 otherwise.
+ */
+BITCOINKERNEL_API int BITCOINKERNEL_WARN_UNUSED_RESULT btck_tapscript_v2_eval(
+    const btck_ScriptPubkey* script,
+    const btck_ScriptStack* stack,
+    btck_ScriptVerificationFlags flags,
+    const btck_TapscriptV2SpendContext* spend_context,
+    uint64_t varops_budget,
+    uint64_t* varops_remaining,
+    int32_t* script_error,
+    btck_TapscriptV2EvalStatus* status) BITCOINKERNEL_ARG_NONNULL(1, 2);
+
+///@}
+
+/** @name ScriptTrace
+ * Functions for script execution tracing.
+ */
+///@{
+
+typedef uint8_t btck_ScriptTraceFrameKind;
+#define btck_ScriptTraceFrameKind_BEGIN ((btck_ScriptTraceFrameKind)(0))
+#define btck_ScriptTraceFrameKind_STEP  ((btck_ScriptTraceFrameKind)(1))
+#define btck_ScriptTraceFrameKind_END   ((btck_ScriptTraceFrameKind)(2))
+
+typedef uint8_t btck_SigVersion;
+#define btck_SigVersion_BASE       ((btck_SigVersion)(0))
+#define btck_SigVersion_WITNESS_V0 ((btck_SigVersion)(1))
+#define btck_SigVersion_TAPROOT    ((btck_SigVersion)(2))
+#define btck_SigVersion_TAPSCRIPT  ((btck_SigVersion)(3))
+#define btck_SigVersion_TAPSCRIPT_V2 ((btck_SigVersion)(4))
+
+/**
+ * Callback function type for script trace frames.
+ *
+ * Called during script execution with the current execution state.
+ *
+ * @param[in] user_data  User-defined opaque pointer passed through from registration.
+ * @param[in] frame      Pointer to the current execution state snapshot. Data
+ *                       in the struct is only valid for the duration of this callback.
+ */
+typedef void (*btck_ScriptTraceCallback)(
+    void* user_data,
+    const btck_ScriptTraceFrame* frame);
+
+/// Whether this is a begin, step, or end frame.
+BITCOINKERNEL_API btck_ScriptTraceFrameKind btck_script_trace_frame_get_kind(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// The returned pointer is unowned and only valid for the lifetime of the frame.
+BITCOINKERNEL_API const btck_ScriptEvalStack* btck_script_trace_frame_get_stack(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// The returned pointer is unowned and only valid for the lifetime of the frame.
+BITCOINKERNEL_API const btck_ScriptEvalStack* btck_script_trace_frame_get_altstack(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// The script being evaluated
+BITCOINKERNEL_API int btck_script_trace_frame_get_script(
+    const btck_ScriptTraceFrame* frame, btck_WriteBytes writer, void* user_data) BITCOINKERNEL_ARG_NONNULL(1, 2);
+
+/// Index of the current opcode under evaluation (counting opcodes, not bytes)
+BITCOINKERNEL_API uint32_t btck_script_trace_frame_get_opcode_pos(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// Non-zero if this opcode is evaluated. Zero if it is skipped in a conditional branch. Control-flow opcodes
+/// (OP_IF, OP_NOTIF, OP_ELSE, OP_ENDIF) processed in an inactive branch also report 0. Only meaningful in step frames.
+BITCOINKERNEL_API int btck_script_trace_frame_get_exec(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// The current opcode under evaluation. Only meaningful in step frames.
+BITCOINKERNEL_API uint8_t btck_script_trace_frame_get_opcode(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// Counter towards the ops script limit. Always 0 for TAPSCRIPT_V2, which has
+/// no op count limit; see BIP 441.
+BITCOINKERNEL_API int btck_script_trace_frame_get_op_count(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// Cumulative varops charged by this evaluation, not including the current
+/// opcode. Always 0 for sigversions that are not varops-metered.
+BITCOINKERNEL_API uint64_t btck_script_trace_frame_get_varops(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// The signature version.
+BITCOINKERNEL_API btck_SigVersion btck_script_trace_frame_get_sig_version(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// Returns 0 and writes 32 bytes on success, non-zero if there is no tapleaf hash.
+BITCOINKERNEL_API int btck_script_trace_frame_get_tapleaf_hash(
+    const btck_ScriptTraceFrame* frame, unsigned char output[32]) BITCOINKERNEL_ARG_NONNULL(1, 2);
+
+/// Opcode position of the last evaluated OP_CODESEPARATOR. 0xFFFFFFFF if none.
+BITCOINKERNEL_API uint32_t btck_script_trace_frame_get_codeseparator_pos(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// Script error code. Only meaningful in end frames. -1 if the current script evaluation does not report errors.
+BITCOINKERNEL_API int32_t btck_script_trace_frame_get_script_error(
+    const btck_ScriptTraceFrame* frame) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// The number of items contained in the script evaluation stack.
+BITCOINKERNEL_API size_t btck_script_eval_stack_count_items(
+    const btck_ScriptEvalStack* stack) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// Get one of the items in the script evaluation stack.
+BITCOINKERNEL_API const btck_ScriptEvalStackItem* btck_script_eval_stack_get_item_at(
+    const btck_ScriptEvalStack* stack, size_t index) BITCOINKERNEL_ARG_NONNULL(1);
+
+/// Write out bytes from one of the items in the script evaluation stack.
+BITCOINKERNEL_API int btck_script_eval_stack_item_to_bytes(
+    const btck_ScriptEvalStackItem* item, btck_WriteBytes writer, void* user_data) BITCOINKERNEL_ARG_NONNULL(1, 2);
+
+/**
+ * @brief Register a global script trace callback.
+ *
+ * Only one callback can be registered at a time. Registering a new callback
+ * replaces the previous one. The callback fires on entry of the script
+ * evaluator, on exit, and once per instruction - after the opcode is decoded
+ * and before it is dispatched/executed.
+ *
+ * @param[in] callback                   The callback function to register.
+ * @param[in] user_data                  User-defined opaque pointer passed to the callback.
+ * @param[in] user_data_destroy_callback Nullable, function for freeing the user data.
+ * @return                               0 if the script trace feature is available.
+ */
+BITCOINKERNEL_API int BITCOINKERNEL_WARN_UNUSED_RESULT btck_script_trace_register_callback(
+    btck_ScriptTraceCallback callback,
+    void* user_data,
+    btck_DestroyCallback user_data_destroy_callback) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Unregister the global script trace callback.
+ *
+ * Unregistration is not synchronized with callback execution. Script
+ * evaluations already in progress complete with the previously registered
+ * callback. Script evaluations started after this call won't invoke the
+ * callback anymore.
+ */
+BITCOINKERNEL_API void btck_script_trace_unregister_callback();
 
 ///@}
 

@@ -9,6 +9,7 @@
 # ------------
 
 unsigned-integer-overflow:*/include/c++/
+unsigned-integer-overflow:*/include/boost/multiprecision/
 unsigned-integer-overflow:FuzzedDataProvider::ConsumeIntegralInRange
 unsigned-integer-overflow:leveldb/
 unsigned-integer-overflow:minisketch/
@@ -61,6 +62,7 @@ implicit-integer-sign-change:crypto/
 implicit-integer-sign-change:TxConfirmStats::removeTx
 implicit-integer-sign-change:EvalScript
 implicit-signed-integer-truncation:crypto/
+implicit-unsigned-integer-truncation:SaltedCoinsCacheHasher::operator()
 implicit-unsigned-integer-truncation:crypto/
 shift-base:arith_uint256.cpp
 shift-base:crypto/

@@ -52,11 +52,28 @@ add_executable(bench_bitcoin
   strencodings.cpp
   txgraph.cpp
   txorphanage.cpp
+  uint256_blob.cpp
   util_time.cpp
   verify_script.cpp
 )
 
 add_windows_application_manifest(bench_bitcoin)
+
+add_executable(bench_varops
+  bench_varops.cpp
+  bench.cpp
+  nanobench.cpp
+)
+
+target_link_libraries(bench_varops
+  core_interface
+  test_util
+  bitcoin_node
+  secp256k1
+  Boost::headers
+)
+
+add_windows_application_manifest(bench_varops)
 
 include(TargetDataSources)
 target_raw_data_sources(bench_bitcoin NAMESPACE benchmark::data
@@ -88,5 +105,22 @@ if(ENABLE_WALLET)
   )
   target_link_libraries(bench_bitcoin bitcoin_wallet)
 endif()
+
+add_test(NAME bench_sanity_check
+  COMMAND bench_bitcoin -sanity-check
+)
+
+add_test(NAME bench_varops_rejects_unknown_opcode
+  COMMAND bench_varops --silent
+          --opcodes OP_NOP OP_DOES_NOT_EXIST
+)
+set_tests_properties(bench_varops_rejects_unknown_opcode PROPERTIES WILL_FAIL TRUE)
+
+add_test(NAME bench_varops_reports_output_failure
+  COMMAND bench_varops --silent --epochs 1
+          --opcodes OP_NOP
+          --file ${CMAKE_CURRENT_BINARY_DIR}/bench_varops_missing_directory/results.csv
+)
+set_tests_properties(bench_varops_reports_output_failure PROPERTIES WILL_FAIL TRUE)
 
 install_binary_component(bench_bitcoin INTERNAL)

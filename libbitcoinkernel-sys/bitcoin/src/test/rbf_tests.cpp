@@ -121,11 +121,6 @@ BOOST_FIXTURE_TEST_CASE(rbf_helper_functions, TestChain100Setup)
     BOOST_CHECK_EQUAL(entry8_high->GetFee(), high_fee);
 
     CTxMemPool::setEntries set_12_normal{entry1_normal, entry2_normal};
-    CTxMemPool::setEntries set_34_cpfp{entry3_low, entry4_high};
-    CTxMemPool::setEntries set_56_low{entry5_low, entry6_low_prioritised};
-    CTxMemPool::setEntries set_78_high{entry7_high, entry8_high};
-    CTxMemPool::setEntries all_entries{entry1_normal, entry2_normal, entry3_low, entry4_high,
-                                       entry5_low, entry6_low_prioritised, entry7_high, entry8_high};
     CTxMemPool::setEntries empty_set;
 
     const auto unused_txid = Txid::FromUint256(GetRandHash());
@@ -221,7 +216,7 @@ BOOST_FIXTURE_TEST_CASE(rbf_conflicts_calculator, TestChain100Setup)
     dummy.clear();
 
     // If we mine the parent_tx's, then the clusters split (102 clusters).
-    pool.removeForBlock({parent_tx_1, parent_tx_2}, /*nBlockHeight=*/ 1);
+    pool.removeForBlock({parent_tx_1, parent_tx_2});
 
     // Add some descendants now to each of the direct children (we can do this now that the clusters have split).
     for (const auto& child : direct_children) {
