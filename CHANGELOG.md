@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Added `LogEntry`, passed to `Log::log`. It exposes the entry's message, thread name, timestamp, mock time, source location, level and category, and is valid only for the duration of the call.
+- Added `set_logging_min_level` to set the minimum level of entries delivered to loggers. Defaults to `LogLevel::Info`.
+- Added `LogLevel::Warning`, `LogLevel::Error`, `LogCategory::TxPackages` and `LogCategory::Lock`.
+
+### Changed
+- `Log::log` now takes `&mut self` and a `LogEntry` instead of `&self` and a `&str`. Messages no longer carry the timestamp and other prefixes previously controlled by `LoggingOptions`; read them from the entry instead.
+- Messages are no longer escaped and no longer end in a newline. The kernel used to escape control characters so untrusted data could not forge log lines. Loggers that need that protection now have to escape messages themselves.
+- `Log` now requires `Send`, since the kernel may call it from any thread. It does not need to be `Sync`, because calls never overlap.
+- `LogCategory::All` renamed to `LogCategory::None`, following upstream. `All` selected every category when setting levels; `None` marks an entry that has no category.
+- Messages logged before the first `Logger` is created are dropped. The kernel used to buffer up to 1 MB of them and deliver them once the first `Logger` connected.
+
+### Removed
+- Removed `disable_logging`, `set_logging_options`, `LoggingOptions`, `Logger::new_with_options`, `Logger::set_level_category`, `Logger::enable_category` and `Logger::disable_category`, following their removal upstream. Use `set_logging_min_level` to control verbosity.
+
+### Fixed
+- A panic in `Log::log` is caught instead of unwinding into the kernel. Unwinding out of the `extern "C"` log callback was undefined behavior before Rust 1.81 and aborted the process from 1.81 on.
+
 ## [0.3.2] 2026-10-06
 
 ### Dependencies

@@ -290,7 +290,7 @@ pub use crate::core::{
     TxOutPoint, TxOutPointRef, TxOutRef, Txid, TxidRef, WitnessStack, WitnessStackRef,
 };
 
-pub use crate::log::{disable_logging, Log, LogCategory, LogLevel, Logger};
+pub use crate::log::{set_logging_min_level, Log, LogCategory, LogEntry, LogLevel, Logger};
 
 pub use crate::notifications::{
     BlockCheckedCallback, BlockTipCallback, BlockValidationResult, BlockValidationStateRef,

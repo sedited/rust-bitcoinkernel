@@ -1,14 +1,14 @@
 #![no_main]
 
-use std::sync::{Arc, Once};
+use std::sync::Arc;
 
 use libfuzzer_sys::fuzz_target;
 
 use arbitrary::Arbitrary;
 
 use bitcoinkernel::{
-    disable_logging, prelude::*, Block, BlockValidationStateRef, ChainType,
-    ChainstateManagerBuilder, Context, ContextBuilder, KernelError, ValidationMode,
+    prelude::*, Block, BlockValidationStateRef, ChainType, ChainstateManagerBuilder, Context,
+    ContextBuilder, KernelError, ValidationMode,
 };
 
 fn create_context(chain_type: ChainType) -> Arc<Context> {
@@ -61,13 +61,7 @@ pub struct ChainstateManagerInput {
     pub worker_threads: i32,
 }
 
-static INIT: Once = Once::new();
-
 fuzz_target!(|data: ChainstateManagerInput| {
-    INIT.call_once(|| {
-        disable_logging();
-    });
-
     let context = create_context(data.chain_type.into());
     // Sanitize the input string by removing dots and slashes
     let sanitized_string: String = data

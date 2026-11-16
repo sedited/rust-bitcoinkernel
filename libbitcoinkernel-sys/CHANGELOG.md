@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- New `btck_LogEntry` opaque type for holding a log entry passed to `btck_LogCallback`
+- New `btck_log_entry_get_message`, `btck_log_entry_get_thread_name`, `btck_log_entry_get_timestamp_ns`, `btck_log_entry_get_mocktime_s`, `btck_log_entry_get_file_name`, `btck_log_entry_get_function_name`, `btck_log_entry_get_line`, `btck_log_entry_get_level` and `btck_log_entry_get_category` for reading a log entry
+- New `btck_StringView` struct for the non-owning strings returned by the `btck_log_entry_get_*` functions
+- New `btck_logging_set_min_level` for setting the minimum level of entries delivered to logging callbacks
+- New `btck_LogLevel_WARNING`, `btck_LogLevel_ERROR`, `btck_LogCategory_TXPACKAGES` and `btck_LogCategory_LOCK` constants
+
+### Changed
+- `btck_LogCallback` now receives a `*const btck_LogEntry` instead of a message pointer and length
+- `btck_LogCategory_ALL` renamed to `btck_LogCategory_NONE`; it marks entries not tied to a category
+- `btck_logging_connection_create` now invokes `user_data_destroy_callback` on failure, so callers must not free `user_data` themselves after a null return
+
+### Removed
+- Removed `btck_LoggingOptions`, `btck_logging_disable`, `btck_logging_set_options`, `btck_logging_set_level_category`, `btck_logging_enable_category` and `btck_logging_disable_category`
+
 ## [0.4.1] - 2026-10-06
 
 ### Fixed
