@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-export LC_ALL=C
-set -e -o pipefail
+# Copyright (c) The Bitcoin Core developers
+# Distributed under the MIT software license, see the accompanying
+# file COPYING or https://opensource.org/license/mit.
+export LC_ALL=C.UTF-8
+set -o errexit -o pipefail
 
 source contrib/shell/realpath.bash
 source contrib/shell/git-utils.bash
@@ -68,7 +71,7 @@ fi
 time-machine() {
     # shellcheck disable=SC2086
     guix time-machine --url=https://codeberg.org/guix/guix.git \
-                      --commit=c5eee3336cc1d10a3cc1c97fde2809c3451624d3 \
+                      --commit=60f6956aeffa7f30285745bd0ea615e9acfc74f8 \
                       --cores="$JOBS" \
                       --keep-failed \
                       --fallback \

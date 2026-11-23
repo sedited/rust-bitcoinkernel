@@ -8,10 +8,9 @@ import json
 import os
 from dataclasses import dataclass
 from test_framework.test_framework import BitcoinTestFramework
-from test_framework.util import assert_equal, assert_greater_than_or_equal
+from test_framework.util import JSONRPCException, assert_equal, assert_greater_than_or_equal
 from threading import Thread
 from typing import Optional
-import subprocess
 
 
 RPC_INVALID_PARAMETER      = -8
@@ -83,8 +82,8 @@ def test_work_queue_getblock(node, got_exceeded_error):
     while not got_exceeded_error:
         try:
             node.cli("waitfornewblock", "500").send_cli()
-        except subprocess.CalledProcessError as e:
-            assert_equal(e.output, 'error: Server response: Work queue depth exceeded\n')
+        except JSONRPCException as e:
+            assert_equal(e.error["message"], "non-JSON HTTP response with '503 Service Unavailable' from server: Work queue depth exceeded")
             got_exceeded_error.append(True)
 
 
@@ -177,6 +176,23 @@ class RPCInterfaceTest(BitcoinTestFramework):
             request_fields={"jsonrpc": "2.1"},
             response_fields={"result": None, "error": {"code": RPC_INVALID_REQUEST, "message": "JSON-RPC version not supported"}}))
 
+    def test_batch_invalid_element_reply(self):
+        self.log.info("Testing that an invalid batch element does not reuse the id or version of the previous one...")
+
+        response, status = send_json_rpc(self.nodes[0], [{"jsonrpc": "2.0", "method": "getblockcount", "id": "X"}, "not an object"])
+        assert_equal(status, 200)
+        assert_equal(response, [
+            {"jsonrpc": "2.0", "result": 0, "id": "X"},
+            {"result": None, "error": {"code": RPC_INVALID_REQUEST, "message": "Invalid Request object"}, "id": None},
+        ])
+
+        # The error is not dropped as if it were the reply to the notification before it
+        response, status = send_json_rpc(self.nodes[0], [{"jsonrpc": "2.0", "method": "getblockcount"}, "not an object"])
+        assert_equal(status, 200)
+        assert_equal(response, [
+            {"result": None, "error": {"code": RPC_INVALID_REQUEST, "message": "Invalid Request object"}, "id": None},
+        ])
+
     def test_http_status_codes(self):
         self.log.info("Testing HTTP status codes for JSON-RPC 1.1 requests...")
         # OK
@@ -241,6 +257,7 @@ class RPCInterfaceTest(BitcoinTestFramework):
     def run_test(self):
         self.test_getrpcinfo()
         self.test_batch_requests()
+        self.test_batch_invalid_element_reply()
         self.test_http_status_codes()
         self.test_work_queue_exceeded()
 

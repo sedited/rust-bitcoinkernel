@@ -7,7 +7,7 @@
 
 #include <util/macros.h>
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
 
 // Check that required client information is defined
 #if !defined(CLIENT_VERSION_MAJOR) || !defined(CLIENT_VERSION_MINOR) || !defined(CLIENT_VERSION_BUILD) || !defined(CLIENT_VERSION_IS_RELEASE) || !defined(COPYRIGHT_YEAR)
@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-static const int CLIENT_VERSION =
+inline constexpr int CLIENT_VERSION =
                              10000 * CLIENT_VERSION_MAJOR
                          +     100 * CLIENT_VERSION_MINOR
                          +       1 * CLIENT_VERSION_BUILD;

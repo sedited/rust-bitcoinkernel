@@ -23,10 +23,9 @@
 #endif
 
 #include <algorithm>
-#include <cassert>
-#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <list>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -164,7 +163,7 @@ std::list<SectionInfo> ArgsManager::GetUnrecognizedSections() const
 
     LOCK(cs_args);
     std::list<SectionInfo> unrecognized = m_config_sections;
-    unrecognized.remove_if([](const SectionInfo& appeared){ return available_sections.contains(appeared.m_name); });
+    std::erase_if(unrecognized, [](const SectionInfo& appeared) { return available_sections.contains(appeared.m_name); });
     return unrecognized;
 }
 
@@ -284,7 +283,7 @@ fs::path ArgsManager::GetPathArg_(std::string arg, const fs::path& default_value
     AssertLockHeld(cs_args);
     const auto value = GetSetting_(arg);
     if (value.isFalse()) return {};
-    std::string path_str = SettingToString(value, "");
+    std::string path_str = SettingToString(value).value_or("");
     if (path_str.empty()) return default_value;
     fs::path result = fs::PathFromString(path_str).lexically_normal();
     // Remove trailing slash, if present.
@@ -536,11 +535,6 @@ std::optional<std::string> SettingToString(const common::SettingsValue& value)
     return value.get_str();
 }
 
-std::string SettingToString(const common::SettingsValue& value, const std::string& strDefault)
-{
-    return SettingToString(value).value_or(strDefault);
-}
-
 template <std::integral Int>
 Int ArgsManager::GetArg(const std::string& strArg, Int nDefault) const
 {
@@ -564,12 +558,6 @@ std::optional<Int> SettingTo(const common::SettingsValue& value)
     return LocaleIndependentAtoi<Int>(value.get_str());
 }
 
-template <std::integral Int>
-Int SettingTo(const common::SettingsValue& value, Int nDefault)
-{
-    return SettingTo<Int>(value).value_or(nDefault);
-}
-
 bool ArgsManager::GetBoolArg(const std::string& strArg, bool fDefault) const
 {
     return GetBoolArg(strArg).value_or(fDefault);
@@ -588,15 +576,9 @@ std::optional<bool> SettingToBool(const common::SettingsValue& value)
     return InterpretBool(value.get_str());
 }
 
-bool SettingToBool(const common::SettingsValue& value, bool fDefault)
-{
-    return SettingToBool(value).value_or(fDefault);
-}
-
 #define INSTANTIATE_INT_TYPE(Type)                                                    \
     template Type ArgsManager::GetArg<Type>(const std::string&, Type) const;          \
     template std::optional<Type> ArgsManager::GetArg<Type>(const std::string&) const; \
-    template Type SettingTo<Type>(const common::SettingsValue&, Type);                \
     template std::optional<Type> SettingTo<Type>(const common::SettingsValue&)
 
 INSTANTIATE_INT_TYPE(int8_t);

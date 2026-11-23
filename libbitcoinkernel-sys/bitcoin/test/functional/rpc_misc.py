@@ -27,6 +27,7 @@ class RpcMiscTest(BitcoinTestFramework):
 
         self.log.info("test CHECK_NONFATAL")
         msg_internal_bug = 'request.params[9].get_str() != "trigger_internal_bug"'
+        msg_failed_check = f"`{msg_internal_bug}` check failed"
         self.restart_node(0)  # Required to flush the chainstate
         try:
             node.echo(arg9="trigger_internal_bug")
@@ -41,7 +42,7 @@ class RpcMiscTest(BitcoinTestFramework):
             self.start_node(0)
         except JSONRPCException as e:
             assert_equal(e.error["code"], -1)
-            assert f"Internal bug detected: {msg_internal_bug}" in e.error["message"]
+            assert f"Internal bug detected: {msg_failed_check}" in e.error["message"]
 
         self.log.info("test max arg size")
         ARG_SZ_COMMON = 131071  # Common limit, used previously in the test framework, serves as a regression test
@@ -98,9 +99,8 @@ class RpcMiscTest(BitcoinTestFramework):
         # Without any indices running the RPC returns an empty object
         assert_equal(node.getindexinfo(), {})
 
-        # Restart the node with indices and wait for them to sync
+        # Restart the node with indices.
         self.restart_node(0, ["-txindex", "-blockfilterindex", "-coinstatsindex", "-txospenderindex"])
-        self.wait_until(lambda: all(i["synced"] for i in node.getindexinfo().values()))
 
         # Returns a list of all running indices by default
         values = {"synced": True, "best_block_height": 200}

@@ -10,6 +10,7 @@
 #include <hash.h>
 #include <prevector.h>
 #include <tinyformat.h>
+#include <util/check.h>
 #include <util/strencodings.h>
 #include <util/string.h>
 
@@ -21,7 +22,7 @@
 #include <string_view>
 #include <tuple>
 
-using util::ContainsNoNUL;
+using util::ContainsNUL;
 using util::HasPrefix;
 
 CNetAddr::BIP155Network CNetAddr::GetBIP155Network() const
@@ -40,10 +41,10 @@ CNetAddr::BIP155Network CNetAddr::GetBIP155Network() const
     case NET_INTERNAL:   // should have been handled before calling this function
     case NET_UNROUTABLE: // m_net is never and should not be set to NET_UNROUTABLE
     case NET_MAX:        // m_net is never and should not be set to NET_MAX
-        assert(false);
+        AssertUnreachable();
     } // no default case, so the compiler can warn about missing cases
 
-    assert(false);
+    AssertUnreachable();
 }
 
 bool CNetAddr::SetNetFromBIP155Network(uint8_t possible_bip155_net, size_t address_size)
@@ -128,7 +129,7 @@ void CNetAddr::SetIP(const CNetAddr& ipIn)
         break;
     case NET_UNROUTABLE:
     case NET_MAX:
-        assert(false);
+        AssertUnreachable();
     } // no default case, so the compiler can warn about missing cases
 
     m_net = ipIn.m_net;
@@ -211,7 +212,7 @@ static void Checksum(std::span<const uint8_t> addr_pubkey, uint8_t (&checksum)[C
 
 bool CNetAddr::SetSpecial(std::string_view addr)
 {
-    if (!ContainsNoNUL(addr)) {
+    if (ContainsNUL(addr)) {
         return false;
     }
 
@@ -228,8 +229,9 @@ bool CNetAddr::SetSpecial(std::string_view addr)
 
 bool CNetAddr::SetTor(std::string_view addr)
 {
-    if (!addr.ends_with(".onion")) return false;
-    addr.remove_suffix(6);
+    static constexpr std::string_view suffix{".onion"};
+    if (addr.size() < suffix.size() || ToLower(addr.substr(addr.size() - suffix.size())) != suffix) return false;
+    addr.remove_suffix(suffix.size());
     auto input = DecodeBase32(addr);
 
     if (!input) {
@@ -343,6 +345,12 @@ bool CNetAddr::IsRFC3849() const
     return IsIPv6() && HasPrefix(m_addr, std::array<uint8_t, 4>{0x20, 0x01, 0x0D, 0xB8});
 }
 
+bool CNetAddr::IsRFC9637() const
+{
+    return IsIPv6() && HasPrefix(m_addr, std::array<uint8_t, 2>{0x3F, 0xFF}) &&
+           (m_addr[2] & 0xF0) == 0x00;
+}
+
 bool CNetAddr::IsRFC3964() const
 {
     return IsIPv6() && HasPrefix(m_addr, std::array<uint8_t, 2>{0x20, 0x02});
@@ -434,7 +442,7 @@ bool CNetAddr::IsValid() const
     }
 
     // documentation IPv6 address
-    if (IsRFC3849())
+    if (IsRFC3849() || IsRFC9637())
         return false;
 
     if (IsInternal())
@@ -487,10 +495,10 @@ bool CNetAddr::IsAddrV1Compatible() const
         return false;
     case NET_UNROUTABLE: // m_net is never and should not be set to NET_UNROUTABLE
     case NET_MAX:        // m_net is never and should not be set to NET_MAX
-        assert(false);
+        AssertUnreachable();
     } // no default case, so the compiler can warn about missing cases
 
-    assert(false);
+    AssertUnreachable();
 }
 
 enum Network CNetAddr::GetNetwork() const
@@ -594,10 +602,10 @@ std::string CNetAddr::ToStringAddr() const
         return EncodeBase32(m_addr) + ".internal";
     case NET_UNROUTABLE: // m_net is never and should not be set to NET_UNROUTABLE
     case NET_MAX:        // m_net is never and should not be set to NET_MAX
-        assert(false);
+        AssertUnreachable();
     } // no default case, so the compiler can warn about missing cases
 
-    assert(false);
+    AssertUnreachable();
 }
 
 bool operator==(const CNetAddr& a, const CNetAddr& b)
@@ -668,7 +676,7 @@ uint32_t CNetAddr::GetLinkedIPv4() const
         // Teredo tunneled IPv4: the IPv4 address is in the last 4 bytes of the address, but bitflipped
         return ~ReadBE32(std::span{m_addr}.last(ADDR_IPV4_SIZE).data());
     }
-    assert(false);
+    AssertUnreachable();
 }
 
 Network CNetAddr::GetNetClass() const

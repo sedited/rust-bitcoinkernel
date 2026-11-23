@@ -21,6 +21,7 @@
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
 #include <test/fuzz/util/mempool.h>
+#include <test/fuzz/util/reachability.h>
 #include <test/util/mining.h>
 #include <test/util/random.h>
 #include <test/util/script.h>
@@ -57,6 +58,8 @@ namespace {
 const TestingSetup* g_setup;
 std::vector<COutPoint> g_outpoints_coinbase_init_mature;
 std::vector<COutPoint> g_outpoints_coinbase_init_immature;
+constexpr ReachabilityGoal TX_POOL_STANDARD_ACCEPTS_TRANSACTION{"tx_pool_standard accepts a transaction"};
+constexpr ReachabilityGoal TX_POOL_ACCEPTS_TRANSACTION{"tx_pool accepts a transaction"};
 
 struct MockedTxPool : public CTxMemPool {
     void RollingFeeUpdate() EXCLUSIVE_LOCKS_REQUIRED(!cs)
@@ -67,7 +70,7 @@ struct MockedTxPool : public CTxMemPool {
     }
 };
 
-void initialize_tx_pool()
+void initialize_tx_pool_common()
 {
     static const auto testing_setup = MakeNoLogFileContext<const TestingSetup>();
     g_setup = testing_setup.get();
@@ -84,6 +87,18 @@ void initialize_tx_pool()
         outpoints.push_back(prevout);
     }
     g_setup->m_node.validation_signals->SyncWithValidationInterfaceQueue();
+}
+
+void initialize_tx_pool_standard()
+{
+    RegisterReachabilityGoal(TX_POOL_STANDARD_ACCEPTS_TRANSACTION);
+    initialize_tx_pool_common();
+}
+
+void initialize_tx_pool()
+{
+    RegisterReachabilityGoal(TX_POOL_ACCEPTS_TRANSACTION);
+    initialize_tx_pool_common();
 }
 
 struct TransactionsDelta final : public CValidationInterface {
@@ -116,6 +131,32 @@ void SetMempoolConstraints(ArgsManager& args, FuzzedDataProvider& fuzzed_data_pr
                      ToString(fuzzed_data_provider.ConsumeIntegralInRange<unsigned>(0, 999)));
 }
 
+/** Get a list of wtxids to query from the mempool for relay. Make the list heterogeneous with
+ * wtxids of mempool transactions, non-mempool transactions, and duplicates. */
+std::vector<Wtxid> WtxidsToRelay(FuzzedDataProvider& fuzzed_data_provider, const MockedTxPool& tx_pool)
+{
+    LOCK(tx_pool.cs);
+    std::vector<Wtxid> res;
+
+    uint8_t dummy{0};
+    const auto mempool_entries{tx_pool.entryAll()};
+    LIMITED_WHILE(fuzzed_data_provider.ConsumeBool(), 100) {
+        if (!mempool_entries.empty() && fuzzed_data_provider.ConsumeBool()) {
+            // Wtxid of an in-mempool transaction
+            const auto& entry_ref{PickValue(fuzzed_data_provider, mempool_entries).get()};
+            res.push_back(entry_ref.GetTx().GetWitnessHash());
+            // Don't remove it from the mempool, so the next pick is possibly a duplicate
+        } else {
+            // Wtxid of a not-in-mempool transaction
+            res.push_back(Wtxid::FromUint256(uint256{dummy}));
+            // Possibly make the next wtxid of a not-in-mempool transaction, a duplicate
+            if (fuzzed_data_provider.ConsumeBool()) dummy++;
+        }
+    }
+
+    return res;
+}
+
 void Finish(FuzzedDataProvider& fuzzed_data_provider, MockedTxPool& tx_pool, Chainstate& chainstate)
 {
     WITH_LOCK(::cs_main, tx_pool.check(chainstate.CoinsTip(), chainstate.m_chain.Height() + 1));
@@ -130,7 +171,7 @@ void Finish(FuzzedDataProvider& fuzzed_data_provider, MockedTxPool& tx_pool, Cha
 
         // Try updating the mempool for this block, as though it were mined.
         LOCK2(::cs_main, tx_pool.cs);
-        tx_pool.removeForBlock(block_template->block.vtx, chainstate.m_chain.Height() + 1);
+        tx_pool.removeForBlock(block_template->block.vtx);
 
         // Now try to add those transactions back, as though a reorg happened.
         std::vector<Txid> hashes_to_update;
@@ -149,6 +190,28 @@ void Finish(FuzzedDataProvider& fuzzed_data_provider, MockedTxPool& tx_pool, Cha
         const auto& tx_to_remove = *PickValue(fuzzed_data_provider, info_all).tx;
         WITH_LOCK(tx_pool.cs, tx_pool.removeRecursive(tx_to_remove, MemPoolRemovalReason::BLOCK /* dummy */));
         assert(tx_pool.size() < info_all.size());
+    }
+
+    // Query a number of mempool entries as if to relay them, and assert some invariants on the result.
+    auto wtxids_to_relay{WtxidsToRelay(fuzzed_data_provider, tx_pool)};
+    const auto wtxids_count_before{wtxids_to_relay.size()};
+    const auto n_to_sort{fuzzed_data_provider.ConsumeIntegralInRange<size_t>(0, 100)};
+    const auto sorted_iter{WITH_LOCK(tx_pool.cs, return tx_pool.ExtractBestByMiningScoreWithTopology(wtxids_to_relay, n_to_sort))};
+    const auto expected_count{std::min(n_to_sort, wtxids_count_before)};
+    // We removed at least as many transactions from the list as we expected sorted entries.
+    Assert(wtxids_to_relay.size() <= wtxids_count_before - expected_count);
+    // When there is enough non-duplicate in-mempool transactions (list of remaining wtxids is
+    // non-empty), we must have received the expected number of entries.
+    Assert(sorted_iter.size() == expected_count || wtxids_to_relay.empty());
+    if (n_to_sort > 0) {
+        // If we asked for a positive number of entries, we must have removed all wtxids that do
+        // not correspond to a mempool entry..
+        const auto is_in_mempool = [&](const auto& wtxid) EXCLUSIVE_LOCKS_REQUIRED(tx_pool.cs) { return tx_pool.GetIter(wtxid).has_value(); };
+        Assert(WITH_LOCK(tx_pool.cs, return std::ranges::all_of(wtxids_to_relay, is_in_mempool)));
+        // ..As well as all duplicates.
+        const auto wtxids_count{wtxids_to_relay.size()};
+        const std::set<Wtxid> unique_wtxids{std::make_move_iterator(wtxids_to_relay.begin()), std::make_move_iterator(wtxids_to_relay.end())};
+        Assert(unique_wtxids.size() == wtxids_count);
     }
 
     if (fuzzed_data_provider.ConsumeBool()) {
@@ -225,21 +288,15 @@ void CheckATMPInvariants(const MempoolAcceptResult& res, bool txid_in_mempool, b
         break;
     }
     case MempoolAcceptResult::ResultType::MEMPOOL_ENTRY:
-    {
-        // ATMP never sets this; only set in package settings
-        Assert(false);
-        break;
-    }
     case MempoolAcceptResult::ResultType::DIFFERENT_WITNESS:
     {
-        // ATMP never sets this; only set in package settings
-        Assert(false);
-        break;
+        // Only set in package settings, never by ATMP
+        AssertUnreachable();
     }
     }
 }
 
-FUZZ_TARGET(tx_pool_standard, .init = initialize_tx_pool)
+FUZZ_TARGET(tx_pool_standard, .init = initialize_tx_pool_standard)
 {
     SeedRandomStateForTest(SeedRand::ZEROS);
     FuzzedDataProvider fuzzed_data_provider(buffer.data(), buffer.size());
@@ -265,6 +322,8 @@ FUZZ_TARGET(tx_pool_standard, .init = initialize_tx_pool)
     MockedTxPool& tx_pool = *static_cast<MockedTxPool*>(tx_pool_.get());
 
     chainstate.SetMempool(&tx_pool);
+
+    bool accepted_transaction{false};
 
     // Helper to query an amount
     const CCoinsViewMemPool amount_view{WITH_LOCK(::cs_main, return &chainstate.CoinsTip()), tx_pool};
@@ -370,6 +429,7 @@ FUZZ_TARGET(tx_pool_standard, .init = initialize_tx_pool)
 
         const auto res = WITH_LOCK(::cs_main, return AcceptToMemoryPool(chainstate, tx, GetTime(), /*bypass_limits=*/false, /*test_accept=*/false));
         const bool accepted = res.m_result_type == MempoolAcceptResult::ResultType::VALID;
+        accepted_transaction |= accepted;
         node.validation_signals->SyncWithValidationInterfaceQueue();
         node.validation_signals->UnregisterSharedValidationInterface(txr);
 
@@ -422,6 +482,7 @@ FUZZ_TARGET(tx_pool_standard, .init = initialize_tx_pool)
             }
         }
     }
+    ObserveReachabilityGoal(accepted_transaction, TX_POOL_STANDARD_ACCEPTS_TRANSACTION);
     Finish(fuzzed_data_provider, tx_pool, chainstate);
 }
 
@@ -451,6 +512,8 @@ FUZZ_TARGET(tx_pool, .init = initialize_tx_pool)
 
     chainstate.SetMempool(&tx_pool);
 
+    bool accepted_transaction{false};
+
     // If we ever bypass limits, do not do TRUC invariants checks
     bool ever_bypassed_limits{false};
 
@@ -477,6 +540,7 @@ FUZZ_TARGET(tx_pool, .init = initialize_tx_pool)
         const auto tx = MakeTransactionRef(mut_tx);
         const auto res = WITH_LOCK(::cs_main, return AcceptToMemoryPool(chainstate, tx, GetTime(), bypass_limits, /*test_accept=*/false));
         const bool accepted = res.m_result_type == MempoolAcceptResult::ResultType::VALID;
+        accepted_transaction |= accepted;
         if (accepted) {
             txids.push_back(tx->GetHash());
             if (!ever_bypassed_limits) {
@@ -484,6 +548,7 @@ FUZZ_TARGET(tx_pool, .init = initialize_tx_pool)
             }
         }
     }
+    ObserveReachabilityGoal(accepted_transaction, TX_POOL_ACCEPTS_TRANSACTION);
     Finish(fuzzed_data_provider, tx_pool, chainstate);
 }
 } // namespace

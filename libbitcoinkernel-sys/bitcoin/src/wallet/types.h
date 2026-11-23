@@ -3,8 +3,10 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-//! @file wallet/types.h is a home for public enum and struct type definitions
-//! that are used by internally by wallet code, but also used externally by node
+//! @file
+//! @brief Home for public enum and struct type definitions.
+//!
+//! These are used internally by wallet code, but also used externally by node
 //! or GUI code.
 //!
 //! This file is intended to define only simple types that do not have external
@@ -14,10 +16,25 @@
 #ifndef BITCOIN_WALLET_TYPES_H
 #define BITCOIN_WALLET_TYPES_H
 
-#include <policy/fees/block_policy_estimator.h>
+#include <consensus/amount.h>
+#include <policy/feerate.h>
+#include <primitives/transaction.h>
+#include <util/fees.h>
 #include <util/translation.h>
 
+#include <optional>
+#include <utility>
+
 namespace wallet {
+struct MinimumFeeRateResult {
+    CFeeRate fee_rate;
+    FeeReason fee_reason;
+    std::optional<int> returned_target;
+
+    MinimumFeeRateResult(CFeeRate fee_rate, FeeReason fee_reason, std::optional<int> returned_target)
+        : fee_rate{fee_rate}, fee_reason{fee_reason}, returned_target{std::move(returned_target)} {}
+};
+
 /**
  * Address purpose field that has been been stored with wallet sending and
  * receiving addresses since BIP70 payment protocol support was added in
@@ -36,11 +53,11 @@ struct CreatedTransactionResult
 {
     CTransactionRef tx;
     CAmount fee;
-    FeeCalculation fee_calc;
+    FeeReason fee_reason;
     std::optional<unsigned int> change_pos;
 
-    CreatedTransactionResult(CTransactionRef _tx, CAmount _fee, std::optional<unsigned int> _change_pos, const FeeCalculation& _fee_calc)
-            : tx(_tx), fee(_fee), fee_calc(_fee_calc), change_pos(_change_pos) {}
+    CreatedTransactionResult(CTransactionRef _tx, CAmount _fee, std::optional<unsigned int> _change_pos, FeeReason _fee_reason)
+        : tx(_tx), fee(_fee), fee_reason(_fee_reason), change_pos(_change_pos) {}
 };
 
 //! Machine-readable wallet error codes.
@@ -56,6 +73,15 @@ enum class WalletErrorCode {
     //! The wallet is locked and the operation requires access to private keys.
     //! Callers may ask the user to unlock the wallet and retry the operation.
     UnlockNeeded,
+
+    //! The passphrase does not decrypt the wallet. Callers may ask the user to enter it again.
+    PassphraseIncorrect,
+
+    //! TODO Add correct descriptions to each error.
+    //! At the moment only used by ImportDescriptors.
+    InvalidDescriptor,
+    InvalidParameter,
+    MiscError,
 };
 
 //! Wallet-layer error with both programmatic and user-facing information.

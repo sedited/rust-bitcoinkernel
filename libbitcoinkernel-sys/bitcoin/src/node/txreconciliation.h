@@ -7,12 +7,13 @@
 
 #include <net.h>
 #include <sync.h>
+#include <util/not_null.h>
 
 #include <memory>
 #include <tuple>
 
 /** Supported transaction reconciliation protocol version */
-static constexpr uint32_t TXRECONCILIATION_VERSION{1};
+inline constexpr uint32_t TXRECONCILIATION_VERSION{1};
 
 enum class ReconciliationRegisterResult {
     NOT_FOUND,
@@ -52,7 +53,7 @@ class TxReconciliationTracker
 {
 private:
     class Impl;
-    const std::unique_ptr<Impl> m_impl;
+    const util::NotNullUniquePtr<Impl> m_impl;
 
 public:
     explicit TxReconciliationTracker(uint32_t recon_version);

@@ -3,22 +3,39 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <rpc/register.h> // IWYU pragma: associated
+
 #include <chain.h>
-#include <chainparams.h>
 #include <coins.h>
+#include <crypto/hex_base.h>
 #include <index/txindex.h>
 #include <merkleblock.h>
 #include <node/blockstorage.h>
+#include <node/context.h>
+#include <node/transaction.h>
+#include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <rpc/blockchain.h>
+#include <rpc/protocol.h>
+#include <rpc/request.h>
 #include <rpc/server.h>
 #include <rpc/server_util.h>
 #include <rpc/util.h>
+#include <streams.h>
+#include <sync.h>
+#include <uint256.h>
 #include <univalue.h>
-#include <util/strencodings.h>
 #include <validation.h>
 
+#include <memory>
+#include <set>
+#include <span>
+#include <string>
+#include <utility>
+#include <vector>
+
 using node::GetTransaction;
+using node::NodeContext;
 
 static RPCMethod gettxoutproof()
 {
@@ -57,7 +74,8 @@ static RPCMethod gettxoutproof()
 
             const CBlockIndex* pblockindex = nullptr;
             uint256 hashBlock;
-            ChainstateManager& chainman = EnsureAnyChainman(request.context);
+            NodeContext& node = EnsureAnyNodeContext(request.context);
+            ChainstateManager& chainman = EnsureChainman(node);
             if (!request.params[1].isNull()) {
                 LOCK(cs_main);
                 hashBlock = ParseHashV(request.params[1], "blockhash");
@@ -81,12 +99,12 @@ static RPCMethod gettxoutproof()
 
 
             // Allow txindex to catch up if we need to query it and before we acquire cs_main.
-            if (g_txindex && !pblockindex) {
-                g_txindex->BlockUntilSyncedToCurrentChain();
+            if (node.txindex && !pblockindex) {
+                node.txindex->BlockUntilSyncedToCurrentChain();
             }
 
             if (pblockindex == nullptr) {
-                const CTransactionRef tx = GetTransaction(/*block_index=*/nullptr, /*mempool=*/nullptr, *setTxids.begin(), chainman.m_blockman, hashBlock);
+                const CTransactionRef tx = GetTransaction(/*block_index=*/nullptr, /*mempool=*/nullptr, node.txindex.get(), *setTxids.begin(), chainman.m_blockman, hashBlock);
                 if (!tx || hashBlock.IsNull()) {
                     throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not yet in block");
                 }

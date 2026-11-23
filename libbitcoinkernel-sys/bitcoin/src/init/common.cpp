@@ -2,7 +2,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
+
+#include <init/common.h>
 
 #include <clientversion.h>
 #include <common/args.h>
@@ -17,7 +19,7 @@
 #include <util/translation.h>
 
 #include <algorithm>
-#include <filesystem>
+#include <ranges>
 #include <string>
 #include <vector>
 

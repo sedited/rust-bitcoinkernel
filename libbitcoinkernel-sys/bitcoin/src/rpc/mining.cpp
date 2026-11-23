@@ -3,9 +3,9 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
 
-#include <interfaces/mining.h>
+#include <rpc/register.h> // IWYU pragma: associated
 
 #include <addresstype.h>
 #include <arith_uint256.h>
@@ -23,7 +23,9 @@
 #include <key_io.h>
 #include <net.h>
 #include <netbase.h>
+#include <node/block_template_manager.h>
 #include <node/blockstorage.h>
+#include <node/block_validation_state_catcher.h>
 #include <node/context.h>
 #include <node/miner.h>
 #include <node/mining_args.h>
@@ -65,7 +67,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <initializer_list>
 #include <limits>
 #include <map>
 #include <memory>
@@ -78,8 +79,6 @@
 #include <vector>
 
 using interfaces::BlockRef;
-using interfaces::BlockTemplate;
-using interfaces::Mining;
 using node::BlockAssembler;
 using node::GetMinimumTime;
 using node::NodeContext;
@@ -192,15 +191,14 @@ static bool GenerateBlock(ChainstateManager& chainman, CBlock&& block, uint64_t&
     return true;
 }
 
-static UniValue generateBlocks(ChainstateManager& chainman, Mining& miner, const CScript& coinbase_output_script, int nGenerate, uint64_t nMaxTries)
+static UniValue generateBlocks(ChainstateManager& chainman, node::BlockTemplateManager& block_template_manager, const CScript& coinbase_output_script, int nGenerate, uint64_t nMaxTries)
 {
     UniValue blockHashes(UniValue::VARR);
     while (nGenerate > 0 && !chainman.m_interrupt) {
-        std::unique_ptr<BlockTemplate> block_template(miner.createNewBlock({ .coinbase_output_script = coinbase_output_script }, /*cooldown=*/false));
-        CHECK_NONFATAL(block_template);
+        auto block_template{block_template_manager.CreateNewTemplate({.coinbase_output_script = coinbase_output_script})};
 
         std::shared_ptr<const CBlock> block_out;
-        if (!GenerateBlock(chainman, block_template->getBlock(), nMaxTries, block_out, /*process_new_block=*/true)) {
+        if (!GenerateBlock(chainman, CBlock{block_template->block}, nMaxTries, block_out, /*process_new_block=*/true)) {
             break;
         }
 
@@ -277,10 +275,10 @@ static RPCMethod generatetodescriptor()
     }
 
     NodeContext& node = EnsureAnyNodeContext(request.context);
-    Mining& miner = EnsureMining(node);
     ChainstateManager& chainman = EnsureChainman(node);
+    node::BlockTemplateManager& block_template_manager = EnsureBlockTemplateManager(node);
 
-    return generateBlocks(chainman, miner, coinbase_output_script, num_blocks, max_tries);
+    return generateBlocks(chainman, block_template_manager, coinbase_output_script, num_blocks, max_tries);
 },
     };
 }
@@ -314,8 +312,8 @@ static RPCMethod generatetoaddress()
                 },
         [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
-    const int num_blocks{request.params[0].getInt<int>()};
-    const uint64_t max_tries{request.params[2].isNull() ? DEFAULT_MAX_TRIES : request.params[2].getInt<int>()};
+    const int num_blocks{self.Arg<int>("nblocks")};
+    const uint64_t max_tries{self.Arg<uint64_t>("maxtries")};
 
     CTxDestination destination = DecodeDestination(request.params[1].get_str());
     if (!IsValidDestination(destination)) {
@@ -323,12 +321,12 @@ static RPCMethod generatetoaddress()
     }
 
     NodeContext& node = EnsureAnyNodeContext(request.context);
-    Mining& miner = EnsureMining(node);
     ChainstateManager& chainman = EnsureChainman(node);
+    node::BlockTemplateManager& block_template_manager = EnsureBlockTemplateManager(node);
 
     CScript coinbase_output_script = GetScriptForDestination(destination);
 
-    return generateBlocks(chainman, miner, coinbase_output_script, num_blocks, max_tries);
+    return generateBlocks(chainman, block_template_manager, coinbase_output_script, num_blocks, max_tries);
 },
     };
 }
@@ -376,7 +374,7 @@ static RPCMethod generateblock()
     }
 
     NodeContext& node = EnsureAnyNodeContext(request.context);
-    Mining& miner = EnsureMining(node);
+    node::BlockTemplateManager& block_template_manager = EnsureBlockTemplateManager(node);
     const CTxMemPool& mempool = EnsureMemPool(node);
 
     std::vector<CTransactionRef> txs;
@@ -401,17 +399,16 @@ static RPCMethod generateblock()
         }
     }
 
-    const bool process_new_block{request.params[2].isNull() ? true : request.params[2].get_bool()};
+    const bool process_new_block{self.Arg<bool>("submit")};
     CBlock block;
 
     ChainstateManager& chainman = EnsureChainman(node);
     {
         LOCK(chainman.GetMutex());
         {
-            std::unique_ptr<BlockTemplate> block_template{miner.createNewBlock({.use_mempool = false, .coinbase_output_script = coinbase_output_script}, /*cooldown=*/false)};
-            CHECK_NONFATAL(block_template);
+            auto block_template{block_template_manager.CreateNewTemplate({.use_mempool = false, .coinbase_output_script = coinbase_output_script})};
 
-            block = block_template->getBlock();
+            block = block_template->block;
         }
 
         CHECK_NONFATAL(block.vtx.size() == 1);
@@ -454,6 +451,7 @@ static RPCMethod getmininginfo()
                     RPCResult::Type::OBJ, "", "",
                     {
                         {RPCResult::Type::NUM, "blocks", "The current block"},
+                        {RPCResult::Type::STR_HEX, "bestblockhash", "The hash of the current best block"},
                         {RPCResult::Type::NUM, "currentblockweight", /*optional=*/true, "The block weight (including reserved weight for block header, txs count and coinbase tx) of the last assembled block (only present if a block was ever assembled)"},
                         {RPCResult::Type::NUM, "currentblocktx", /*optional=*/true, "The number of block transactions (excluding coinbase) of the last assembled block (only present if a block was ever assembled)"},
                         {RPCResult::Type::STR_HEX, "bits", "The current nBits, compact representation of the block difficulty target"},
@@ -495,6 +493,7 @@ static RPCMethod getmininginfo()
 
     UniValue obj(UniValue::VOBJ);
     obj.pushKV("blocks", active_chain.Height());
+    obj.pushKV("bestblockhash", tip.GetBlockHash().GetHex());
     if (BlockAssembler::m_last_block_weight) obj.pushKV("currentblockweight", *BlockAssembler::m_last_block_weight);
     if (BlockAssembler::m_last_block_num_txs) obj.pushKV("currentblocktx", *BlockAssembler::m_last_block_num_txs);
     obj.pushKV("bits", strprintf("%08x", tip.nBits));
@@ -502,7 +501,7 @@ static RPCMethod getmininginfo()
     obj.pushKV("target", GetTarget(tip, chainman.GetConsensus().powLimit).GetHex());
     obj.pushKV("networkhashps",    getnetworkhashps().HandleRequest(request));
     obj.pushKV("pooledtx", mempool.size());
-    const auto mining_options{node::FlattenMiningOptions(node.mining_args)};
+    const auto mining_options{node::FlattenMiningOptions(EnsureBlockTemplateManager(node).BlockCreateArgs())};
     obj.pushKV("blockmintxfee", ValueFromAmount(CHECK_NONFATAL(mining_options.block_min_fee_rate)->GetFeePerK()));
     obj.pushKV("chain", chainman.GetParams().GetChainTypeString());
 
@@ -536,7 +535,8 @@ static RPCMethod prioritisetransaction()
                 {
                     {"txid", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "The transaction id."},
                     {"dummy", RPCArg::Type::NUM, RPCArg::Optional::OMITTED, "API-Compatibility for previous API. Must be zero or null.\n"
-            "                  DEPRECATED. For forward compatibility use named arguments and omit this parameter."},
+            "                  DEPRECATED. For forward compatibility use named arguments and omit this parameter.",
+                        RPCArgOptions{.placeholder = true}},
                     {"fee_delta", RPCArg::Type::NUM, RPCArg::Optional::NO, "The fee value (in satoshis) to add (or subtract, if negative).\n"
             "                  Note, that this value is not a fee rate. It is a value to modify absolute fee of the TX.\n"
             "                  The fee is not actually paid, only the algorithm for selecting transactions into a block\n"
@@ -605,7 +605,7 @@ static RPCMethod getprioritisedtransactions()
                 if (delta_info.in_mempool) {
                     result_inner.pushKV("modified_fee", *delta_info.modified_fee);
                 }
-                rpc_result.pushKV(delta_info.txid.GetHex(), std::move(result_inner));
+                rpc_result.pushKVEnd(delta_info.txid.GetHex(), std::move(result_inner));
             }
             return rpc_result;
         },
@@ -738,7 +738,7 @@ static RPCMethod getblocktemplate()
 {
     NodeContext& node = EnsureAnyNodeContext(request.context);
     ChainstateManager& chainman = EnsureChainman(node);
-    Mining& miner = EnsureMining(node);
+    node::BlockTemplateManager& block_template_manager = EnsureBlockTemplateManager(node);
 
     std::string strMode = "template";
     UniValue lpval = NullUniValue;
@@ -793,22 +793,22 @@ static RPCMethod getblocktemplate()
     if (strMode != "template")
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid mode");
 
-    if (!miner.isTestChain()) {
+    if (!chainman.GetParams().IsTestChain()) {
         const CConnman& connman = EnsureConnman(node);
         if (connman.GetNodeCount(ConnectionDirection::Both) == 0) {
             throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, CLIENT_NAME " is not connected!");
         }
 
-        if (miner.isInitialBlockDownload()) {
+        if (chainman.IsInitialBlockDownload()) {
             throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, CLIENT_NAME " is in initial sync and waiting for blocks...");
         }
     }
 
-    static unsigned int nTransactionsUpdatedLast;
+    static uint32_t nTransactionsUpdatedLast;
     const CTxMemPool& mempool = EnsureMemPool(node);
 
     WAIT_LOCK(cs_main, cs_main_lock);
-    uint256 tip{CHECK_NONFATAL(miner.getTip()).value().hash};
+    uint256 tip{CHECK_NONFATAL(block_template_manager.GetTip()).value().hash};
 
     // Long Polling (BIP22)
     if (!lpval.isNull()) {
@@ -827,7 +827,7 @@ static RPCMethod getblocktemplate()
          * The longpollid is assumed to be a tip hash if it has the right format.
          */
         uint256 hashWatchedChain;
-        unsigned int nTransactionsUpdatedLastLP;
+        uint32_t nTransactionsUpdatedLastLP;
 
         if (lpval.isStr())
         {
@@ -837,7 +837,7 @@ static RPCMethod getblocktemplate()
             // Assume the longpollid is a block hash. If it's not then we return
             // early below.
             hashWatchedChain = ParseHashV(lpstr.substr(0, 64), "longpollid");
-            nTransactionsUpdatedLastLP = LocaleIndependentAtoi<int64_t>(lpstr.substr(64));
+            nTransactionsUpdatedLastLP = static_cast<uint32_t>(LocaleIndependentAtoi<int64_t>(lpstr.substr(64)));
         }
         else
         {
@@ -853,7 +853,7 @@ static RPCMethod getblocktemplate()
             while (IsRPCRunning()) {
                 // If hashWatchedChain is not a real block hash, this will
                 // return immediately.
-                std::optional<BlockRef> maybe_tip{miner.waitTipChanged(hashWatchedChain, checktxtime)};
+                std::optional<BlockRef> maybe_tip{block_template_manager.WaitTipChanged(hashWatchedChain, checktxtime)};
                 // Node is shutting down
                 if (!maybe_tip) break;
                 tip = maybe_tip->hash;
@@ -867,7 +867,7 @@ static RPCMethod getblocktemplate()
                 checktxtime = std::chrono::seconds(10);
             }
         }
-        tip = CHECK_NONFATAL(miner.getTip()).value().hash;
+        tip = CHECK_NONFATAL(block_template_manager.GetTip()).value().hash;
 
         if (!IsRPCRunning())
             throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, "Shutting down");
@@ -889,7 +889,7 @@ static RPCMethod getblocktemplate()
     // Update block
     static CBlockIndex* pindexPrev;
     static int64_t time_start;
-    static std::unique_ptr<BlockTemplate> block_template;
+    static std::unique_ptr<node::CBlockTemplate> block_template;
     if (!pindexPrev || pindexPrev->GetBlockHash() != tip ||
         (mempool.GetTransactionsUpdated() != nTransactionsUpdatedLast && GetTime() - time_start > 5))
     {
@@ -905,7 +905,7 @@ static RPCMethod getblocktemplate()
         // a delay to each getblocktemplate call. This differs from typical
         // long-lived IPC usage, where the overhead is paid only when creating
         // the initial template.
-        block_template = miner.createNewBlock({}, /*cooldown=*/false);
+        block_template = block_template_manager.CreateNewTemplate({});
         CHECK_NONFATAL(block_template);
 
 
@@ -913,11 +913,11 @@ static RPCMethod getblocktemplate()
         pindexPrev = pindexPrevNew;
     }
     CHECK_NONFATAL(pindexPrev);
-    CBlock block{block_template->getBlock()};
+    CBlockHeader block_header{block_template->block};
 
     // Update nTime
-    UpdateTime(&block, consensusParams, pindexPrev);
-    block.nNonce = 0;
+    UpdateTime(&block_header, consensusParams, pindexPrev);
+    block_header.nNonce = 0;
 
     // NOTE: If at some point we support pre-segwit miners post-segwit-activation, this needs to take segwit support into consideration
     const bool fPreSegWit = !DeploymentActiveAfter(pindexPrev, chainman, Consensus::DEPLOYMENT_SEGWIT);
@@ -926,11 +926,11 @@ static RPCMethod getblocktemplate()
 
     UniValue transactions(UniValue::VARR);
     std::map<Txid, int64_t> setTxIndex;
-    std::vector<CAmount> tx_fees{block_template->getTxFees()};
-    std::vector<int64_t> tx_sigops{block_template->getTxSigops()};
+    const std::vector<CAmount>& tx_fees{block_template->vTxFees};
+    const std::vector<int64_t>& tx_sigops{block_template->vTxSigOpsCost};
 
     int i = 0;
-    for (const auto& it : block.vtx) {
+    for (const auto& it : block_template->block.vtx) {
         const CTransaction& tx = *it;
         Txid txHash = tx.GetHash();
         setTxIndex[txHash] = i++;
@@ -967,7 +967,7 @@ static RPCMethod getblocktemplate()
 
     UniValue aux(UniValue::VOBJ);
 
-    arith_uint256 hashTarget = arith_uint256().SetCompact(block.nBits);
+    arith_uint256 hashTarget = arith_uint256().SetCompact(block_header.nBits);
 
     UniValue aMutable(UniValue::VARR);
     aMutable.push_back("time");
@@ -999,16 +999,16 @@ static RPCMethod getblocktemplate()
         vbavailable.pushKV(gbt_rule_value(name, info.gbt_optional_rule), info.bit);
         if (!info.gbt_optional_rule && !setClientRules.contains(name)) {
             // If the client doesn't support this, don't indicate it in the [default] version
-            block.nVersion &= ~info.mask;
+            block_header.nVersion &= ~info.mask;
         }
     }
 
     for (const auto& [name, info] : gbtstatus.locked_in) {
-        block.nVersion |= info.mask;
+        block_header.nVersion |= info.mask;
         vbavailable.pushKV(gbt_rule_value(name, info.gbt_optional_rule), info.bit);
         if (!info.gbt_optional_rule && !setClientRules.contains(name)) {
             // If the client doesn't support this, don't indicate it in the [default] version
-            block.nVersion &= ~info.mask;
+            block_header.nVersion &= ~info.mask;
         }
     }
 
@@ -1020,15 +1020,15 @@ static RPCMethod getblocktemplate()
         }
     }
 
-    result.pushKV("version", block.nVersion);
+    result.pushKV("version", block_header.nVersion);
     result.pushKV("rules", std::move(aRules));
     result.pushKV("vbavailable", std::move(vbavailable));
     result.pushKV("vbrequired", 0);
 
-    result.pushKV("previousblockhash", block.hashPrevBlock.GetHex());
+    result.pushKV("previousblockhash", block_header.hashPrevBlock.GetHex());
     result.pushKV("transactions", std::move(transactions));
     result.pushKV("coinbaseaux", std::move(aux));
-    result.pushKV("coinbasevalue", block.vtx[0]->vout[0].nValue);
+    result.pushKV("coinbasevalue", block_template->block.vtx[0]->vout[0].nValue);
     result.pushKV("longpollid", tip.GetHex() + ToString(nTransactionsUpdatedLast));
     result.pushKV("target", hashTarget.GetHex());
     result.pushKV("mintime", GetMinimumTime(pindexPrev, consensusParams.DifficultyAdjustmentInterval()));
@@ -1047,15 +1047,15 @@ static RPCMethod getblocktemplate()
     if (!fPreSegWit) {
         result.pushKV("weightlimit", MAX_BLOCK_WEIGHT);
     }
-    result.pushKV("curtime", block.GetBlockTime());
-    result.pushKV("bits", strprintf("%08x", block.nBits));
+    result.pushKV("curtime", block_header.GetBlockTime());
+    result.pushKV("bits", strprintf("%08x", block_header.nBits));
     result.pushKV("height", pindexPrev->nHeight + 1);
 
     if (consensusParams.signet_blocks) {
         result.pushKV("signet_challenge", HexStr(consensusParams.signet_challenge));
     }
 
-    if (auto coinbase{block_template->getCoinbaseTx()}; coinbase.required_outputs.size() > 0) {
+    if (const auto& coinbase{block_template->m_coinbase_tx}; coinbase.required_outputs.size() > 0) {
         CHECK_NONFATAL(coinbase.required_outputs.size() == 1); // Only one output is currently expected
         result.pushKV("default_witness_commitment", HexStr(coinbase.required_outputs[0].scriptPubKey));
     }
@@ -1064,24 +1064,6 @@ static RPCMethod getblocktemplate()
 },
     };
 }
-
-class submitblock_StateCatcher final : public CValidationInterface
-{
-public:
-    uint256 hash;
-    bool found{false};
-    BlockValidationState state;
-
-    explicit submitblock_StateCatcher(const uint256 &hashIn) : hash(hashIn), state() {}
-
-protected:
-    void BlockChecked(const std::shared_ptr<const CBlock>& block, const BlockValidationState& stateIn) override
-    {
-        if (block->GetHash() != hash) return;
-        found = true;
-        state = stateIn;
-    }
-};
 
 static RPCMethod submitblock()
 {
@@ -1092,7 +1074,8 @@ static RPCMethod submitblock()
         "See https://en.bitcoin.it/wiki/BIP_0022 for full specification.\n",
         {
             {"hexdata", RPCArg::Type::STR_HEX, RPCArg::Optional::NO, "the hex-encoded block data to submit"},
-            {"dummy", RPCArg::Type::STR, RPCArg::DefaultHint{"ignored"}, "dummy value, for compatibility with BIP22. This value is ignored."},
+            {"dummy", RPCArg::Type::STR, RPCArg::DefaultHint{"ignored"}, "dummy value, for compatibility with BIP22. This value is ignored.",
+                RPCArgOptions{.placeholder = true}},
         },
         {
             RPCResult{"If the block was accepted", RPCResult::Type::NONE, "", ""},
@@ -1120,17 +1103,17 @@ static RPCMethod submitblock()
     }
 
     bool new_block;
-    auto sc = std::make_shared<submitblock_StateCatcher>(block.GetHash());
+    auto sc = std::make_shared<node::BlockValidationStateCatcher>(block.GetHash());
     CHECK_NONFATAL(chainman.m_options.signals)->RegisterSharedValidationInterface(sc);
     bool accepted = chainman.ProcessNewBlock(blockptr, /*force_processing=*/true, /*min_pow_checked=*/true, /*new_block=*/&new_block);
     CHECK_NONFATAL(chainman.m_options.signals)->UnregisterSharedValidationInterface(sc);
     if (!new_block && accepted) {
         return "duplicate";
     }
-    if (!sc->found) {
+    if (!sc->m_state) {
         return "inconclusive";
     }
-    return BIP22ValidationResult(sc->state);
+    return BIP22ValidationResult(*sc->m_state);
 },
     };
 }

@@ -16,10 +16,6 @@ fi
 cd "${BASE_ROOT_DIR}"
 
 export PATH="/path_with space:${PATH}"
-export ASAN_OPTIONS="detect_leaks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1"
-export LSAN_OPTIONS="suppressions=${BASE_ROOT_DIR}/test/sanitizer_suppressions/lsan"
-export TSAN_OPTIONS="suppressions=${BASE_ROOT_DIR}/test/sanitizer_suppressions/tsan:halt_on_error=1:second_deadlock_stack=1"
-export UBSAN_OPTIONS="suppressions=${BASE_ROOT_DIR}/test/sanitizer_suppressions/ubsan:print_stacktrace=1:halt_on_error=1:report_error_type=1"
 
 echo "Number of available processing units: $(nproc)"
 if [ "$CI_OS_NAME" == "macos" ]; then
@@ -36,7 +32,7 @@ df -h
 # kernel mismatch between a cached docker image and the underlying host.
 # This can happen occasionally on hosted runners if the runner image is updated.
 if [[ "$CONTAINER_NAME" == "ci_native_asan" ]]; then
-  $CI_RETRY_EXE apt-get update
+  $CI_RETRY_EXE apt-get update --error-on=any
   ${CI_RETRY_EXE} bash -c "apt-get install --no-install-recommends --no-upgrade -y $PACKAGES"
 fi
 
@@ -96,12 +92,12 @@ if [ -z "$NO_DEPENDS" ]; then
   bash -c "$SHELL_OPTS make $MAKEJOBS -C depends HOST=$HOST $DEP_OPTS LOG=1"
 fi
 if [ "$DOWNLOAD_PREVIOUS_RELEASES" = "true" ]; then
-  test/get_previous_releases.py --target-dir "$PREVIOUS_RELEASES_DIR"
+  test/get_previous_releases.py
 fi
 
-BITCOIN_CONFIG_ALL="-DCMAKE_COMPILE_WARNING_AS_ERROR=ON -DBUILD_BENCH=ON -DBUILD_FUZZ_BINARY=ON"
+BITCOIN_CONFIG_ALL=(-DCMAKE_COMPILE_WARNING_AS_ERROR=ON -DCMAKE_INSTALL_PREFIX="$BASE_OUTDIR" -Werror=dev)
 if [ -z "$NO_DEPENDS" ]; then
-  BITCOIN_CONFIG_ALL="${BITCOIN_CONFIG_ALL} -DCMAKE_TOOLCHAIN_FILE=$DEPENDS_DIR/$HOST/toolchain.cmake"
+  BITCOIN_CONFIG_ALL+=(-DCMAKE_TOOLCHAIN_FILE="$DEPENDS_DIR/$HOST/toolchain.cmake")
 fi
 
 ccache --zero-stats
@@ -109,29 +105,23 @@ ccache --zero-stats
 # Folder where the build is done.
 BASE_BUILD_DIR=${BASE_BUILD_DIR:-$BASE_SCRATCH_DIR/build-$HOST}
 
-BITCOIN_CONFIG_ALL="$BITCOIN_CONFIG_ALL '-DCMAKE_INSTALL_PREFIX=$BASE_OUTDIR' -Werror=dev"
-
 if [[ "${RUN_IWYU}" == true || "${RUN_TIDY}" == true ]]; then
-  BITCOIN_CONFIG_ALL="$BITCOIN_CONFIG_ALL -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+  BITCOIN_CONFIG_ALL+=(-DCMAKE_EXPORT_COMPILE_COMMANDS=ON)
 fi
 
-eval "CMAKE_ARGS=($BITCOIN_CONFIG_ALL $BITCOIN_CONFIG)"
-cmake -S "$BASE_ROOT_DIR" -B "$BASE_BUILD_DIR" "${CMAKE_ARGS[@]}" || (
+eval "BITCOIN_CONFIG=($BITCOIN_CONFIG)"
+cmake -S "$BASE_ROOT_DIR" -B "$BASE_BUILD_DIR" "${BITCOIN_CONFIG_ALL[@]}" "${BITCOIN_CONFIG[@]}" || (
   cd "${BASE_BUILD_DIR}"
   # shellcheck disable=SC2046
   cat $(cmake -P "${BASE_ROOT_DIR}/ci/test/GetCMakeLogFiles.cmake")
   false
 )
 
-if [[ "${GOAL}" != all && "${GOAL}" != codegen ]]; then
-  GOAL="all ${GOAL}"
-fi
+eval "BUILD_TARGETS=($BUILD_TARGETS)"
 
-# shellcheck disable=SC2086
-cmake --build "${BASE_BUILD_DIR}" "$MAKEJOBS" --target $GOAL || (
+cmake --build "${BASE_BUILD_DIR}" "$MAKEJOBS" --target "${BUILD_TARGETS[@]}" || (
   echo "Build failure. Verbose build follows."
-  # shellcheck disable=SC2086
-  cmake --build "${BASE_BUILD_DIR}" -j1 --target $GOAL --verbose
+  cmake --build "${BASE_BUILD_DIR}" -j1 --target "${BUILD_TARGETS[@]}" --verbose
   false
 )
 
@@ -167,6 +157,8 @@ if [ -n "${CI_LIMIT_STACK_SIZE}" ]; then
   ulimit -s 512
 fi
 
+WITH_SANITIZER_ENV=(python3 "${BASE_BUILD_DIR}/test/with_sanitizer_env.py")
+
 if [[ ${BARE_METAL_RISCV} == "true" ]]; then
     export BASE_BUILD_DIR
     "${BASE_ROOT_DIR}/ci/test/link-riscv.sh"
@@ -180,19 +172,17 @@ if [ "$RUN_CHECK_DEPS" = "true" ]; then
   "${BASE_ROOT_DIR}/contrib/devtools/check-deps.sh" "${BASE_BUILD_DIR}"
 fi
 
-if [[ "$CI_OS_NAME" == "macos" && "${GOAL}" = "install deploy" ]]; then
+if [[ "$RUN_MACOS_CODESIGN" == "true" ]]; then
   unzip "${BASE_BUILD_DIR}/bitcoin-macos-app.zip" -d "${BASE_BUILD_DIR}/deploy"
-  if ! ( codesign --verify "${BASE_BUILD_DIR}/deploy/Bitcoin-Qt.app" ); then
-    echo "Codesigning failed."
-    false
-  fi
+  codesign --verify --deep --strict "${BASE_BUILD_DIR}/deploy/Bitcoin-Qt.app"
 fi
 
 if [ "$RUN_UNIT_TESTS" = "true" ]; then
   DIR_UNIT_TEST_DATA="${DIR_UNIT_TEST_DATA}" \
   LD_LIBRARY_PATH="${DEPENDS_DIR}/${HOST}/lib" \
   CTEST_OUTPUT_ON_FAILURE=ON \
-  ctest --test-dir "${BASE_BUILD_DIR}" \
+  "${WITH_SANITIZER_ENV[@]}" \
+    ctest --test-dir "${BASE_BUILD_DIR}" \
     --stop-on-failure \
     "${MAKEJOBS}" \
     --timeout $(( TEST_RUNNER_TIMEOUT_FACTOR * 60 ))
@@ -233,8 +223,15 @@ if [ "${RUN_TIDY}" = "true" ]; then
 fi
 
 if [[ "${RUN_IWYU}" == true ]]; then
+  # Skip subtrees. They are maintained upstream, and IWYU output for them from
+  # this job's IWYU version and mapping files can disagree with upstream (e.g.
+  # libmultiprocess runs IWYU in its own CI and passes there).
+  SUBTREES=$(python3 -c 'import runpy, sys; print("|".join(runpy.run_path(sys.argv[1])["SHARED_EXCLUDED_SUBTREES"]))' "${BASE_ROOT_DIR}/test/lint/lint_ignore_dirs.py")
+  jq --arg patterns "$SUBTREES" 'map(select(.file | test($patterns) | not))' "${BASE_BUILD_DIR}/compile_commands.json" > "${BASE_BUILD_DIR}/compile_commands_no_subtrees.json"
+  mv "${BASE_BUILD_DIR}/compile_commands_no_subtrees.json" "${BASE_BUILD_DIR}/compile_commands.json"
+
   # TODO: Consider enforcing IWYU across the entire codebase.
-  FILES_WITH_ENFORCED_IWYU="/src/(((bench|crypto|index|kernel|primitives|script|univalue/(lib|test)|util|zmq)/.*|common/license_info|node/(blockstorage|interfaces|miner|mining_args|utxo_snapshot)|rpc/mining|clientversion|core_io|signet|init)\\.cpp)"
+  FILES_WITH_ENFORCED_IWYU='/src/((bench|common|consensus|crypto|index|init|kernel|primitives|rpc|script|univalue/(lib|test)|util|zmq)/.*|node/(block_template_manager|blockstorage|eviction|interfaces|miner|mining_args|utxo_snapshot)|test/fuzz/(kitchen_sink|minisketch|parse_univalue)|clientversion|core_io|init|net|net_types|rest|signet)\.cpp'
   jq --arg patterns "$FILES_WITH_ENFORCED_IWYU" 'map(select(.file | test($patterns)))' "${BASE_BUILD_DIR}/compile_commands.json" > "${BASE_BUILD_DIR}/compile_commands_iwyu_errors.json"
   jq --arg patterns "$FILES_WITH_ENFORCED_IWYU" 'map(select(.file | test($patterns) | not))' "${BASE_BUILD_DIR}/compile_commands.json" > "${BASE_BUILD_DIR}/compile_commands_iwyu_warnings.json"
 
@@ -242,15 +239,31 @@ if [[ "${RUN_IWYU}" == true ]]; then
 
   run_iwyu() {
     mv "${BASE_BUILD_DIR}/$1" "${BASE_BUILD_DIR}/compile_commands.json"
-    {
-      python3 "/include-what-you-use/iwyu_tool.py" \
-             -p "${BASE_BUILD_DIR}" "${MAKEJOBS}" \
-             -- -Xiwyu --cxx17ns -Xiwyu --mapping_file="${BASE_ROOT_DIR}/contrib/devtools/iwyu/bitcoin.core.imp" \
+    python3 /include-what-you-use/mapgen/iwyu-mapgen-clang-intrin.py --lang imp "$("clang-${IWYU_LLVM_V}" -print-resource-dir)/include" > "${BASE_BUILD_DIR}/clang.intrinsics.imp"
+    python3 /include-what-you-use/iwyu_tool.py \
+             -p "${BASE_BUILD_DIR}" "${MAKEJOBS}" -- \
+             -Xiwyu --cxx17ns \
+             -Xiwyu --mapping_file="${BASE_ROOT_DIR}/contrib/devtools/iwyu/bitcoin.core.imp" \
+             -Xiwyu --mapping_file="${BASE_BUILD_DIR}/clang.intrinsics.imp" \
              -Xiwyu --max_line_length=160 \
-             -Xiwyu --check_also="*/primitives/*.h" \
-             2>&1 || true
-    } | tee /tmp/iwyu_ci.out
+             -Xiwyu --check_also='*/common/types\.h' \
+             -Xiwyu --check_also='*/consensus/*\.h' \
+             -Xiwyu --check_also='*/interfaces/*\.h' \
+             -Xiwyu --check_also='*/primitives/transaction_identifier\.h' \
+             -Xiwyu --check_also='*/rpc/protocol\.h' \
+             2>&1 | tee /tmp/iwyu_ci.out
     python3 "/include-what-you-use/fix_includes.py" --nosafe_headers < /tmp/iwyu_ci.out
+    # Undo edits to subtree headers. Subtree sources are filtered out of the
+    # compilation database above, but IWYU can still edit a subtree header it
+    # treats as associated with a source file outside the subtree (e.g.
+    # minisketch.h for test/fuzz/minisketch.cpp).
+    python3 -c '
+import runpy
+import subprocess
+
+subtrees = runpy.run_path("test/lint/lint_ignore_dirs.py")["SHARED_EXCLUDED_SUBTREES"]
+subprocess.run(["git", "restore", "--", *subtrees], check=True)
+'
     git diff -U1 | ./contrib/devtools/clang-format-diff.py -binary="clang-format-${IWYU_LLVM_V}" -p1 -i -v
   }
 
@@ -265,10 +278,10 @@ if [[ "${RUN_IWYU}" == true ]]; then
 fi
 
 if [ "$RUN_FUZZ_TESTS" = "true" ]; then
-  # shellcheck disable=SC2086
+  eval "FUZZ_TESTS_ARGS=($FUZZ_TESTS_CONFIG)"
   LD_LIBRARY_PATH="${DEPENDS_DIR}/${HOST}/lib" \
   "${BASE_BUILD_DIR}/test/fuzz/test_runner.py" \
-    ${FUZZ_TESTS_CONFIG} \
+    "${FUZZ_TESTS_ARGS[@]}" \
     "${MAKEJOBS}" \
     -l DEBUG \
     "${DIR_FUZZ_IN}" \

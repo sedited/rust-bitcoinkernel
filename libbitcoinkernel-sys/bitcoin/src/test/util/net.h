@@ -22,7 +22,6 @@
 #include <array>
 #include <cassert>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -118,7 +117,7 @@ struct ConnmanTestMsg : public CConnman {
         EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
 };
 
-constexpr ServiceFlags ALL_SERVICE_FLAGS[]{
+inline constexpr ServiceFlags ALL_SERVICE_FLAGS[]{
     NODE_NONE,
     NODE_NETWORK,
     NODE_BLOOM,
@@ -128,7 +127,7 @@ constexpr ServiceFlags ALL_SERVICE_FLAGS[]{
     NODE_P2P_V2,
 };
 
-constexpr NetPermissionFlags ALL_NET_PERMISSION_FLAGS[]{
+inline constexpr NetPermissionFlags ALL_NET_PERMISSION_FLAGS[]{
     NetPermissionFlags::None,
     NetPermissionFlags::BloomFilter,
     NetPermissionFlags::Relay,
@@ -141,7 +140,7 @@ constexpr NetPermissionFlags ALL_NET_PERMISSION_FLAGS[]{
     NetPermissionFlags::All,
 };
 
-constexpr ConnectionType ALL_CONNECTION_TYPES[]{
+inline constexpr ConnectionType ALL_CONNECTION_TYPES[]{
     ConnectionType::INBOUND,
     ConnectionType::OUTBOUND_FULL_RELAY,
     ConnectionType::MANUAL,
@@ -151,7 +150,7 @@ constexpr ConnectionType ALL_CONNECTION_TYPES[]{
     ConnectionType::PRIVATE_BROADCAST,
 };
 
-constexpr auto ALL_NETWORKS = std::array{
+inline constexpr auto ALL_NETWORKS = std::array{
     Network::NET_UNROUTABLE,
     Network::NET_IPV4,
     Network::NET_IPV6,
@@ -240,7 +239,7 @@ class DynSock : public ZeroSock
 {
 public:
     /**
-     * Unidirectional bytes or CNetMessage queue (FIFO).
+     * Unidirectional bytes queue (FIFO).
      */
     class Pipe
     {
@@ -256,37 +255,17 @@ public:
         ssize_t GetBytes(void* buf, size_t len, int flags = 0) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
         /**
-         * Deserialize a `CNetMessage` and remove it from the pipe.
-         * If not enough bytes are available then the function will wait. If parsing fails
-         * or EOF is signaled to the pipe, then `std::nullopt` is returned.
-         */
-        std::optional<CNetMessage> GetNetMsg() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
-
-        /**
          * Push bytes to the pipe.
          */
         void PushBytes(const void* buf, size_t len) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
         /**
-         * Construct and push CNetMessage to the pipe.
-         */
-        template <typename... Args>
-        void PushNetMsg(const std::string& type, Args&&... payload) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
-
-        /**
-         * Signal end-of-file on the receiving end (`GetBytes()` or `GetNetMsg()`).
+         * Signal end-of-file on the receiving end (`GetBytes()`).
          */
         void Eof() EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
 
     private:
-        /**
-         * Return when there is some data to read or EOF has been signaled.
-         * @param[in,out] lock Unique lock that must have been derived from `m_mutex` by `WAIT_LOCK(m_mutex, lock)`.
-         */
-        void WaitForDataOrEof(UniqueLock<Mutex>& lock) EXCLUSIVE_LOCKS_REQUIRED(m_mutex);
-
         Mutex m_mutex;
-        std::condition_variable m_cond;
         std::vector<uint8_t> m_data GUARDED_BY(m_mutex);
         bool m_eof GUARDED_BY(m_mutex){false};
     };
@@ -367,29 +346,6 @@ private:
     std::shared_ptr<Pipes> m_pipes;
     Queue* const m_accept_sockets;
 };
-
-template <typename... Args>
-void DynSock::Pipe::PushNetMsg(const std::string& type, Args&&... payload)
-{
-    auto msg = NetMsg::Make(type, std::forward<Args>(payload)...);
-    V1Transport transport{NodeId{0}};
-
-    const bool queued{transport.SetMessageToSend(msg)};
-    assert(queued);
-
-    LOCK(m_mutex);
-
-    for (;;) {
-        const auto& [bytes, _more, _msg_type] = transport.GetBytesToSend(/*have_next_message=*/true);
-        if (bytes.empty()) {
-            break;
-        }
-        m_data.insert(m_data.end(), bytes.begin(), bytes.end());
-        transport.MarkBytesSent(bytes.size());
-    }
-
-    m_cond.notify_all();
-}
 
 std::vector<NodeEvictionCandidate> GetRandomNodeEvictionCandidates(int n_candidates, FastRandomContext& random_context);
 

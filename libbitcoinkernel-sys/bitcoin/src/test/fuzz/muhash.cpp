@@ -2,13 +2,15 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <arith_uint256.h>
 #include <crypto/muhash.h>
+
+#include <arith_uint256.h>
 #include <span.h>
-#include <uint256.h>
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
+#include <uint256.h>
+#include <util/check.h>
 
 #include <algorithm>
 #include <array>
@@ -199,6 +201,9 @@ FUZZ_TARGET(muhash)
         },
         [&] {
             // Test that dividing a MuHash by itself brings it back to its initial state
+            // Insert only multiplies the numerator, so without the Remove the denominator
+            // is still 1 and the division is trivially correct
+            muhash.Remove(data);
             muhash /= muhash;
             muhash.Finalize(out);
             out2 = initial_state_hash;

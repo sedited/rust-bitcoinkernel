@@ -38,7 +38,7 @@ extern const std::function<std::vector<const char*>()> G_TEST_COMMAND_LINE_ARGUM
 /** Retrieve the unit test name. */
 extern const std::function<std::string()> G_TEST_GET_FULL_NAME;
 
-static constexpr CAmount CENT{1000000};
+inline constexpr CAmount CENT{1'000'000};
 
 /** Register common test args. Shared across binaries that rely on the test framework. */
 void SetupCommonTestArgs(ArgsManager& argsman);
@@ -106,6 +106,10 @@ struct ChainTestingSetup : public BasicTestingSetup {
     explicit ChainTestingSetup(ChainType chainType = ChainType::MAIN, TestOpts = {});
     ~ChainTestingSetup();
 
+    //! Create the block template manager. Must be destroyed before resetting
+    //! any of its dependencies.
+    void CreateBlockTemplateManager();
+
     // Supplies a chainstate, if one is needed
     void LoadVerifyActivateChainstate();
 };
@@ -141,12 +145,12 @@ struct TestChain100Setup : public TestingSetup {
         ChainType chain_type = ChainType::REGTEST,
         TestOpts = {});
 
-    /**
-     * Create a new block with just given transactions, coinbase paying to
-     * scriptPubKey, and try to add it to the current chain.
-     */
+    /// Create a new block with just the given transactions, coinbase paying to
+    /// scriptPubKey, and try to add it to the current chain.
+    /// By default, wait for validation-interface notifications to be processed.
     CBlock CreateAndProcessBlock(const std::vector<CMutableTransaction>& txns,
-                                 const CScript& scriptPubKey);
+                                 const CScript& scriptPubKey,
+                                 bool sync = true);
 
     /**
      * Create a new block with just given transactions, coinbase paying to
@@ -156,7 +160,8 @@ struct TestChain100Setup : public TestingSetup {
         const std::vector<CMutableTransaction>& txns,
         const CScript& scriptPubKey);
 
-    //! Mine a series of new blocks on the active chain.
+    /// Mine a series of new blocks on the active chain.
+    /// Wait for validation-interface notifications to be processed.
     void mineBlocks(int num_blocks);
 
     /**

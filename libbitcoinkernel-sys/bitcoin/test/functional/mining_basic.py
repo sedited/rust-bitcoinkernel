@@ -14,12 +14,15 @@ import copy
 from decimal import Decimal
 
 from test_framework.blocktools import (
+    DIFFICULTY_ADJUSTMENT_INTERVAL,
+    create_block,
     create_coinbase,
     get_witness_script,
+    MAX_FUTURE_BLOCK_TIME,
     NORMAL_GBT_REQUEST_PARAMS,
     TIME_GENESIS_BLOCK,
-    REGTEST_N_BITS,
-    REGTEST_TARGET,
+    N_BITS,
+    TARGET,
     nbits_str,
     target_str,
 )
@@ -50,8 +53,6 @@ from test_framework.wallet import (
 )
 
 
-DIFFICULTY_ADJUSTMENT_INTERVAL = 144
-MAX_FUTURE_BLOCK_TIME = 2 * 3600
 MAX_TIMEWARP = 600
 VERSIONBITS_TOP_BITS = 0x20000000
 VERSIONBITS_DEPLOYMENT_TESTDUMMY_BIT = 28
@@ -252,6 +253,43 @@ class MiningTest(BitcoinTestFramework):
         bad_block.solve()
         node.submitheader(hexdata=CBlockHeader(bad_block).serialize().hex())
 
+    def test_murch_zawy_mintime(self):
+        self.log.info("Test that GetMinimumTime accounts for the Murch-Zawy rule (BIP54)")
+        node = self.nodes[0]
+
+        self.log.info("Mine the first block of a retarget period two hours in the future")
+        blockchain_info = node.getblockchaininfo()
+        n = DIFFICULTY_ADJUSTMENT_INTERVAL - blockchain_info['blocks'] % DIFFICULTY_ADJUSTMENT_INTERVAL - 1
+        t = blockchain_info['time']
+        for _ in range(n):
+            t += 600
+            node.setmocktime(t)
+            self.generate(self.wallet, 1, sync_fun=self.no_op)
+        node.setmocktime(t + MAX_FUTURE_BLOCK_TIME)
+        self.generate(self.wallet, 1, sync_fun=self.no_op)
+        assert_equal(node.getblockchaininfo()['blocks'] % DIFFICULTY_ADJUSTMENT_INTERVAL, 0)
+        first_block_time = node.getblock(node.getbestblockhash())['time']
+        assert_equal(first_block_time, t + MAX_FUTURE_BLOCK_TIME)
+
+        self.log.info("Mine to the end of the period with timestamps held back")
+        node.setmocktime(t)
+        self.generate(self.wallet, DIFFICULTY_ADJUSTMENT_INTERVAL - 2, sync_fun=self.no_op)
+        assert_greater_than(first_block_time, node.getblock(node.getbestblockhash())['time'])
+
+        self.log.info("The template for the last block of the period is adjusted to its first block's time")
+        tmpl = node.getblocktemplate(NORMAL_GBT_REQUEST_PARAMS)
+        assert_equal(tmpl['height'] % DIFFICULTY_ADJUSTMENT_INTERVAL, DIFFICULTY_ADJUSTMENT_INTERVAL - 1)
+        assert_equal(tmpl['mintime'], first_block_time)
+        assert_equal(tmpl['curtime'], first_block_time)
+
+        block = create_block(tmpl=tmpl)
+        block.solve()
+        node.submitheader(hexdata=CBlockHeader(block).serialize().hex())
+
+        self.log.info("The node mines a valid block at the end of the period despite its early wall clock")
+        self.generate(self.wallet, 1, sync_fun=self.no_op)
+        assert_equal(node.getblock(node.getbestblockhash())['time'], first_block_time)
+
     def test_pruning(self):
         self.log.info("Test that submitblock stores previously pruned block")
         prune_node = self.nodes[2]
@@ -396,16 +434,17 @@ class MiningTest(BitcoinTestFramework):
         self.log.info('getmininginfo')
         mining_info = node.getmininginfo()
         assert_equal(mining_info['blocks'], 200)
+        assert_equal(mining_info['bestblockhash'], node.getbestblockhash())
         assert_equal(mining_info['chain'], self.chain)
         assert 'currentblocktx' not in mining_info
         assert 'currentblockweight' not in mining_info
-        assert_equal(mining_info['bits'], nbits_str(REGTEST_N_BITS))
-        assert_equal(mining_info['target'], target_str(REGTEST_TARGET))
+        assert_equal(mining_info['bits'], nbits_str(N_BITS))
+        assert_equal(mining_info['target'], target_str(TARGET))
         # We don't care about precision, round to avoid mismatch under Valgrind:
         assert_equal(round(mining_info['difficulty'], 10), Decimal('0.0000000005'))
         assert_equal(mining_info['next']['height'], 201)
-        assert_equal(mining_info['next']['target'], target_str(REGTEST_TARGET))
-        assert_equal(mining_info['next']['bits'], nbits_str(REGTEST_N_BITS))
+        assert_equal(mining_info['next']['target'], target_str(TARGET))
+        assert_equal(mining_info['next']['bits'], nbits_str(N_BITS))
         assert_equal(round(mining_info['next']['difficulty'], 10), Decimal('0.0000000005'))
         assert_equal(round(mining_info['networkhashps'], 5), Decimal('0.00333'))
         assert_equal(mining_info['pooledtx'], 0)
@@ -528,6 +567,7 @@ class MiningTest(BitcoinTestFramework):
         self.test_blockmintxfee_parameter()
         self.test_block_max_weight()
         self.test_timewarp()
+        self.test_murch_zawy_mintime()
         self.test_pruning()
         self.test_height_in_locktime()
 

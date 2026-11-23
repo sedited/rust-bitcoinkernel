@@ -25,7 +25,7 @@ static int ecdh_hash_function_sha256_impl(const secp256k1_hash_ctx *hash_ctx, un
 }
 
 static int ecdh_hash_function_sha256(unsigned char *output, const unsigned char *x32, const unsigned char *y32, void *data) {
-    return ecdh_hash_function_sha256_impl(secp256k1_get_hash_context(secp256k1_context_static), output, x32, y32, data);
+    return ecdh_hash_function_sha256_impl(&secp256k1_context_static->hash_ctx, output, x32, y32, data);
 }
 
 const secp256k1_ecdh_hash_function secp256k1_ecdh_hash_function_sha256 = ecdh_hash_function_sha256;
@@ -33,8 +33,7 @@ const secp256k1_ecdh_hash_function secp256k1_ecdh_hash_function_default = ecdh_h
 
 int secp256k1_ecdh(const secp256k1_context* ctx, unsigned char *output, const secp256k1_pubkey *point, const unsigned char *scalar, secp256k1_ecdh_hash_function hashfp, void *data) {
     int ret = 0;
-    int overflow = 0;
-    secp256k1_gej res;
+    int is_sec_valid;
     secp256k1_ge pt;
     secp256k1_scalar s;
     unsigned char x[32];
@@ -46,13 +45,10 @@ int secp256k1_ecdh(const secp256k1_context* ctx, unsigned char *output, const se
     ARG_CHECK(scalar != NULL);
 
     secp256k1_pubkey_load(ctx, &pt, point);
-    secp256k1_scalar_set_b32(&s, scalar, &overflow);
+    is_sec_valid = secp256k1_scalar_set_b32_seckey(&s, scalar);
+    secp256k1_scalar_cmov(&s, &secp256k1_scalar_one, !is_sec_valid);
 
-    overflow |= secp256k1_scalar_is_zero(&s);
-    secp256k1_scalar_cmov(&s, &secp256k1_scalar_one, overflow);
-
-    secp256k1_ecmult_const(&res, &pt, &s);
-    secp256k1_ge_set_gej(&pt, &res);
+    secp256k1_ecmult_const_ge(&pt, &pt, &s);
 
     /* Compute a hash of the point */
     secp256k1_fe_normalize(&pt.x);
@@ -60,9 +56,9 @@ int secp256k1_ecdh(const secp256k1_context* ctx, unsigned char *output, const se
     secp256k1_fe_get_b32(x, &pt.x);
     secp256k1_fe_get_b32(y, &pt.y);
 
-    if (hashfp == NULL) {
+    if (hashfp == NULL || hashfp == secp256k1_ecdh_hash_function_sha256) {
         /* Use ctx-aware function by default */
-        ret = ecdh_hash_function_sha256_impl(secp256k1_get_hash_context(ctx), output, x, y, data);
+        ret = ecdh_hash_function_sha256_impl(&ctx->hash_ctx, output, x, y, data);
     } else {
         ret = hashfp(output, x, y, data);
     }
@@ -71,9 +67,8 @@ int secp256k1_ecdh(const secp256k1_context* ctx, unsigned char *output, const se
     secp256k1_memclear_explicit(y, sizeof(y));
     secp256k1_scalar_clear(&s);
     secp256k1_ge_clear(&pt);
-    secp256k1_gej_clear(&res);
 
-    return !!ret & !overflow;
+    return (!!ret) & is_sec_valid;
 }
 
 #endif /* SECP256K1_MODULE_ECDH_MAIN_H */

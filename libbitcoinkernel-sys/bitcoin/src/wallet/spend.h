@@ -6,7 +6,6 @@
 #define BITCOIN_WALLET_SPEND_H
 
 #include <consensus/amount.h>
-#include <policy/fees/block_policy_estimator.h>
 #include <util/result.h>
 #include <wallet/coinselection.h>
 #include <wallet/transaction.h>
@@ -122,6 +121,15 @@ FilteredOutputGroups GroupOutputs(const CWallet& wallet,
                           const std::vector<SelectionFilter>& filters);
 
 /**
+ * Group coins by the provided filters, groups that pass no filter are appended to `ret_discarded_groups`.
+ */
+FilteredOutputGroups GroupOutputs(const CWallet& wallet,
+                                  const CoinsResult& coins,
+                                  const CoinSelectionParams& coin_sel_params,
+                                  const std::vector<SelectionFilter>& filters,
+                                  std::vector<OutputGroup>& ret_discarded_groups);
+
+/**
  * Attempt to find a valid input set that preserves privacy by not mixing OutputTypes.
  * `ChooseSelectionResult()` will be called on each OutputType individually and the best
  * the solution (according to the waste metric) will be chosen. If a valid input cannot be found from any
@@ -188,9 +196,12 @@ util::Result<SelectionResult> SelectCoins(const CWallet& wallet, CoinsResult& av
 
 /**
  * Set a height-based locktime for new transactions (uses the height of the
- * current chain tip unless we are not synced with the current chain
+ * current chain tip unless we are not synced with the current chain).
+ * The locktime is occasionally backdated, but never below minimum_height
+ * and at most 99 blocks below the best known tip.
+ * If minimum_height is above the local tip, locktime is 0.
  */
-void DiscourageFeeSniping(CMutableTransaction& tx, FastRandomContext& rng_fast, interfaces::Chain& chain, const uint256& block_hash, int block_height);
+void DiscourageFeeSniping(CMutableTransaction& tx, FastRandomContext& rng_fast, interfaces::Chain& chain, const uint256& block_hash, int block_height, uint32_t minimum_height = 0);
 
 /**
  * Create a new transaction paying the recipients with a set of coins

@@ -3,7 +3,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
 
 #include <chainparams.h>
 #include <clientversion.h>
@@ -140,10 +140,10 @@ static bool ProcessInitCommands(interfaces::Init& init, ArgsManager& args)
     if (HelpRequested(args) || args.GetBoolArg("-version", false)) {
         std::string strUsage = CLIENT_NAME " daemon version " + FormatFullVersion();
         if (const char* exe_name{init.exeName()}) {
-            strUsage += " ";
+            strUsage += ' ';
             strUsage += exe_name;
         }
-        strUsage += "\n";
+        strUsage += '\n';
 
         if (args.GetBoolArg("-version", false)) {
             strUsage += FormatParagraph(LicenseInfo());

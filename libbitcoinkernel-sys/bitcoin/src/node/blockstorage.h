@@ -18,9 +18,7 @@
 #include <streams.h>
 #include <sync.h>
 #include <uint256.h>
-// IWYU incorrectly suggests removing this header.
-// See https://github.com/include-what-you-use/include-what-you-use/issues/2014.
-#include <util/byte_units.h> // IWYU pragma: keep
+#include <util/byte_units.h>
 #include <util/expected.h>
 #include <util/fs.h>
 #include <util/hasher.h>
@@ -60,8 +58,8 @@ class CBlockFileInfo
 {
 public:
     uint32_t nBlocks{};      //!< number of blocks stored in file
-    uint32_t nSize{};        //!< number of used bytes of block file
-    uint32_t nUndoSize{};    //!< number of used bytes in the undo file
+    uint64_t nSize{};        //!< number of used bytes of block file
+    uint64_t nUndoSize{};    //!< number of used bytes in the undo file
     uint32_t nHeightFirst{}; //!< lowest height of block in file
     uint32_t nHeightLast{};  //!< highest height of block in file
     uint64_t nTimeFirst{};   //!< earliest time of block in file
@@ -119,17 +117,17 @@ using kernel::CBlockFileInfo;
 using kernel::BlockTreeDB;
 
 /** The pre-allocation chunk size for blk?????.dat files (since 0.8) */
-static const unsigned int BLOCKFILE_CHUNK_SIZE{16_MiB};
+inline constexpr uint64_t BLOCKFILE_CHUNK_SIZE{16_MiB};
 /** The pre-allocation chunk size for rev?????.dat files (since 0.8) */
-static const unsigned int UNDOFILE_CHUNK_SIZE{1_MiB};
+inline constexpr uint64_t UNDOFILE_CHUNK_SIZE{1_MiB};
 /** The maximum size of a blk?????.dat file (since 0.8) */
-static const unsigned int MAX_BLOCKFILE_SIZE{128_MiB};
+inline constexpr uint64_t MAX_BLOCKFILE_SIZE{128_MiB};
 
 /** Size of header written by WriteBlock before a serialized CBlock (8 bytes) */
-static constexpr uint32_t STORAGE_HEADER_BYTES{std::tuple_size_v<MessageStartChars> + sizeof(unsigned int)};
+inline constexpr uint64_t STORAGE_HEADER_BYTES{std::tuple_size_v<MessageStartChars> + sizeof(uint32_t)};
 
 /** Total overhead when writing undo data: header (8 bytes) plus checksum (32 bytes) */
-static constexpr uint32_t UNDO_DATA_DISK_OVERHEAD{STORAGE_HEADER_BYTES + uint256::size()};
+inline constexpr uint64_t UNDO_DATA_DISK_OVERHEAD{STORAGE_HEADER_BYTES + uint256::size()};
 
 // Because validation code takes pointers to the map's CBlockIndex objects, if
 // we ever switch to another associative container, we need to either use a
@@ -223,9 +221,9 @@ private:
      * The nAddSize argument passed to this function should include not just the size of the serialized CBlock, but also the size of
      * separator fields (STORAGE_HEADER_BYTES).
      */
-    [[nodiscard]] FlatFilePos FindNextBlockPos(unsigned int nAddSize, unsigned int nHeight, uint64_t nTime) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    [[nodiscard]] FlatFilePos FindNextBlockPos(uint64_t nAddSize, unsigned int nHeight, uint64_t nTime) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
     [[nodiscard]] bool FlushChainstateBlockFile(int tip_height) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
-    [[nodiscard]] bool FindUndoPos(BlockValidationState& state, int nFile, FlatFilePos& pos, unsigned int nAddSize) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+    [[nodiscard]] bool FindUndoPos(BlockValidationState& state, int nFile, FlatFilePos& pos, uint64_t nAddSize) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
 
     AutoFile OpenUndoFile(const FlatFilePos& pos, bool fReadOnly = false) const;
 

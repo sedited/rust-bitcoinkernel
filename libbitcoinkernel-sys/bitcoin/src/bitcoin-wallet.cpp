@@ -2,7 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
 
 #include <chainparams.h>
 #include <chainparamsbase.h>
@@ -11,6 +11,7 @@
 #include <common/license_info.h>
 #include <common/system.h>
 #include <compat/compat.h>
+#include <crypto/sha256.h>
 #include <interfaces/init.h>
 #include <key.h>
 #include <logging.h>
@@ -103,6 +104,7 @@ MAIN_FUNCTION
     }
 
     SetupEnvironment();
+    SHA256AutoDetect();
     RandomInit();
     try {
         if (const auto maybe_exit{WalletAppInit(args, argc, argv)}) return *maybe_exit;

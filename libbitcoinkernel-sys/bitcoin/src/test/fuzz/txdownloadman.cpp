@@ -2,11 +2,12 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <node/txdownloadman.h>
+
 #include <consensus/validation.h>
 #include <node/context.h>
 #include <node/mempool_args.h>
 #include <node/miner.h>
-#include <node/txdownloadman.h>
 #include <node/txdownloadman_impl.h>
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
@@ -18,6 +19,7 @@
 #include <test/util/time.h>
 #include <test/util/txmempool.h>
 #include <txmempool.h>
+#include <util/check.h>
 #include <util/hasher.h>
 #include <util/rbf.h>
 #include <util/time.h>
@@ -174,8 +176,7 @@ FUZZ_TARGET(txdownloadman, .init = initialize)
     // Initialize txdownloadman
     bilingual_str error;
     CTxMemPool pool{MemPoolOptionsForTest(g_setup->m_node), error};
-    FastRandomContext det_rand{true};
-    node::TxDownloadManager txdownloadman{node::TxDownloadOptions{pool, det_rand, true}};
+    node::TxDownloadManager txdownloadman{node::TxDownloadOptions{.m_mempool = pool, .m_deterministic_txrequest = true}};
 
     std::chrono::microseconds time{244466666};
 
@@ -298,8 +299,7 @@ FUZZ_TARGET(txdownloadman_impl, .init = initialize)
     // Initialize a TxDownloadManagerImpl
     bilingual_str error;
     CTxMemPool pool{MemPoolOptionsForTest(g_setup->m_node), error};
-    FastRandomContext det_rand{true};
-    node::TxDownloadManagerImpl txdownload_impl{node::TxDownloadOptions{pool, det_rand, true}};
+    node::TxDownloadManagerImpl txdownload_impl{node::TxDownloadOptions{.m_mempool = pool, .m_deterministic_txrequest = true}};
 
     std::chrono::microseconds time{244466666};
 

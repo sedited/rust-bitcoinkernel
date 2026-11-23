@@ -5,6 +5,7 @@ function(add_example name)
     ${PROJECT_SOURCE_DIR}/include
   )
   target_link_libraries(${target_name}
+    secp256k1_common
     secp256k1
     $<$<PLATFORM_ID:Windows>:bcrypt>
   )
@@ -30,4 +31,8 @@ endif()
 
 if(SECP256K1_ENABLE_MODULE_MUSIG)
   add_example(musig)
+endif()
+
+if(SECP256K1_ENABLE_MODULE_SILENTPAYMENTS)
+  add_example(silentpayments)
 endif()

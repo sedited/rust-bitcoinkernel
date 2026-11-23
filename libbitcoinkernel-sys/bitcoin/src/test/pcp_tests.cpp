@@ -4,9 +4,10 @@
 
 #include <common/pcp.h>
 #include <netbase.h>
-#include <test/util/logging.h>
 #include <test/util/common.h>
+#include <test/util/logging.h>
 #include <test/util/setup_common.h>
+#include <util/check.h>
 #include <util/time.h>
 
 #include <boost/test/unit_test.hpp>
@@ -49,7 +50,10 @@ public:
         const std::optional<CService> local_ipv6{Lookup("2a10:1234:5678:9abc:def0:1234:5678:9abc", 1, false)};
         const std::optional<CService> gateway_ipv4{Lookup("192.168.0.1", 1, false)};
         const std::optional<CService> gateway_ipv6{Lookup("2a10:1234:5678:9abc:def0:0000:0000:0000", 1, false)};
-        BOOST_REQUIRE(local_ipv4 && local_ipv6 && gateway_ipv4 && gateway_ipv6);
+        BOOST_REQUIRE(local_ipv4);
+        BOOST_REQUIRE(local_ipv6);
+        BOOST_REQUIRE(gateway_ipv4);
+        BOOST_REQUIRE(gateway_ipv6);
         default_local_ipv4 = *local_ipv4;
         default_local_ipv6 = *local_ipv6;
         default_gateway_ipv4 = *gateway_ipv4;
@@ -97,8 +101,7 @@ public:
 
     PCPTestSock& operator=(Sock&& other) override
     {
-        assert(false && "Move of Sock into PCPTestSock not allowed.");
-        return *this;
+        AssertUnreachable(); // Move of Sock into PCPTestSock not allowed.
     }
 
     ssize_t Send(const void* data, size_t len, int) const override {

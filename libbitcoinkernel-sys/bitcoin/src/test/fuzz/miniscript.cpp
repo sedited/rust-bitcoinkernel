@@ -2,20 +2,24 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <script/miniscript.h>
+
 #include <core_io.h>
 #include <hash.h>
 #include <key.h>
-#include <script/miniscript.h>
 #include <script/script.h>
 #include <script/signingprovider.h>
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
 #include <test/fuzz/util/descriptor.h>
+#include <util/check.h>
 #include <util/strencodings.h>
 
 #include <algorithm>
+#include <map>
 #include <optional>
+#include <vector>
 
 namespace {
 
@@ -695,13 +699,7 @@ struct SmartInfo
             if (useful_types.size() == set_size) break;
         }
         // Remove all rules that construct uninteresting types.
-        for (auto type_it = table.begin(); type_it != table.end();) {
-            if (!useful_types.contains(type_it->first)) {
-                type_it = table.erase(type_it);
-            } else {
-                ++type_it;
-            }
-        }
+        std::erase_if(table, [&](const auto& entry) { return !useful_types.contains(entry.first); });
 
         /* Find which types are constructible. A type is constructible if there is a leaf
          * node recipe for constructing it, or a recipe whose subnodes are all constructible.
@@ -731,10 +729,9 @@ struct SmartInfo
         }
         for (auto type_it = table.begin(); type_it != table.end();) {
             // Remove all recipes which involve non-constructible types.
-            type_it->second.erase(std::remove_if(type_it->second.begin(), type_it->second.end(),
-                [&](const recipe& rec) {
-                    return !std::all_of(rec.second.begin(), rec.second.end(), known_constructible);
-                }), type_it->second.end());
+            std::erase_if(type_it->second, [&](const recipe& rec) {
+                return !std::all_of(rec.second.begin(), rec.second.end(), known_constructible);
+            });
             // Delete types entirely which have no recipes left.
             if (type_it->second.empty()) {
                 type_it = table.erase(type_it);
@@ -839,7 +836,7 @@ std::optional<NodeInfo> ConsumeNodeSmart(MsCtx script_ctx, FuzzedDataProvider& p
         }
     }
 
-    assert(false);
+    AssertUnreachable();
 }
 
 /**
@@ -1185,9 +1182,8 @@ void TestNode(const MsCtx script_ctx, const std::optional<Node>& node, FuzzedDat
         case Fragment::HASH160:
             return TEST_DATA.hash160_preimages.contains(node.Data());
         default:
-            assert(false);
+            AssertUnreachable();
         }
-        return false;
     });
     assert(mal_success == satisfiable);
 }

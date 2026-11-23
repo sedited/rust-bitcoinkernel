@@ -238,47 +238,53 @@ static int secp256k1_ecdsa_sig_verify(const secp256k1_scalar *sigr, const secp25
     (void)range;
 #endif
 
-    /** We now have the recomputed R point in pr, and its claimed x coordinate (modulo n)
-     *  in xr. Naively, we would extract the x coordinate from pr (requiring a inversion modulo p),
-     *  compute the remainder modulo n, and compare it to xr. However:
+    /** We now have the recomputed R point in pr, and its claimed x coordinate (modulo n) in xr.
+     *  Naively, we would extract pr's x-coordinate X(pr) (requiring an inversion modulo p), and
+     *  check whether the congruence xr === X(pr) (mod n) holds. However, we can do better:
      *
-     *        xr == X(pr) mod n
-     *    <=> exists h. (xr + h * n < p && xr + h * n == X(pr))
-     *    [Since 2 * n > p, h can only be 0 or 1]
-     *    <=> (xr == X(pr)) || (xr + n < p && xr + n == X(pr))
-     *    [In Jacobian coordinates, X(pr) is pr.x / pr.z^2 mod p]
-     *    <=> (xr == pr.x / pr.z^2 mod p) || (xr + n < p && xr + n == pr.x / pr.z^2 mod p)
-     *    [Multiplying both sides of the equations by pr.z^2 mod p]
-     *    <=> (xr * pr.z^2 mod p == pr.x) || (xr + n < p && (xr + n) * pr.z^2 mod p == pr.x)
+     *        xr === X(pr) (mod n)
+     *   <=>  exists h. xr + h * n == X(pr)
+     *   [Since 2 * n > p, h can only be 0 or 1:]
+     *   <=>  xr == X(pr)  ||  xr + n == X(pr)
+     *   [Since X(pr) < p, the second equality implies xr + n < p:]
+     *   <=>  xr == X(pr)  ||  (xr + n < p  &&  xr + n == X(pr))
+     *   [Both sides of each equality are in [0, p), so it is equivalent to consider the
+     *    congruences modulo p instead:]
+     *   <=>  xr === X(pr) (mod p)  ||  (xr + n < p  &&  xr + n === X(pr) (mod p))
+     *   [In Jacobian coordinates, X(pr) is pr.x / pr.z^2:]
+     *   <=>  xr === pr.x / pr.z^2 (mod p))  ||  (xr + n < p  &&  xr + n === pr.x / pr.z^2 (mod p))
+     *   [Multiplying both sides of the congruences by pr.z^2 (which is nonzero modulo p because
+     *    the point pr is not infinity) gives:]
+     *   <=>  xr * pr.z^2 === pr.x (mod p)  ||  (xr + n < p  &&  (xr + n) * pr.z^2 === pr.x (mod p))
      *
      *  Thus, we can avoid the inversion, but we have to check both cases separately.
-     *  secp256k1_gej_eq_x implements the (xr * pr.z^2 mod p == pr.x) test.
+     *  secp256k1_gej_eq_x implements the (xr * pr.z^2 === pr.x (mod p)) test.
      */
     if (secp256k1_gej_eq_x_var(&xr, &pr)) {
-        /* xr * pr.z^2 mod p == pr.x, so the signature is valid. */
+        /* xr * pr.z^2 === pr.x (mod p), so the signature is valid. */
         return 1;
     }
     if (secp256k1_fe_cmp_var(&xr, &secp256k1_ecdsa_const_p_minus_order) >= 0) {
-        /* xr + n >= p, so we can skip testing the second case. */
+        /* xr + n >= p, so the second case cannot hold. */
         return 0;
     }
     secp256k1_fe_add(&xr, &secp256k1_ecdsa_const_order_as_fe);
     if (secp256k1_gej_eq_x_var(&xr, &pr)) {
-        /* (xr + n) * pr.z^2 mod p == pr.x, so the signature is valid. */
+        /* (xr + n) * pr.z^2 === pr.x (mod p), so the signature is valid. */
         return 1;
     }
     return 0;
 #endif
 }
 
-static int secp256k1_ecdsa_sig_sign(const secp256k1_ecmult_gen_context *ctx, secp256k1_scalar *sigr, secp256k1_scalar *sigs, const secp256k1_scalar *seckey, const secp256k1_scalar *message, const secp256k1_scalar *nonce, int *recid) {
+static int secp256k1_ecdsa_sig_sign(const secp256k1_ecmult_gen_context *ecmult_gen_ctx, secp256k1_scalar *sigr, secp256k1_scalar *sigs, const secp256k1_scalar *seckey, const secp256k1_scalar *message, const secp256k1_scalar *nonce, int *recid) {
     unsigned char b[32];
     secp256k1_ge r;
     secp256k1_scalar n;
     int overflow = 0;
     int high;
 
-    secp256k1_ecmult_gen_ge(ctx, &r, nonce);
+    secp256k1_ecmult_gen_ge(ecmult_gen_ctx, &r, nonce);
     secp256k1_fe_normalize(&r.x);
     secp256k1_fe_normalize(&r.y);
     secp256k1_fe_get_b32(b, &r.x);

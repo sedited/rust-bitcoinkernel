@@ -16,6 +16,7 @@ from test_framework.test_framework import TEST_EXIT_PASSED, TEST_EXIT_FAILED
 # the output of `git grep unittest.TestCase ./test/functional/test_framework`
 TEST_FRAMEWORK_MODULES = [
     "address",
+    "bip352",
     "crypto.bip324_cipher",
     "blocktools",
     "compressor",
@@ -28,6 +29,7 @@ TEST_FRAMEWORK_MODULES = [
     "crypto.poly1305",
     "crypto.ripemd160",
     "crypto.secp256k1",
+    "crypto.siphash",
     "script",
     "script_util",
     "segwit_addr",

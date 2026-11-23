@@ -20,11 +20,13 @@ from test_framework.wallet_util import generate_keypair, WalletUnlock
 
 
 EMPTY_PASSPHRASE_MSG = "Empty string given as passphrase, wallet will not be encrypted."
+WALLET_CLIENT_VERSION = 0x80001
 
 
 class CreateWalletTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
+        self.extra_args = [["-deprecatedrpc=encryptwallet"]]
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
@@ -180,7 +182,7 @@ class CreateWalletTest(BitcoinTestFramework):
         self.log.info('Test making a wallet with avoid reuse flag')
         self.nodes[0].createwallet('w8', False, False, '', True) # Use positional arguments to check for bug where avoid_reuse could not be set for wallets without needing them to be encrypted
         w8 = node.get_wallet_rpc('w8')
-        assert_raises_rpc_error(-15, 'Error: running with an unencrypted wallet, but walletpassphrase was called.', w7.walletpassphrase, '', 60)
+        assert_raises_rpc_error(-15, 'Error: running with an unencrypted wallet, but walletpassphrase was called.', w8.walletpassphrase, '', 60)
         assert_equal(w8.getwalletinfo()["avoid_reuse"], True)
 
         self.log.info('Using a passphrase with private keys disabled returns error')
@@ -192,8 +194,7 @@ class CreateWalletTest(BitcoinTestFramework):
         self.log.info("Check that the version number is being logged correctly")
 
         # Craft the expected version message.
-        client_version = node.getnetworkinfo()["version"]
-        version_message = f"Last client version = {client_version}"
+        version_message = f"Last client version = {WALLET_CLIENT_VERSION}"
 
         # Should not be logged when creating.
         with node.assert_debug_log(expected_msgs=[], unexpected_msgs=[version_message]):

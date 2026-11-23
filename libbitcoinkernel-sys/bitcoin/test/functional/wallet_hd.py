@@ -20,9 +20,7 @@ class WalletHDTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
         self.num_nodes = 2
-        self.extra_args = [[], ['-keypool=0']]
-        # whitelist peers to speed up tx relay / mempool sync
-        self.noban_tx_relay = True
+        self.noban_tx_relay = True  # faster tx relay
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
@@ -49,6 +47,7 @@ class WalletHDTest(BitcoinTestFramework):
         imp_xprv = imp_xpub_info["xprv"]
 
         assert_raises_rpc_error(-5, "Extended public key (xpub) provided, but extended private key (xprv) is required", wallet.addhdkey, imp_xpub)
+        assert_raises_rpc_error(-5, "Could not parse HD key", wallet.addhdkey, "not_an_extended_key")
         add_res = wallet.addhdkey(imp_xprv)
         expected_unused_desc = descsum_create(f"unused({imp_xpub})")
         assert_equal(add_res["xpub"], imp_xpub)
@@ -76,6 +75,17 @@ class WalletHDTest(BitcoinTestFramework):
         self.nodes[0].createwallet("hdkey_noprivs", disable_private_keys=True)
         wallet = self.nodes[0].get_wallet_rpc("hdkey_noprivs")
         assert_raises_rpc_error(-4, "addhdkey is not available for wallets without private keys", wallet.addhdkey)
+
+    def test_addhdkey_locked(self):
+        self.log.info("Test addhdkey requires an unlocked wallet")
+        self.nodes[0].createwallet(wallet_name="hdkey_locked", passphrase="passphrase")
+        wallet = self.nodes[0].get_wallet_rpc("hdkey_locked")
+        wallet.walletlock()
+        assert_raises_rpc_error(-13, "Please enter the wallet passphrase with walletpassphrase first", wallet.addhdkey)
+        # Once unlocked, adding an HD key succeeds
+        wallet.walletpassphrase("passphrase", 100)
+        add_res = wallet.addhdkey()
+        assert "xpub" in add_res
 
     def run_test(self):
         # Make sure we use hd, keep masterkeyid
@@ -153,7 +163,7 @@ class WalletHDTest(BitcoinTestFramework):
             self.nodes[1].datadir_path / "hd.bak",
             self.nodes[1].wallets_path / self.default_wallet_name / self.wallet_data_filename
         )
-        self.start_node(1, extra_args=self.extra_args[1])
+        self.start_node(1)
         self.connect_nodes(0, 1)
         self.sync_all()
         # Wallet automatically scans blocks older than key on startup
@@ -178,6 +188,7 @@ class WalletHDTest(BitcoinTestFramework):
 
         self.test_addhdkey()
         self.test_addhdkey_noprivs()
+        self.test_addhdkey_locked()
 
 if __name__ == '__main__':
     WalletHDTest(__file__).main()

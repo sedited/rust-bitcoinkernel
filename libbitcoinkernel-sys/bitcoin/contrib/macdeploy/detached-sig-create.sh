@@ -3,7 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-export LC_ALL=C
+export LC_ALL=C.UTF-8
 set -e
 
 SIGNAPPLE=signapple
@@ -31,10 +31,10 @@ mkdir -p ${TEMPDIR}
 
 stty -echo
 printf "Enter the passphrase for %s: " "$1"
-read cs_key_pass
+read -r cs_key_pass
 printf "\n"
 printf "Enter the passphrase for %s: " "$2"
-read api_key_pass
+read -r api_key_pass
 printf "\n"
 stty echo
 

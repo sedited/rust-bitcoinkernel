@@ -15,7 +15,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -25,10 +24,10 @@ class BlockFilter;
 class CBlockIndex;
 enum class BlockFilterType : uint8_t;
 
-static const char* const DEFAULT_BLOCKFILTERINDEX = "0";
+inline constexpr const char* DEFAULT_BLOCKFILTERINDEX{"0"};
 
 /** Interval between compact filter checkpoints. See BIP 157. */
-static constexpr int CFCHECKPT_INTERVAL = 1000;
+inline constexpr int CFCHECKPT_INTERVAL = 1000;
 
 /**
  * BlockFilterIndex is used to store and retrieve block filters, hashes, and headers for a range of
@@ -47,7 +46,7 @@ private:
     std::unique_ptr<FlatFileSeq> m_filter_fileseq;
 
     bool ReadFilterFromDisk(const FlatFilePos& pos, const uint256& hash, BlockFilter& filter) const;
-    size_t WriteFilterToDisk(FlatFilePos& pos, const BlockFilter& filter);
+    uint64_t WriteFilterToDisk(FlatFilePos& pos, const BlockFilter& filter);
 
     Mutex m_cs_headers_cache;
     /** cache of block hash to filter header, to avoid disk access when responding to getcfcheckpt. */
@@ -96,31 +95,5 @@ public:
     bool LookupFilterHashRange(int start_height, const CBlockIndex* stop_index,
                                std::vector<uint256>& hashes_out) const;
 };
-
-/**
- * Get a block filter index by type. Returns nullptr if index has not been initialized or was
- * already destroyed.
- */
-BlockFilterIndex* GetBlockFilterIndex(BlockFilterType filter_type);
-
-/** Iterate over all running block filter indexes, invoking fn on each. */
-void ForEachBlockFilterIndex(std::function<void (BlockFilterIndex&)> fn);
-
-/**
- * Initialize a block filter index for the given type if one does not already exist. Returns true if
- * a new index is created and false if one has already been initialized.
- */
-bool InitBlockFilterIndex(std::function<std::unique_ptr<interfaces::Chain>()> make_chain, BlockFilterType filter_type,
-                          size_t n_cache_size, bool f_memory = false, bool f_wipe = false);
-
-/**
- * Destroy the block filter index with the given type. Returns false if no such index exists. This
- * just releases the allocated memory and closes the database connection, it does not delete the
- * index data.
- */
-bool DestroyBlockFilterIndex(BlockFilterType filter_type);
-
-/** Destroy all open block filter indexes. */
-void DestroyAllBlockFilterIndexes();
 
 #endif // BITCOIN_INDEX_BLOCKFILTERINDEX_H

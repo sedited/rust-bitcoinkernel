@@ -100,6 +100,9 @@ void TxDownloadManagerImpl::BlockConnected(const std::shared_ptr<const CBlock>& 
     m_orphanage->EraseForBlock(*pblock);
 
     for (const auto& ptx : pblock->vtx) {
+        // Reconsider potential child transactions.
+        m_orphanage->AddChildrenToWorkSet(*ptx, m_rng);
+
         RecentConfirmedTransactionsFilter().insert(ptx->GetHash().ToUint256());
         if (ptx->HasWitness()) {
             RecentConfirmedTransactionsFilter().insert(ptx->GetWitnessHash().ToUint256());
@@ -143,7 +146,7 @@ bool TxDownloadManagerImpl::AlreadyHaveTx(const GenTxid& gtxid, bool include_rec
 
     if (RecentConfirmedTransactionsFilter().contains(hash)) return true;
 
-    return RecentRejectsFilter().contains(hash) || std::visit([&](const auto& id) { return m_opts.m_mempool.exists(id); }, gtxid);
+    return RecentRejectsFilter().contains(hash) || std::visit([&](const auto& id) { return m_mempool.exists(id); }, gtxid);
 }
 
 void TxDownloadManagerImpl::ConnectedPeer(NodeId nodeid, const TxDownloadConnectionInfo& info)
@@ -311,6 +314,13 @@ std::optional<PackageToValidate> TxDownloadManagerImpl::Find1P1CPackage(const CT
     // of children that replace each other, this helps us accept the highest feerate (probably the
     // most recent) one efficiently.
     for (const auto& child : cpfp_candidates_same_peer) {
+        // The orphan is left in the orphanage when it enters the mempool other than through peer
+        // relay (e.g. by RPC), or when a version with a different witness enters. Either way it
+        // cannot enter the mempool.
+        if (m_mempool.exists(child->GetHash())) {
+            m_orphanage->EraseTx(child->GetWitnessHash());
+            continue;
+        }
         Package maybe_cpfp_package{ptx, child};
         if (!RecentRejectsReconsiderableFilter().contains(GetPackageHash(maybe_cpfp_package)) &&
             !RecentRejectsFilter().contains(child->GetHash().ToUint256())) {
@@ -327,7 +337,7 @@ void TxDownloadManagerImpl::MempoolAcceptedTx(const CTransactionRef& tx)
     m_txrequest.ForgetTxHash(tx->GetHash().ToUint256());
     m_txrequest.ForgetTxHash(tx->GetWitnessHash().ToUint256());
 
-    m_orphanage->AddChildrenToWorkSet(*tx, m_opts.m_rng);
+    m_orphanage->AddChildrenToWorkSet(*tx, m_rng);
     // If it came from the orphanage, remove it. No-op if the tx is not in txorphanage.
     m_orphanage->EraseTx(tx->GetWitnessHash());
 }
@@ -377,7 +387,7 @@ node::RejectedTxTodo TxDownloadManagerImpl::MempoolRejectedTx(const CTransaction
                     fRejectedParents = true;
                     break;
                 } else if (RecentRejectsReconsiderableFilter().contains(parent_txid.ToUint256()) &&
-                           !m_opts.m_mempool.exists(parent_txid)) {
+                           !m_mempool.exists(parent_txid)) {
                     // More than 1 parent in m_lazy_recent_rejects_reconsiderable: 1p1c will not be
                     // sufficient to accept this package, so just give up here.
                     if (rejected_parent_reconsiderable.has_value()) {

@@ -19,12 +19,35 @@ from test_framework.wallet_util import WalletUnlock
 class KeyPoolTest(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
+        self.extra_args = [["-deprecatedrpc=encryptwallet"]]
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()
 
     def run_test(self):
         nodes = self.nodes
+
+        # A refill to INT32_MAX only overflows the range end once a descriptor has advanced
+        # past index 0, because at next_index 0 the sum is exactly INT32_MAX. Advance every
+        # descriptor by one first so that the addition in TopUpWithDB is 1 + INT32_MAX.
+        nodes[0].createwallet(wallet_name="keypool_overflow")
+        overflow_wallet = nodes[0].get_wallet_rpc("keypool_overflow")
+        for address_type in ["legacy", "p2sh-segwit", "bech32", "bech32m"]:
+            overflow_wallet.getnewaddress(address_type=address_type)
+            overflow_wallet.getrawchangeaddress(address_type=address_type)
+        descriptors_before = overflow_wallet.listdescriptors()["descriptors"]
+        assert_equal(sorted({desc["next_index"] for desc in descriptors_before}), [1])
+
+        # The refill cannot be satisfied, so it is reported as an error and the range is left
+        # as it was. Without the bound this addition is undefined behavior, detected by UBSan.
+        info_before = overflow_wallet.getwalletinfo()
+        assert_raises_rpc_error(-4, "Error refreshing keypool.", overflow_wallet.keypoolrefill, 2**31 - 1)
+        info_after = overflow_wallet.getwalletinfo()
+        assert_equal(info_after["keypoolsize"], info_before["keypoolsize"])
+        assert_equal(info_after["keypoolsize_hd_internal"], info_before["keypoolsize_hd_internal"])
+        assert_equal(overflow_wallet.listdescriptors()["descriptors"], descriptors_before)
+        overflow_wallet.unloadwallet()
+
         addr_before_encrypting = nodes[0].getnewaddress()
         addr_before_encrypting_data = nodes[0].getaddressinfo(addr_before_encrypting)
 
@@ -167,7 +190,7 @@ class KeyPoolTest(BitcoinTestFramework):
         assert_raises_rpc_error(-4, "Transaction needs a change address, but we can't generate it.", w2.walletcreatefundedpsbt, inputs=[], outputs=[{addr.pop(): 0.00005000}], subtractFeeFromOutputs=[0], feeRate=0.00010)
 
         # creating a 10,000 sat transaction without change, with a manual input, should still be possible
-        res = w2.walletcreatefundedpsbt(inputs=w2.listunspent(), outputs=[{destination: 0.00010000}], subtractFeeFromOutputs=[0], feeRate=0.00010)
+        res = w2.walletcreatefundedpsbt(inputs=w2.listunspent(), outputs=[{destination: 0.00010000}], subtract_fee_from_outputs=[0], feeRate=0.00010)
         assert_equal("psbt" in res, True)
 
         # creating a 10,000 sat transaction without change should still be possible
@@ -187,8 +210,9 @@ class KeyPoolTest(BitcoinTestFramework):
         assert_equal(res["fee"], Decimal("0.00009706"))
 
         # creating a 10,000 sat transaction with a manual change address should be possible
-        res = w2.walletcreatefundedpsbt(inputs=[], outputs=[{destination: 0.00010000}], subtractFeeFromOutputs=[0], feeRate=0.00010, changeAddress=addr.pop())
+        res = w2.walletcreatefundedpsbt(inputs=[], outputs=[{destination: 0.00010000}], subtractFeeFromOutputs=[0], feeRate=0.00010, change_address=addr.pop())
         assert_equal("psbt" in res, True)
+
 
 if __name__ == '__main__':
     KeyPoolTest(__file__).main()
