@@ -31,6 +31,7 @@
 #include <wallet/wallet.h>
 
 #include <cmath>
+#include <vector>
 
 using common::StringForFeeReason;
 using common::TransactionErrorString;
@@ -178,8 +179,8 @@ TxSize CalculateMaximumSignedTxSize(const CTransaction &tx, const CWallet *walle
         const auto mi = wallet->mapWallet.find(input.prevout.hash);
         // Can not estimate size without knowing the input details
         if (mi != wallet->mapWallet.end()) {
-            assert(input.prevout.n < mi->second.tx->vout.size());
-            txouts.emplace_back(mi->second.tx->vout.at(input.prevout.n));
+            assert(input.prevout.n < mi->second.GetTx()->vout.size());
+            txouts.emplace_back(mi->second.GetTx()->vout.at(input.prevout.n));
         } else if (coin_control) {
             const auto& txout{coin_control->GetExternalOutput(input.prevout)};
             if (!txout) return TxSize{-1, -1};
@@ -213,7 +214,7 @@ std::vector<COutput> CoinsResult::All() const
 void CoinsResult::Erase(const std::unordered_set<COutPoint, SaltedOutpointHasher>& coins_to_remove)
 {
     for (auto& [type, vec] : coins) {
-        auto remove_it = std::remove_if(vec.begin(), vec.end(), [&](const COutput& coin) {
+        std::erase_if(vec, [&](const COutput& coin) {
             // remove it if it's on the set
             if (!coins_to_remove.contains(coin.outpoint)) return false;
 
@@ -222,7 +223,6 @@ void CoinsResult::Erase(const std::unordered_set<COutPoint, SaltedOutpointHasher
             if (coin.HasEffectiveValue() && total_effective_amount.has_value()) total_effective_amount = *total_effective_amount - coin.GetEffectiveValue();
             return true;
         });
-        vec.erase(remove_it, vec.end());
     }
 }
 
@@ -281,10 +281,10 @@ util::Result<CoinsResult> FetchSelectedInputs(const CWallet& wallet, const CCoin
             }
             const CWalletTx& parent_tx = txo->GetWalletTx();
             if (wallet.GetTxDepthInMainChain(parent_tx) == 0) {
-                if (parent_tx.tx->version == TRUC_VERSION && coin_control.m_version != TRUC_VERSION) {
+                if (parent_tx.GetTx()->version == TRUC_VERSION && coin_control.m_version != TRUC_VERSION) {
                     return util::Error{strprintf(_("Can't spend unconfirmed version 3 pre-selected input with a version %d tx"), coin_control.m_version)};
-                } else if (coin_control.m_version == TRUC_VERSION && parent_tx.tx->version != TRUC_VERSION) {
-                    return util::Error{strprintf(_("Can't spend unconfirmed version %d pre-selected input with a version 3 tx"), parent_tx.tx->version)};
+                } else if (coin_control.m_version == TRUC_VERSION && parent_tx.GetTx()->version != TRUC_VERSION) {
+                    return util::Error{strprintf(_("Can't spend unconfirmed version %d pre-selected input with a version 3 tx"), parent_tx.GetTx()->version)};
                 }
             }
         } else {
@@ -396,16 +396,16 @@ CoinsResult AvailableCoins(const CWallet& wallet,
 
             if (nDepth == 0 && params.check_version_trucness) {
                 if (coinControl->m_version == TRUC_VERSION) {
-                    if (wtx.tx->version != TRUC_VERSION) continue;
+                    if (wtx.GetTx()->version != TRUC_VERSION) continue;
                     // this unconfirmed v3 transaction already has a child
                     if (wtx.truc_child_in_mempool.has_value()) continue;
 
                     // this unconfirmed v3 transaction has a parent: spending would create a third generation
                     size_t ancestors, unused_cluster_count;
-                    wallet.chain().getTransactionAncestry(wtx.tx->GetHash(), ancestors, unused_cluster_count);
+                    wallet.chain().getTransactionAncestry(wtx.GetTx()->GetHash(), ancestors, unused_cluster_count);
                     if (ancestors > 1) continue;
                 } else {
-                    if (wtx.tx->version == TRUC_VERSION) continue;
+                    if (wtx.GetTx()->version == TRUC_VERSION) continue;
                 }
             }
 
@@ -468,9 +468,9 @@ CoinsResult AvailableCoins(const CWallet& wallet,
 
         auto available_output_type = GetOutputType(type, is_from_p2sh);
         auto available_output = COutput(outpoint, output, nDepth, input_bytes, solvable, tx_safe, wtx.GetTxTime(), tx_from_me, feerate);
-        if (wtx.tx->version == TRUC_VERSION && nDepth == 0 && params.check_version_trucness) {
+        if (wtx.GetTx()->version == TRUC_VERSION && nDepth == 0 && params.check_version_trucness) {
             unconfirmed_truc_coins.emplace_back(available_output_type, available_output);
-            auto [it, _] = truc_txid_by_value.try_emplace(wtx.tx->GetHash(), 0);
+            auto [it, _] = truc_txid_by_value.try_emplace(wtx.GetTx()->GetHash(), 0);
             it->second += output.nValue;
         } else {
             result.Add(available_output_type, available_output);
@@ -526,16 +526,16 @@ const CTxOut& FindNonChangeParentOutput(const CWallet& wallet, const COutPoint& 
     AssertLockHeld(wallet.cs_wallet);
     const CWalletTx* wtx{Assert(wallet.GetWalletTx(outpoint.hash))};
 
-    const CTransaction* ptx = wtx->tx.get();
+    const CTransaction* ptx = wtx->GetTx().get();
     int n = outpoint.n;
     while (OutputIsChange(wallet, ptx->vout[n]) && ptx->vin.size() > 0) {
         const COutPoint& prevout = ptx->vin[0].prevout;
         const CWalletTx* it = wallet.GetWalletTx(prevout.hash);
-        if (!it || it->tx->vout.size() <= prevout.n ||
-            !wallet.IsMine(it->tx->vout[prevout.n])) {
+        if (!it || it->GetTx()->vout.size() <= prevout.n ||
+            !wallet.IsMine(it->GetTx()->vout[prevout.n])) {
             break;
         }
-        ptx = it->tx.get();
+        ptx = it->GetTx().get();
         n = prevout.n;
     }
     return ptx->vout[n];
@@ -672,7 +672,8 @@ FilteredOutputGroups GroupOutputs(const CWallet& wallet,
                     filtered_groups[filter].Push(group, type, positive_only, /*insert_mixed=*/!positive_only);
                     accepted = true;
                 }
-                if (!accepted) ret_discarded_groups.emplace_back(group);
+                // The positive-only groups are a subset of the mixed ones, don't record them twice
+                if (!accepted && !positive_only) ret_discarded_groups.emplace_back(group);
             }
         }
     };
@@ -992,7 +993,7 @@ static bool IsCurrentForAntiFeeSniping(interfaces::Chain& chain, const uint256& 
 }
 
 void DiscourageFeeSniping(CMutableTransaction& tx, FastRandomContext& rng_fast,
-                                 interfaces::Chain& chain, const uint256& block_hash, int block_height)
+                                 interfaces::Chain& chain, const uint256& block_hash, int block_height, uint32_t minimum_height)
 {
     // All inputs must be added by now
     assert(!tx.vin.empty());
@@ -1023,13 +1024,21 @@ void DiscourageFeeSniping(CMutableTransaction& tx, FastRandomContext& rng_fast,
         // that transactions that are delayed after signing for whatever reason,
         // e.g. high-latency mix networks and some CoinJoin implementations, have
         // better privacy.
-        if (rng_fast.randrange(10) == 0) {
-            tx.nLockTime = std::max(0, int(tx.nLockTime) - int(rng_fast.randrange(100)));
+        if (rng_fast.randrange(10) == 0 && tx.nLockTime > minimum_height) {
+            // If a minimum_height is passed, the backdating is limited between
+            // the current height and the minimum_height.
+            int range = std::min(100, int(block_height - static_cast<int>(minimum_height) + 1));
+            tx.nLockTime = int(tx.nLockTime) - int(rng_fast.randrange(range));
         }
     } else {
         // If our chain is lagging behind, we can't discourage fee sniping nor help
-        // the privacy of high-latency transactions. To avoid leaking a potentially
-        // unique "nLockTime fingerprint", set nLockTime to a constant.
+        // the privacy of high-latency transactions. Use minimum_height so new
+        // sends still get a constant 0 fingerprint.
+        tx.nLockTime = minimum_height;
+    }
+    // If minimum_height is ahead of the local tip, use 0 so the tx stays final
+    // and we do not fingerprint the lagging tip.
+    if (minimum_height > static_cast<uint32_t>(block_height)) {
         tx.nLockTime = 0;
     }
     // Sanity check all values
@@ -1043,7 +1052,7 @@ void DiscourageFeeSniping(CMutableTransaction& tx, FastRandomContext& rng_fast,
         // May be MAX BIP125 to disable BIP68 and enable BIP125
         if (in.nSequence == MAX_BIP125_RBF_SEQUENCE) continue;
         // The wallet does not support any other sequence-use right now.
-        assert(false);
+        AssertUnreachable();
     }
 }
 
@@ -1090,6 +1099,9 @@ static util::Result<CreatedTransactionResult> CreateTransactionInternal(
     ReserveDestination reservedest(&wallet, change_type);
     unsigned int outputs_to_subtract_fee_from = 0; // The number of outputs which we are subtracting the fee from
     for (const auto& recipient : vecSend) {
+        if (!MoneyRange(recipient.nAmount) || !MoneyRange(recipients_sum + recipient.nAmount)) {
+            return util::Error{_("Transaction output amount must be valid")};
+        }
         if (IsDust(recipient, wallet.chain().relayDustFee())) {
             return util::Error{_("Transaction amount too small")};
         }
@@ -1151,8 +1163,8 @@ static util::Result<CreatedTransactionResult> CreateTransactionInternal(
     coin_selection_params.m_discard_feerate = GetDiscardRate(wallet);
 
     // Get the fee rate to use effective values in coin selection
-    FeeCalculation feeCalc;
-    coin_selection_params.m_effective_feerate = GetMinimumFeeRate(wallet, coin_control, &feeCalc);
+    auto min_fee_rate{GetMinimumFeeRate(wallet, coin_control)};
+    coin_selection_params.m_effective_feerate = min_fee_rate.fee_rate;
     // Do not, ever, assume that it's fine to change the fee rate if the user has explicitly
     // provided one
     if (coin_control.m_feerate && coin_selection_params.m_effective_feerate > *coin_control.m_feerate) {
@@ -1160,7 +1172,7 @@ static util::Result<CreatedTransactionResult> CreateTransactionInternal(
         auto msg{strprintf(_("Fee rate (%s) is lower than the minimum fee rate setting (%s)."),
             coin_control.m_feerate->ToString(feerate_format),
             coin_selection_params.m_effective_feerate.ToString(feerate_format))};
-        if (feeCalc.reason == FeeReason::REQUIRED) {
+        if (min_fee_rate.fee_reason == FeeReason::REQUIRED) {
             msg += strprintf(_("\nConsider modifying %s (%s) or %s (%s)."),
                 "-mintxfee",
                 wallet.m_min_fee.ToString(feerate_format),
@@ -1169,7 +1181,7 @@ static util::Result<CreatedTransactionResult> CreateTransactionInternal(
         }
         return util::Error{msg};
     }
-    if (feeCalc.reason == FeeReason::FALLBACK && !wallet.m_allow_fallback_fee) {
+    if (min_fee_rate.fee_reason == FeeReason::FALLBACK && !wallet.m_allow_fallback_fee) {
         // eventually allow a fallback fee
         return util::Error{strprintf(_("Fee estimation failed. Fallbackfee is disabled. Wait a few blocks or enable %s."), "-fallbackfee")};
     }
@@ -1324,7 +1336,11 @@ static util::Result<CreatedTransactionResult> CreateTransactionInternal(
         use_anti_fee_sniping = false;
     }
     if (use_anti_fee_sniping) {
-        DiscourageFeeSniping(txNew, rng_fast, wallet.chain(), wallet.GetLastBlockHash(), wallet.GetLastBlockHeight());
+        uint32_t minimum_height = 0;
+        if (coin_control.m_minimum_locktime.has_value() && coin_control.m_minimum_locktime < LOCKTIME_THRESHOLD) {
+            minimum_height = coin_control.m_minimum_locktime.value();
+        }
+        DiscourageFeeSniping(txNew, rng_fast, wallet.chain(), wallet.GetLastBlockHash(), wallet.GetLastBlockHeight(), minimum_height);
     }
 
     // Calculate the transaction fee
@@ -1417,8 +1433,13 @@ static util::Result<CreatedTransactionResult> CreateTransactionInternal(
         return util::Error{_("Transaction too large")};
     }
 
-    if (current_fee > wallet.m_default_max_tx_fee) {
+    if (current_fee > wallet.m_max_tx_fee) {
         return util::Error{TransactionErrorString(TransactionError::MAX_FEE_EXCEEDED)};
+    }
+
+    const int64_t tx_vsize{GetVirtualTransactionSize(*tx)};
+    if (current_fee > wallet.m_max_tx_fee_rate.GetFee(tx_vsize)) {
+        return util::Error{TransactionErrorString(TransactionError::MAX_FEE_RATE_EXCEEDED)};
     }
 
     if (gArgs.GetBoolArg("-walletrejectlongchains", DEFAULT_WALLET_REJECT_LONG_CHAINS)) {
@@ -1433,16 +1454,10 @@ static util::Result<CreatedTransactionResult> CreateTransactionInternal(
     // accidental reuse.
     reservedest.KeepDestination();
 
-    wallet.WalletLogPrintf("Coin Selection: Algorithm:%s, Waste Metric Score:%d\n", GetAlgorithmName(result.GetAlgo()), result.GetWaste());
-    wallet.WalletLogPrintf("Fee Calculation: Fee:%d Bytes:%u Tgt:%d (requested %d) Reason:\"%s\" Decay %.5f: Estimation: (%g - %g) %.2f%% %.1f/(%.1f %d mem %.1f out) Fail: (%g - %g) %.2f%% %.1f/(%.1f %d mem %.1f out)\n",
-              current_fee, nBytes, feeCalc.returnedTarget, feeCalc.desiredTarget, StringForFeeReason(feeCalc.reason), feeCalc.est.decay,
-              feeCalc.est.pass.start, feeCalc.est.pass.end,
-              (feeCalc.est.pass.totalConfirmed + feeCalc.est.pass.inMempool + feeCalc.est.pass.leftMempool) > 0.0 ? 100 * feeCalc.est.pass.withinTarget / (feeCalc.est.pass.totalConfirmed + feeCalc.est.pass.inMempool + feeCalc.est.pass.leftMempool) : 0.0,
-              feeCalc.est.pass.withinTarget, feeCalc.est.pass.totalConfirmed, feeCalc.est.pass.inMempool, feeCalc.est.pass.leftMempool,
-              feeCalc.est.fail.start, feeCalc.est.fail.end,
-              (feeCalc.est.fail.totalConfirmed + feeCalc.est.fail.inMempool + feeCalc.est.fail.leftMempool) > 0.0 ? 100 * feeCalc.est.fail.withinTarget / (feeCalc.est.fail.totalConfirmed + feeCalc.est.fail.inMempool + feeCalc.est.fail.leftMempool) : 0.0,
-              feeCalc.est.fail.withinTarget, feeCalc.est.fail.totalConfirmed, feeCalc.est.fail.inMempool, feeCalc.est.fail.leftMempool);
-    return CreatedTransactionResult(tx, current_fee, change_pos, feeCalc);
+    wallet.WalletLogPrintf("Coin Selection: Algorithm:%s, Waste Metric Score:%d", GetAlgorithmName(result.GetAlgo()), result.GetWaste());
+    wallet.WalletLogPrintf("Fee Calculation: Fee:%d Bytes:%u, Source: %s",
+                           current_fee, nBytes, StringForFeeReason(min_fee_rate.fee_reason));
+    return CreatedTransactionResult(tx, current_fee, change_pos, min_fee_rate.fee_reason);
 }
 
 util::Result<CreatedTransactionResult> CreateTransaction(
@@ -1454,10 +1469,6 @@ util::Result<CreatedTransactionResult> CreateTransaction(
 {
     if (vecSend.empty()) {
         return util::Error{_("Transaction must have at least one recipient")};
-    }
-
-    if (std::any_of(vecSend.cbegin(), vecSend.cend(), [](const auto& recipient){ return recipient.nAmount < 0; })) {
-        return util::Error{_("Transaction amounts must not be negative")};
     }
 
     LOCK(wallet.cs_wallet);
@@ -1491,7 +1502,7 @@ util::Result<CreatedTransactionResult> CreateTransaction(
                txr_grouped.has_value() ? txr_grouped->fee : 0,
                txr_grouped.has_value() && txr_grouped->change_pos.has_value() ? int32_t(*txr_grouped->change_pos) : -1);
         if (txr_grouped) {
-            wallet.WalletLogPrintf("Fee non-grouped = %lld, grouped = %lld, using %s\n",
+            wallet.WalletLogPrintf("Fee non-grouped = %lld, grouped = %lld, using %s",
                 txr_ungrouped.fee, txr_grouped->fee, use_aps ? "grouped" : "non-grouped");
             if (use_aps) return txr_grouped;
         }

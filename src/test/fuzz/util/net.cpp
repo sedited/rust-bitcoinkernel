@@ -11,11 +11,11 @@
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/util.h>
 #include <test/util/net.h>
+#include <util/check.h>
 #include <util/sock.h>
 #include <util/time.h>
 
 #include <array>
-#include <cassert>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -130,8 +130,7 @@ FuzzedSock::~FuzzedSock()
 
 FuzzedSock& FuzzedSock::operator=(Sock&& other)
 {
-    assert(false && "Move of Sock into FuzzedSock not allowed.");
-    return *this;
+    AssertUnreachable(); // Move of Sock into FuzzedSock not allowed.
 }
 
 ssize_t FuzzedSock::Send(const void* data, size_t len, int flags) const

@@ -3,14 +3,17 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <common/args.h>
 #include <rpc/client.h>
+
 #include <tinyformat.h>
 
-#include <cstdint>
-#include <set>
+#include <algorithm>
+#include <cstddef>
+#include <ranges>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 //! Specify whether parameter should be parsed by bitcoin-cli as a JSON value,
 //! or passed unchanged as a string, or a combination of both.
@@ -105,6 +108,9 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "listtransactions", 1, "count" },
     { "listtransactions", 2, "skip" },
     { "listtransactions", 3, "include_watchonly" },
+    { "listrawtransactions", 0, "count" },
+    { "listrawtransactions", 1, "skip" },
+    { "listrawtransactions", 2, "verbose" },
     { "walletpassphrase", 0, "passphrase", ParamFormat::STRING },
     { "walletpassphrase", 1, "timeout" },
     { "getblocktemplate", 0, "template_request" },
@@ -141,9 +147,13 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "listunspent", 2, "addresses" },
     { "listunspent", 3, "include_unsafe" },
     { "listunspent", 4, "query_options" },
+    { "listunspent", 4, "minimum_amount" },
     { "listunspent", 4, "minimumAmount" },
+    { "listunspent", 4, "maximum_amount" },
     { "listunspent", 4, "maximumAmount" },
+    { "listunspent", 4, "maximum_count" },
     { "listunspent", 4, "maximumCount" },
+    { "listunspent", 4, "minimum_sum_amount" },
     { "listunspent", 4, "minimumSumAmount" },
     { "listunspent", 4, "include_immature_coinbase" },
     { "getblock", 1, "verbosity" },
@@ -177,11 +187,14 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "fundrawtransaction", 1, "minconf"},
     { "fundrawtransaction", 1, "maxconf"},
     { "fundrawtransaction", 1, "changePosition"},
+    { "fundrawtransaction", 1, "change_position"},
     { "fundrawtransaction", 1, "includeWatching"},
     { "fundrawtransaction", 1, "lockUnspents"},
+    { "fundrawtransaction", 1, "lock_unspents"},
     { "fundrawtransaction", 1, "fee_rate"},
     { "fundrawtransaction", 1, "feeRate"},
     { "fundrawtransaction", 1, "subtractFeeFromOutputs"},
+    { "fundrawtransaction", 1, "subtract_fee_from_outputs"},
     { "fundrawtransaction", 1, "input_weights"},
     { "fundrawtransaction", 1, "conf_target"},
     { "fundrawtransaction", 1, "replaceable"},
@@ -197,11 +210,14 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "walletcreatefundedpsbt", 3, "minconf"},
     { "walletcreatefundedpsbt", 3, "maxconf"},
     { "walletcreatefundedpsbt", 3, "changePosition"},
+    { "walletcreatefundedpsbt", 3, "change_position"},
     { "walletcreatefundedpsbt", 3, "includeWatching"},
     { "walletcreatefundedpsbt", 3, "lockUnspents"},
+    { "walletcreatefundedpsbt", 3, "lock_unspents"},
     { "walletcreatefundedpsbt", 3, "fee_rate"},
     { "walletcreatefundedpsbt", 3, "feeRate"},
     { "walletcreatefundedpsbt", 3, "subtractFeeFromOutputs"},
+    { "walletcreatefundedpsbt", 3, "subtract_fee_from_outputs"},
     { "walletcreatefundedpsbt", 3, "conf_target"},
     { "walletcreatefundedpsbt", 3, "replaceable"},
     { "walletcreatefundedpsbt", 3, "solving_data"},
@@ -305,6 +321,7 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "getrawmempool", 1, "mempool_sequence" },
     { "getorphantxs", 0, "verbosity" },
     { "estimatesmartfee", 0, "conf_target" },
+    { "estimatesmartfee", 2, "options" },
     { "estimaterawfee", 0, "conf_target" },
     { "estimaterawfee", 1, "threshold" },
     { "prioritisetransaction", 1, "dummy" },
@@ -335,9 +352,12 @@ static const CRPCConvertParam vRPCConvertParams[] =
     { "logging", 0, "include" },
     { "logging", 1, "exclude" },
     { "disconnectnode", 1, "nodeid" },
+    { "getopenrpcinfo", 0, "show_hidden" },
     { "gethdkeys", 0, "active_only" },
     { "gethdkeys", 0, "options" },
     { "gethdkeys", 0, "private" },
+    { "derivehdkey", 1, "options" },
+    { "derivehdkey", 1, "private" },
     { "createwalletdescriptor", 1, "options" },
     { "createwalletdescriptor", 1, "internal" },
     // Echo with conversion (For testing only)

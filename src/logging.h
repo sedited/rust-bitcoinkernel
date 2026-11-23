@@ -27,12 +27,12 @@
 #include <unordered_map>
 #include <vector>
 
-static const bool DEFAULT_LOGTIMEMICROS = false;
-static const bool DEFAULT_LOGIPS        = false;
-static const bool DEFAULT_LOGTIMESTAMPS = true;
-static const bool DEFAULT_LOGTHREADNAMES = false;
-static const bool DEFAULT_LOGSOURCELOCATIONS = false;
-static constexpr bool DEFAULT_LOGLEVELALWAYS = false;
+inline constexpr bool DEFAULT_LOGTIMEMICROS = false;
+inline constexpr bool DEFAULT_LOGIPS        = false;
+inline constexpr bool DEFAULT_LOGTIMESTAMPS = true;
+inline constexpr bool DEFAULT_LOGTHREADNAMES = false;
+inline constexpr bool DEFAULT_LOGSOURCELOCATIONS = false;
+inline constexpr bool DEFAULT_LOGLEVELALWAYS = false;
 extern const char * const DEFAULT_DEBUGLOGFILE;
 
 extern bool fLogIPs;
@@ -61,11 +61,11 @@ struct LogCategory {
 };
 
 namespace BCLog {
-    constexpr auto DEFAULT_LOG_LEVEL{Level::Debug};
-    constexpr size_t DEFAULT_MAX_LOG_BUFFER{1'000'000}; // buffer up to 1MB of log data prior to StartLogging
-    constexpr uint64_t RATELIMIT_MAX_BYTES{1_MiB}; // maximum number of bytes per source location that can be logged within the RATELIMIT_WINDOW
-    constexpr auto RATELIMIT_WINDOW{1h}; // time window after which log ratelimit stats are reset
-    constexpr bool DEFAULT_LOGRATELIMIT{true};
+    inline constexpr auto DEFAULT_LOG_LEVEL{Level::Debug};
+    inline constexpr size_t DEFAULT_MAX_LOG_BUFFER{1'000'000}; // buffer up to 1MB of log data prior to StartLogging
+    inline constexpr uint64_t RATELIMIT_MAX_BYTES{1_MiB}; // maximum number of bytes per source location that can be logged within the RATELIMIT_WINDOW
+    inline constexpr auto RATELIMIT_WINDOW{1h}; // time window after which log ratelimit stats are reset
+    inline constexpr bool DEFAULT_LOGRATELIMIT{true};
 
     //! Fixed window rate limiter for logging.
     class LogRateLimiter
@@ -202,12 +202,6 @@ namespace BCLog {
             m_print_callbacks.erase(it);
         }
 
-        size_t NumConnections() EXCLUSIVE_LOCKS_REQUIRED(!m_cs)
-        {
-            STDLOCK(m_cs);
-            return m_print_callbacks.size();
-        }
-
         /** Start logging (and flush all buffered messages) */
         bool StartLogging() EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
         /** Only for testing */
@@ -222,7 +216,6 @@ namespace BCLog {
         /** Disable logging
          * This offers a slight speedup and slightly smaller memory usage
          * compared to leaving the logging system in its default state.
-         * Mostly intended for libbitcoin-kernel apps that don't want any logging.
          * Should be used instead of StartLogging().
          */
         void DisableLogging() EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
@@ -238,11 +231,6 @@ namespace BCLog {
         {
             STDLOCK(m_cs);
             m_category_log_levels = levels;
-        }
-        void AddCategoryLogLevel(LogFlags category, Level level) EXCLUSIVE_LOCKS_REQUIRED(!m_cs)
-        {
-            STDLOCK(m_cs);
-            m_category_log_levels[category] = level;
         }
         bool SetCategoryLogLevel(std::string_view category_str, std::string_view level_str) EXCLUSIVE_LOCKS_REQUIRED(!m_cs);
 

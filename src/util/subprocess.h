@@ -1,6 +1,11 @@
 // Based on the https://github.com/arun11299/cpp-subprocess project.
 
+#ifndef BITCOIN_UTIL_SUBPROCESS_H
+#define BITCOIN_UTIL_SUBPROCESS_H
+
 /*!
+@file
+@brief C++ subprocessing library.
 
 Documentation for C++ subprocessing library.
 
@@ -33,9 +38,6 @@ Documentation for C++ subprocessing library.
 @version 1.0.0
 */
 
-#ifndef BITCOIN_UTIL_SUBPROCESS_H
-#define BITCOIN_UTIL_SUBPROCESS_H
-
 #include <util/check.h>
 #include <util/syserror.h>
 
@@ -48,22 +50,16 @@ Documentation for C++ subprocessing library.
 #include <future>
 #include <initializer_list>
 #include <iostream>
-#include <locale>
 #include <map>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <vector>
 
-#ifdef WIN32
-  #include <codecvt>
-#endif
-
 extern "C" {
 #ifdef WIN32
   #include <windows.h>
   #include <io.h>
-  #include <cwchar>
 #else
   #include <sys/wait.h>
   #include <unistd.h>
@@ -116,12 +112,12 @@ namespace subprocess {
 
 // Max buffer size allocated on stack for read error
 // from pipe
-static const size_t SP_MAX_ERR_BUF_SIZ = 1024;
+inline constexpr size_t SP_MAX_ERR_BUF_SIZ = 1024;
 
 // Default buffer capacity for OutBuffer and ErrBuffer.
 // If the data exceeds this capacity, the buffer size is grown
 // by 1.5 times its previous capacity
-static const size_t DEFAULT_BUF_CAP_BYTES = 8192;
+inline constexpr size_t DEFAULT_BUF_CAP_BYTES = 8192;
 
 
 /*-----------------------------------------------
@@ -168,9 +164,12 @@ public:
 namespace util
 {
 #ifdef WIN32
-  inline void quote_argument(const std::wstring &argument, std::wstring &command_line,
+  inline void quote_argument(const std::string &argument, std::string &command_line,
                       bool force)
   {
+    constexpr char quote = '"';
+    constexpr char backslash = '\\';
+
     //
     // Unless we're told otherwise, don't quote unless we actually
     // need to do so --- hopefully avoid problems if programs won't
@@ -178,16 +177,16 @@ namespace util
     //
 
     if (force == false && argument.empty() == false &&
-        argument.find_first_of(L" \t\n\v") == argument.npos) {
+        argument.find_first_of(" \t\n\v") == argument.npos) {
       command_line.append(argument);
     }
     else {
-      command_line.push_back(L'"');
+      command_line.push_back(quote);
 
       for (auto it = argument.begin();; ++it) {
         unsigned number_backslashes = 0;
 
-        while (it != argument.end() && *it == L'\\') {
+        while (it != argument.end() && *it == backslash) {
           ++it;
           ++number_backslashes;
         }
@@ -200,17 +199,17 @@ namespace util
           // as a metacharacter.
           //
 
-          command_line.append(number_backslashes * 2, L'\\');
+          command_line.append(number_backslashes * 2, backslash);
           break;
         }
-        else if (*it == L'"') {
+        else if (*it == quote) {
 
           //
           // Escape all backslashes and the following
           // double quotation mark.
           //
 
-          command_line.append(number_backslashes * 2 + 1, L'\\');
+          command_line.append(number_backslashes * 2 + 1, backslash);
           command_line.push_back(*it);
         }
         else {
@@ -219,12 +218,12 @@ namespace util
           // Backslashes aren't special here.
           //
 
-          command_line.append(number_backslashes, L'\\');
+          command_line.append(number_backslashes, backslash);
           command_line.push_back(*it);
         }
       }
 
-      command_line.push_back(L'"');
+      command_line.push_back(quote);
     }
   }
 
@@ -300,12 +299,11 @@ namespace util
 
   /*!
    * Function: split
-   * Parameters:
-   * [in] str : Input string which needs to be split based upon the
-   *            delimiters provided.
-   * [in] deleims : Delimiter characters based upon which the string needs
-   *                to be split. Default constructed to ' '(space) and '\t'(tab)
-   * [out] vector<string> : Vector of strings split at deleimiter.
+   * @param[in] str    Input string which needs to be split based upon the
+   *                   delimiters provided.
+   * @param[in] delims Delimiter characters based upon which the string needs
+   *                   to be split. Default constructed to space and tab.
+   * @return Vector of strings split at delimiter.
    */
   static inline std::vector<std::string>
   split(const std::string& str, const std::string& delims=" \t")
@@ -333,10 +331,9 @@ namespace util
    * Function: set_clo_on_exec
    * Sets/Resets the FD_CLOEXEC flag on the provided file descriptor
    * based upon the `set` parameter.
-   * Parameters:
-   * [in] fd : The descriptor on which FD_CLOEXEC needs to be set/reset.
-   * [in] set : If 'true', set FD_CLOEXEC.
-   *            If 'false' unset FD_CLOEXEC.
+   * @param[in] fd  The descriptor on which FD_CLOEXEC needs to be set/reset.
+   * @param[in] set If 'true', set FD_CLOEXEC.
+   *                If 'false' unset FD_CLOEXEC.
    */
   static inline
   void set_clo_on_exec(int fd, bool set = true)
@@ -357,8 +354,7 @@ namespace util
    * Function: pipe_cloexec
    * Creates a pipe and sets FD_CLOEXEC flag on both
    * read and write descriptors of the pipe.
-   * Parameters:
-   * [out] : A pair of file descriptors.
+   * @return A pair of file descriptors.
    *         First element of pair is the read descriptor of pipe.
    *         Second element is the write descriptor of pipe.
    */
@@ -383,12 +379,11 @@ namespace util
    * Function: write_n
    * Writes `length` bytes to the file descriptor `fd`
    * from the buffer `buf`.
-   * Parameters:
-   * [in] fd : The file descriptotr to write to.
-   * [in] buf: Buffer from which data needs to be written to fd.
-   * [in] length: The number of bytes that needs to be written from
-   *              `buf` to `fd`.
-   * [out] int : Number of bytes written or -1 in case of failure.
+   * @param[in] fd     The file descriptor to write to.
+   * @param[in] buf    Buffer from which data needs to be written to fd.
+   * @param[in] length The number of bytes that needs to be written from
+   *                   `buf` to `fd`.
+   * @return Number of bytes written or -1 in case of failure.
    */
   static inline
   int write_n(int fd, const char* buf, size_t length)
@@ -407,12 +402,12 @@ namespace util
    * Function: read_atmost_n
    * Reads at the most `read_upto` bytes from the
    * file object `fp` before returning.
-   * Parameters:
-   * [in] fp : The file object from which it needs to read.
-   * [in] buf : The buffer into which it needs to write the data.
-   * [in] read_upto: Max number of bytes which must be read from `fd`.
-   * [out] int : Number of bytes written to `buf` or read from `fd`
-   *             OR -1 in case of error.
+   * @param[in]  fp        The file object from which it needs to read.
+   * @param[out] buf       The buffer into which it needs to write the data.
+   * @param[in]  read_upto Max number of bytes which must be read from `fd`.
+   * @return Number of bytes written to `buf` or read from `fd`
+   *         OR -1 in case of error.
+   *
    *  NOTE: In case of EINTR while reading from socket, this API
    *  will retry to read from `fd`, but only till the EINTR counter
    *  reaches 50 after which it will return with whatever data it read.
@@ -450,11 +445,10 @@ namespace util
    * Function: read_all
    * Reads all the available data from `fp` into
    * `buf`. Internally calls read_atmost_n.
-   * Parameters:
-   * [in] fp : The file object from which to read from.
-   * [in] buf : The buffer of type `class Buffer` into which
-   *            the read data is written to.
-   * [out] int: Number of bytes read OR -1 in case of failure.
+   * @param[in]     fp  The file object from which to read from.
+   * @param[in,out] buf The buffer of type `class Buffer` into which
+   *                    the read data is written to.
+   * @return Number of bytes read OR -1 in case of failure.
    *
    * NOTE: `class Buffer` is a exposed public class. See below.
    */
@@ -498,9 +492,8 @@ namespace util
    * Function: wait_for_child_exit
    * Waits for the process with pid `pid` to exit
    * and returns its status.
-   * Parameters:
-   * [in] pid : The pid of the process.
-   * [out] pair<int, int>:
+   * @param[in] pid The pid of the process.
+   * @return pair<int, int>:
    *    pair.first : Return code of the waitpid call.
    *    pair.second : Exit status of the process.
    *
@@ -1085,37 +1078,33 @@ inline void Popen::execute_process() noexcept(false)
   }
   this->exe_name_ = vargs_[0];
 
-  std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
-  std::wstring argument;
-  std::wstring command_line;
+  std::string argument;
+  std::string command_line;
   bool first_arg = true;
 
   for (auto arg : this->vargs_) {
     if (!first_arg) {
-      command_line += L" ";
+      command_line += ' ';
     } else {
       first_arg = false;
     }
-    argument = converter.from_bytes(arg);
-    util::quote_argument(argument, command_line, false);
+    argument = arg;
+    util::quote_argument(argument, command_line, /*force=*/false);
   }
 
-  // CreateProcessW can modify szCmdLine so we allocate needed memory
-  wchar_t *szCmdline = new wchar_t[command_line.size() + 1];
-  wcscpy_s(szCmdline, command_line.size() + 1, command_line.c_str());
   PROCESS_INFORMATION piProcInfo;
-  STARTUPINFOW siStartInfo;
+  STARTUPINFOA siStartInfo;
   BOOL bSuccess = FALSE;
-  DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
+  DWORD creation_flags = CREATE_NO_WINDOW;
 
   // Set up members of the PROCESS_INFORMATION structure.
   ZeroMemory(&piProcInfo, sizeof(PROCESS_INFORMATION));
 
-  // Set up members of the STARTUPINFOW structure.
+  // Set up members of the STARTUPINFOA structure.
   // This structure specifies the STDIN and STDOUT handles for redirection.
 
-  ZeroMemory(&siStartInfo, sizeof(STARTUPINFOW));
-  siStartInfo.cb = sizeof(STARTUPINFOW);
+  ZeroMemory(&siStartInfo, sizeof(STARTUPINFOA));
+  siStartInfo.cb = sizeof(STARTUPINFOA);
 
   siStartInfo.hStdError = this->stream_.g_hChildStd_ERR_Wr;
   siStartInfo.hStdOutput = this->stream_.g_hChildStd_OUT_Wr;
@@ -1124,15 +1113,15 @@ inline void Popen::execute_process() noexcept(false)
   siStartInfo.dwFlags |= STARTF_USESTDHANDLES;
 
   // Create the child process.
-  bSuccess = CreateProcessW(NULL,
-                            szCmdline,    // command line
+  bSuccess = CreateProcessA(NULL,
+                            command_line.data(), // command line
                             NULL,         // process security attributes
                             NULL,         // primary thread security attributes
                             TRUE,         // handles are inherited
                             creation_flags, // creation flags
                             NULL,         // use parent's environment
                             NULL,         // use parent's current directory
-                            &siStartInfo, // STARTUPINFOW pointer
+                            &siStartInfo, // STARTUPINFOA pointer
                             &piProcInfo); // receives PROCESS_INFORMATION
 
   // If an error occurs, exit the application.
@@ -1220,7 +1209,7 @@ inline void Popen::execute_process() noexcept(false)
         // Throw whatever information we have about child failure
         throw CalledProcessError(err_buf, retcode);
       }
-    } catch (std::exception& exp) {
+    } catch (std::exception&) {
       stream_.cleanup_fds();
       throw;
     }

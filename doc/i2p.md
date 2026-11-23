@@ -4,20 +4,20 @@ It is possible to run Bitcoin Core as an
 [I2P (Invisible Internet Project)](https://en.wikipedia.org/wiki/I2P)
 service and connect to such services.
 
-This [glossary](https://geti2p.net/en/about/glossary) may be useful to get
+This [glossary](https://i2p.net/en/docs/overview/glossary) may be useful to get
 started with I2P terminology.
 
 ## Run Bitcoin Core with an I2P router (proxy)
 
-A running I2P router (proxy) is required with the [SAM](https://geti2p.net/en/docs/api/samv3)
+A running I2P router (proxy) is required with the [SAM](https://i2p.net/en/docs/api/samv3)
 application bridge enabled. The following routers are recommended for use with Bitcoin Core:
 
-- [i2prouter (I2P Router)](https://geti2p.net), the official implementation in
+- [i2prouter (I2P Router)](https://i2p.net), the official implementation in
   Java. The SAM bridge is not enabled by default; it must be started manually,
   or configured to start automatically, in the Clients page in the
   router console (`http://127.0.0.1:7657/configclients`) or in the `clients.config` file.
 - [i2pd (I2P Daemon)](https://github.com/PurpleI2P/i2pd)
-  ([documentation](https://i2pd.readthedocs.io/en/latest)), a lighter
+  ([documentation](https://docs.i2pd.website/en/latest)), a lighter
   alternative in C++. It enables the SAM bridge by default.
 
 Note the IP address and port the SAM proxy is listening to; usually, it is
@@ -83,7 +83,8 @@ generates a persistent I2P address and its corresponding private key by default,
 unless `-i2pacceptincoming=0` is set.  The private key is saved in a file named
 `i2p_private_key` in the Bitcoin Core data directory.  The persistent I2P
 address is used for making outbound connections and accepting inbound
-connections.
+connections, except that I2P connections opened for `-privatebroadcast`
+always use a transient address instead (see below).
 
 In the I2P network, the receiver of an inbound connection sees the address of
 the initiator. This is unlike the Tor network, where the recipient does not
@@ -97,6 +98,15 @@ fingerprint or analyze it based on its I2P address.
 I2P addresses are designed to be long-lived.  Waiting for tunnels to be built
 for every peer connection adds delay to connection setup time.  Therefore, I2P
 listening should only be turned off if really needed.
+
+Regardless of `-i2pacceptincoming`, I2P connections opened for
+`-privatebroadcast` do not use the persistent address from
+`i2p_private_key`. Instead, they use a transient address so the
+receiver does not see the node's long-lived I2P identity.
+
+The `-privatebroadcast` option applies only to transactions submitted
+with `sendrawtransaction`, not to wallet-created transactions. Private
+broadcast also runs over Tor; this section only describes the I2P case.
 
 ## Fetching I2P-related information from Bitcoin Core
 
@@ -113,7 +123,7 @@ You can use the `getnodeaddresses` RPC to fetch a number of I2P peers known to y
 
 ## Compatibility
 
-Bitcoin Core uses the [SAM v3.1](https://geti2p.net/en/docs/api/samv3) protocol
+Bitcoin Core uses the [SAM v3.1](https://i2p.net/en/docs/api/samv3) protocol
 to connect to the I2P network. Any I2P router that supports it can be used.
 
 ## Ports in I2P and Bitcoin Core
@@ -158,13 +168,13 @@ Similar bandwidth configuration options for the Java I2P router can be found in
 `http://127.0.0.1:7657/config` under the "Bandwidth" tab.
 
 Before doing this, please see the "Participating Traffic Considerations" section
-in [Embedding I2P in your Application](https://geti2p.net/en/docs/applications/embedding).
+in [Embedding I2P in your Application](https://i2p.net/en/docs/applications/embedding).
 
 In most cases, the default router settings should work fine.
 
 ## Bundling I2P in a Bitcoin application
 
-Please see the "General Guidance for Developers" section in https://geti2p.net/en/docs/api/samv3
+Please see the "General Guidance for Developers" section in https://i2p.net/en/docs/api/samv3
 if you are developing a downstream application that may be bundling I2P with Bitcoin.
 
 ## Privacy recommendations

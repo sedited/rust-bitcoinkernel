@@ -14,8 +14,6 @@
 #include <system_error>
 
 #ifdef WIN32
-#include <codecvt>
-#include <locale>
 #include <process.h>
 #include <windows.h>
 #else
@@ -28,17 +26,26 @@ int ExecVp(const char* file, char* const argv[])
 #ifndef WIN32
     return execvp(file, argv);
 #else
-    std::vector<std::wstring> escaped_args;
-    std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>> converter;
+    std::vector<std::string> escaped_args;
     for (char* const* arg_ptr{argv}; *arg_ptr; ++arg_ptr) {
-        subprocess::util::quote_argument(converter.from_bytes(*arg_ptr), escaped_args.emplace_back(), false);
+        subprocess::util::quote_argument(std::string{*arg_ptr}, escaped_args.emplace_back(), /*force=*/false);
     }
 
-    std::vector<const wchar_t*> new_argv;
+    std::vector<const char*> new_argv;
     new_argv.reserve(escaped_args.size() + 1);
     for (const auto& s : escaped_args) new_argv.push_back(s.c_str());
     new_argv.push_back(nullptr);
-    return _wexecvp(converter.from_bytes(file).c_str(), new_argv.data());
+    // Spawn the child process and wait for it to exit. We can't use _execvp
+    // here (the Windows counterpart of POSIX execvp above): on Windows _execvp
+    // creates a new child and immediately exits the parent, so anything waiting
+    // on the parent (e.g. a test framework) sees it exit with code 0 before the
+    // child finishes. Use _P_NOWAIT + _cwait instead of _P_WAIT so a child exit
+    // code of -1 is not confused with a spawn failure (both return -1 with _P_WAIT).
+    intptr_t child{_spawnvp(_P_NOWAIT, file, new_argv.data())};
+    if (child == -1) return -1;
+    int status{0};
+    if (_cwait(&status, child, _WAIT_CHILD) == -1) return -1;
+    _exit(status); // forward child exit code; never returns
 #endif
 }
 

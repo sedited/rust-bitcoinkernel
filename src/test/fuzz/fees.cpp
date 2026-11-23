@@ -2,12 +2,15 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <util/fees.h>
+
 #include <common/messages.h>
 #include <consensus/amount.h>
 #include <policy/fees/block_policy_estimator.h>
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
+#include <util/check.h>
 
 #include <cstdint>
 #include <string>
@@ -26,6 +29,11 @@ FUZZ_TARGET(fees)
         const CAmount rounded_fee = fee_filter_rounder.round(current_minimum_fee);
         assert(MoneyRange(rounded_fee));
     }
-    const FeeReason fee_reason = fuzzed_data_provider.PickValueInArray({FeeReason::NONE, FeeReason::HALF_ESTIMATE, FeeReason::FULL_ESTIMATE, FeeReason::DOUBLE_ESTIMATE, FeeReason::CONSERVATIVE, FeeReason::MEMPOOL_MIN, FeeReason::FALLBACK, FeeReason::REQUIRED});
+    const FeeReason fee_reason = fuzzed_data_provider.PickValueInArray({FeeReason::FEE_RATE_ESTIMATOR, FeeReason::MEMPOOL_MIN, FeeReason::USER_SPECIFIED, FeeReason::FALLBACK, FeeReason::REQUIRED});
     (void)StringForFeeReason(fee_reason);
+    const BlockPolicyEstimateReason block_policy_fee_reason = fuzzed_data_provider.PickValueInArray({BlockPolicyEstimateReason::NONE, BlockPolicyEstimateReason::HALF_ESTIMATE, BlockPolicyEstimateReason::FULL_ESTIMATE, BlockPolicyEstimateReason::DOUBLE_ESTIMATE, BlockPolicyEstimateReason::CONSERVATIVE});
+    (void)StringForBlockPolicyEstimateReason(block_policy_fee_reason);
+    const FeeRateEstimatorType feerate_estimator_type = fuzzed_data_provider.PickValueInArray({FeeRateEstimatorType::AUTO, FeeRateEstimatorType::BLOCK_POLICY, FeeRateEstimatorType::MEMPOOL_POLICY});
+    (void)FeeRateEstimatorTypeToString(feerate_estimator_type);
+    (void)FeeRateEstimatorTypeFromString(fuzzed_data_provider.ConsumeRandomLengthString());
 }

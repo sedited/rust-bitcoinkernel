@@ -20,7 +20,6 @@ typedef struct {
 } secp256k1_ge;
 
 #define SECP256K1_GE_CONST(a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p) {SECP256K1_FE_CONST((a),(b),(c),(d),(e),(f),(g),(h)), SECP256K1_FE_CONST((i),(j),(k),(l),(m),(n),(o),(p)), 0}
-#define SECP256K1_GE_CONST_INFINITY {SECP256K1_FE_CONST(0, 0, 0, 0, 0, 0, 0, 0), SECP256K1_FE_CONST(0, 0, 0, 0, 0, 0, 0, 0), 1}
 
 /** A group element of the secp256k1 curve, in jacobian coordinates.
  *  Note: For exhastive test mode, secp256k1 is replaced by a small subgroup of a different curve.
@@ -86,6 +85,15 @@ static void secp256k1_ge_set_all_gej(secp256k1_ge *r, const secp256k1_gej *a, si
 
 /** Set group elements r[0:len] (affine) equal to group elements a[0:len] (jacobian). */
 static void secp256k1_ge_set_all_gej_var(secp256k1_ge *r, const secp256k1_gej *a, size_t len);
+
+
+/** Set r to the affine coordinates of the Jacobian point (a.x, a.y, 1/zi).
+ *  a must not be infinity. */
+static void secp256k1_ge_set_ge_zinv(secp256k1_ge *r, const secp256k1_ge *a, const secp256k1_fe *zi);
+
+/** Set r to the affine coordinates of the Jacobian point (a.x, a.y, 1/zi), ignoring a.z.
+ *  a must not be infinity. */
+static void secp256k1_ge_set_gej_zinv(secp256k1_ge *r, const secp256k1_gej *a, const secp256k1_fe *zi);
 
 /** Bring a batch of inputs to the same global z "denominator", based on ratios between
  *  (omitted) z coordinates of adjacent elements.
@@ -195,6 +203,30 @@ static void secp256k1_ge_to_bytes_ext(unsigned char *data, const secp256k1_ge *g
 /** Convert a 64-byte array into a group element. This function assumes that the
  *  provided buffer is the output of secp256k1_ge_to_bytes_ext. */
 static void secp256k1_ge_from_bytes_ext(secp256k1_ge *ge, const unsigned char *data);
+
+/** Parse a group element from a 33-byte compressed public key (prefix byte is 0x02 or 0x03). */
+static int secp256k1_ge_parse33(secp256k1_ge *elem, const unsigned char *pub);
+
+/** Parse a group element from a 65-byte uncompressed public key (prefix byte is 0x04). */
+static int secp256k1_ge_parse65(secp256k1_ge *elem, const unsigned char *pub);
+
+/** Parse a group element from a 65-byte uncompressed or hybrid public key (prefix byte is 0x04, 0x06 or 0x07).
+ *  Only intended for legacy public APIs that must accept hybrid keys. */
+static int secp256k1_ge_parse_with_hybrid65(secp256k1_ge *elem, const unsigned char *pub);
+
+/** Serialize a group element (that is not allowed to be infinity) to a compressed public key (33 bytes). */
+static void secp256k1_ge_serialize33(secp256k1_ge *elem, unsigned char *pub33);
+
+/** Serialize a group element (that is not allowed to be infinity) to an uncompressed public key (65 bytes). */
+static void secp256k1_ge_serialize65(secp256k1_ge *elem, unsigned char *pub65);
+
+/** Outputs 33 zero bytes if the given group element is the point at infinity and
+ *  otherwise outputs the compressed serialization */
+static void secp256k1_ge_serialize_ext33(unsigned char *out33, secp256k1_ge *ge);
+
+/** Outputs the point at infinity if the given byte array is all zero, otherwise
+ *  attempts to parse compressed point serialization. */
+static int secp256k1_ge_parse_ext33(secp256k1_ge *ge, const unsigned char *in33);
 
 /** Determine if a point (which is assumed to be on the curve) is in the correct (sub)group of the curve.
  *

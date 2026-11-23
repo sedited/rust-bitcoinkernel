@@ -6,10 +6,10 @@
 #ifndef BITCOIN_COMMON_SYSTEM_H
 #define BITCOIN_COMMON_SYSTEM_H
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
+
 #include <util/time.h>
 
-#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -35,6 +35,6 @@ int GetNumCores();
 /**
  * Return the total RAM available on the current system, if detectable.
  */
-std::optional<size_t> GetTotalRAM();
+std::optional<uint64_t> TryGetTotalRam();
 
 #endif // BITCOIN_COMMON_SYSTEM_H

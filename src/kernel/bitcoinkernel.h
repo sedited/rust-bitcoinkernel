@@ -117,7 +117,7 @@ extern "C" {
  * Ownership of these resources may be taken by copying. They are typically
  * used for iteration with minimal overhead and require some care by the
  * programmer that their lifetime is not extended beyond that of the original
- * object.
+ * object. The same applies to btck_StringView.
  *
  * Array lengths follow the pointer argument they describe.
  *
@@ -127,6 +127,15 @@ extern "C" {
  * such as heights. Plain int and unsigned int are used for boolean-like values
  * and flags.
  */
+
+/**
+ * A non-owning view of a string. The string is not required to be
+ * null-terminated, so always use len to determine its length.
+ */
+typedef struct {
+    const char* data;
+    size_t len;
+} btck_StringView;
 
 /**
  * Opaque data structure for holding a transaction.
@@ -146,13 +155,10 @@ typedef struct btck_TransactionOutput btck_TransactionOutput;
 /**
  * Opaque data structure for holding a logging connection.
  *
- * The logging connection can be used to manually stop logging.
- *
- * Messages that were logged before a connection is created are buffered in a
- * 1MB buffer. Logging can alternatively be permanently disabled by calling
- * @ref btck_logging_disable. Functions changing the logging settings are
- * global and change the settings for all existing btck_LoggingConnection
- * instances.
+ * Log entries are delivered to the connection's callback for as long as the
+ * connection exists. Entries logged before a connection is created are not
+ * delivered. Functions changing the logging settings are global and change
+ * the settings for all existing btck_LoggingConnection instances.
  */
 typedef struct btck_LoggingConnection btck_LoggingConnection;
 
@@ -334,6 +340,13 @@ typedef struct btck_PrecomputedTransactionData btck_PrecomputedTransactionData;
 typedef struct btck_Txid btck_Txid;
 
 /**
+ * Opaque data structure for holding a btck_Wtxid.
+ *
+ * This is a type-safe identifier for a transaction that commits to witness data.
+ */
+typedef struct btck_Wtxid btck_Wtxid;
+
+/**
  * Opaque data structure for holding a btck_BlockHeader.
  */
 typedef struct btck_BlockHeader btck_BlockHeader;
@@ -349,13 +362,62 @@ typedef uint8_t btck_Warning;
 #define btck_Warning_UNKNOWN_NEW_RULES_ACTIVATED ((btck_Warning)(0))
 #define btck_Warning_LARGE_WORK_INVALID_CHAIN ((btck_Warning)(1))
 
+/**
+ * A collection of logging categories that may be encountered by kernel code.
+ */
+typedef uint8_t btck_LogCategory;
+#define btck_LogCategory_NONE ((btck_LogCategory)(0)) //!< Not tied to a specific category, e.g. most INFO, WARNING and ERROR entries.
+#define btck_LogCategory_BENCH ((btck_LogCategory)(1))
+#define btck_LogCategory_BLOCKSTORAGE ((btck_LogCategory)(2))
+#define btck_LogCategory_COINDB ((btck_LogCategory)(3))
+#define btck_LogCategory_LEVELDB ((btck_LogCategory)(4))
+#define btck_LogCategory_MEMPOOL ((btck_LogCategory)(5))
+#define btck_LogCategory_PRUNE ((btck_LogCategory)(6))
+#define btck_LogCategory_RAND ((btck_LogCategory)(7))
+#define btck_LogCategory_REINDEX ((btck_LogCategory)(8))
+#define btck_LogCategory_VALIDATION ((btck_LogCategory)(9))
+#define btck_LogCategory_KERNEL ((btck_LogCategory)(10))
+#define btck_LogCategory_TXPACKAGES ((btck_LogCategory)(11))
+#define btck_LogCategory_LOCK ((btck_LogCategory)(12))
+
+/**
+ * The severity of a log statement.
+ */
+typedef uint8_t btck_LogLevel;
+#define btck_LogLevel_TRACE ((btck_LogLevel)(0))
+#define btck_LogLevel_DEBUG ((btck_LogLevel)(1))
+#define btck_LogLevel_INFO ((btck_LogLevel)(2))
+#define btck_LogLevel_WARNING ((btck_LogLevel)(3))
+#define btck_LogLevel_ERROR ((btck_LogLevel)(4))
+
+/**
+ * Opaque data structure for holding a log entry.
+ *
+ * A log entry is passed to the logging callback and is only valid for the
+ * duration of the callback. Its fields are read with the btck_log_entry_get_*
+ * functions. Strings returned by these functions are only valid for the
+ * lifetime of the btck_LogEntry.
+ */
+typedef struct btck_LogEntry btck_LogEntry;
+
 /** Callback function types */
 
 /**
- * Function signature for the global logging callback. All bitcoin kernel
- * internal logs will pass through this callback.
+ * Function signature for a logging callback. Receives kernel log entries at or
+ * above the minimum level (see @ref btck_logging_set_min_level) while its
+ * btck_LoggingConnection exists.
+ *
+ * The callback may be invoked from any thread. Invocations are serialized: no
+ * two invocations run at the same time, and destroying a btck_LoggingConnection
+ * waits for an in-flight invocation of its callback to return. The callback may
+ * call the btck_log_entry_get_* functions on @p entry. It must not call any
+ * other kernel API function (this may deadlock), and should return quickly
+ * since it blocks every kernel thread that logs.
+ *
+ * @param[in] user_data User-defined opaque structure.
+ * @param[in] entry     Log entry. Valid only for the duration of the callback.
  */
-typedef void (*btck_LogCallback)(void* user_data, const char* message, size_t message_len);
+typedef void (*btck_LogCallback)(void* user_data, const btck_LogEntry* entry);
 
 /**
  * Function signature for freeing user data.
@@ -384,7 +446,11 @@ typedef void (*btck_ValidationInterfaceBlockDisconnected)(void* user_data, btck_
 /**
  * Function signature for serializing data.
  *
- * Returns 0 to indicate success.
+ * @param[in] bytes    The data to write. Can be null if size is 0.
+ * @param[in] size     The number of bytes in the data.
+ * @param[in] userdata Holds the user-defined opaque structure that was given
+ *                     with the writer.
+ * @return             0 on success.
  */
 typedef int (*btck_WriteBytes)(const void* bytes, size_t size, void* userdata);
 
@@ -474,43 +540,6 @@ typedef struct {
     btck_NotifyFlushError flush_error;      //!< An error encountered when flushing data to disk.
     btck_NotifyFatalError fatal_error;      //!< An unrecoverable system error encountered by the library.
 } btck_NotificationInterfaceCallbacks;
-
-/**
- * A collection of logging categories that may be encountered by kernel code.
- */
-typedef uint8_t btck_LogCategory;
-#define btck_LogCategory_ALL ((btck_LogCategory)(0))
-#define btck_LogCategory_BENCH ((btck_LogCategory)(1))
-#define btck_LogCategory_BLOCKSTORAGE ((btck_LogCategory)(2))
-#define btck_LogCategory_COINDB ((btck_LogCategory)(3))
-#define btck_LogCategory_LEVELDB ((btck_LogCategory)(4))
-#define btck_LogCategory_MEMPOOL ((btck_LogCategory)(5))
-#define btck_LogCategory_PRUNE ((btck_LogCategory)(6))
-#define btck_LogCategory_RAND ((btck_LogCategory)(7))
-#define btck_LogCategory_REINDEX ((btck_LogCategory)(8))
-#define btck_LogCategory_VALIDATION ((btck_LogCategory)(9))
-#define btck_LogCategory_KERNEL ((btck_LogCategory)(10))
-
-/**
- * The level at which logs should be produced.
- */
-typedef uint8_t btck_LogLevel;
-#define btck_LogLevel_TRACE ((btck_LogLevel)(0))
-#define btck_LogLevel_DEBUG ((btck_LogLevel)(1))
-#define btck_LogLevel_INFO ((btck_LogLevel)(2))
-
-/**
- * Options controlling the format of log messages.
- *
- * Set fields as non-zero to indicate true.
- */
-typedef struct {
-    int log_timestamps;               //!< Prepend a timestamp to log messages.
-    int log_time_micros;              //!< Log timestamps in microsecond precision.
-    int log_threadnames;              //!< Prepend the name of the thread to log messages.
-    int log_sourcelocations;          //!< Prepend the source location to log messages.
-    int always_print_category_levels; //!< Prepend the log category and level to log messages.
-} btck_LoggingOptions;
 
 /**
  * A collection of status codes that may be issued by the script verify function.
@@ -664,6 +693,15 @@ BITCOINKERNEL_API size_t btck_transaction_count_inputs(
     const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
 
 /**
+ * @brief Get a transaction's version.
+ *
+ * @param[in] transaction Non-null.
+ * @return                The version.
+ */
+BITCOINKERNEL_API uint32_t btck_transaction_get_version(
+    const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
  * @brief Get a transaction's nLockTime value.
  *
  * @param[in] transaction Non-null.
@@ -680,6 +718,25 @@ BITCOINKERNEL_API uint32_t btck_transaction_get_locktime(
  * @return                The txid.
  */
 BITCOINKERNEL_API const btck_Txid* btck_transaction_get_txid(
+    const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Check whether a transaction has witness data.
+ *
+ * @param[in] transaction Non-null.
+ * @return                1 if the transaction has witness data, 0 if not.
+ */
+BITCOINKERNEL_API int btck_transaction_has_witness(
+    const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Get the wtxid of a transaction. The returned wtxid is not owned and
+ * depends on the lifetime of the transaction.
+ *
+ * @param[in] transaction Non-null.
+ * @return                The wtxid.
+ */
+BITCOINKERNEL_API const btck_Wtxid* btck_transaction_get_wtxid(
     const btck_Transaction* transaction) BITCOINKERNEL_ARG_NONNULL(1);
 
 /**
@@ -872,71 +929,29 @@ BITCOINKERNEL_API void btck_transaction_output_destroy(btck_TransactionOutput* t
 ///@{
 
 /**
- * @brief This disables the global internal logger. No log messages will be
- * buffered internally anymore once this is called and the buffer is cleared.
- * This function should only be called once and is not thread or re-entry safe.
- * Log messages will be buffered until this function is called, or a logging
- * connection is created. This must not be called while a logging connection
- * already exists.
- */
-BITCOINKERNEL_API void btck_logging_disable();
-
-/**
- * @brief Set some options for the global internal logger. This changes global
- * settings and will override settings for all existing @ref
+ * @brief Set the minimum log level. Messages below this level are not delivered
+ * to logging callbacks. Defaults to Info.
+ *
+ * This changes a global setting and will affect all existing @ref
  * btck_LoggingConnection instances.
  *
- * @param[in] options Sets formatting options of the log messages.
+ * @param[in] level Minimum log level.
  */
-BITCOINKERNEL_API void btck_logging_set_options(btck_LoggingOptions options);
+BITCOINKERNEL_API void btck_logging_set_min_level(btck_LogLevel level);
 
 /**
- * @brief Set the log level of the global internal logger. This does not
- * enable the selected categories. Use @ref btck_logging_enable_category to
- * start logging from a specific, or all categories. This changes a global
- * setting and will override settings for all existing
- * @ref btck_LoggingConnection instances.
+ * @brief Start logging messages through the provided callback.
  *
- * @param[in] category If btck_LogCategory_ALL is chosen, sets both the global fallback log level
- *                     used by all categories that don't have a specific level set, and also
- *                     sets the log level for messages logged with the btck_LogCategory_ALL category itself.
- *                     For any other category, sets a category-specific log level that overrides
- *                     the global fallback for that category only.
-
- * @param[in] level    Log level at which the log category is set.
- */
-BITCOINKERNEL_API void btck_logging_set_level_category(btck_LogCategory category, btck_LogLevel level);
-
-/**
- * @brief Enable a specific log category for the global internal logger. This
- * changes a global setting and will override settings for all existing @ref
- * btck_LoggingConnection instances.
- *
- * @param[in] category If btck_LogCategory_ALL is chosen, all categories will be enabled.
- */
-BITCOINKERNEL_API void btck_logging_enable_category(btck_LogCategory category);
-
-/**
- * @brief Disable a specific log category for the global internal logger. This
- * changes a global setting and will override settings for all existing @ref
- * btck_LoggingConnection instances.
- *
- * @param[in] category If btck_LogCategory_ALL is chosen, all categories will be disabled.
- */
-BITCOINKERNEL_API void btck_logging_disable_category(btck_LogCategory category);
-
-/**
- * @brief Start logging messages through the provided callback. Log messages
- * produced before this function is first called are buffered and on calling this
- * function are logged immediately.
- *
- * @param[in] log_callback               Non-null, function through which messages will be logged.
+ * @param[in] log_callback               Non-null, function through which log entries will be delivered.
  * @param[in] user_data                  Nullable, holds a user-defined opaque structure. Is passed back
  *                                       to the user through the callback. If the user_data_destroy_callback
  *                                       is also defined it is assumed that ownership of the user_data is passed
  *                                       to the created logging connection.
- * @param[in] user_data_destroy_callback Nullable, function for freeing the user data.
- * @return                               A new kernel logging connection, or null on error.
+ * @param[in] user_data_destroy_callback Nullable, function for freeing the user data. Not called
+ *                                       if user_data is null.
+ * @return                               A new kernel logging connection, or null on error. On error,
+ *                                       user_data_destroy_callback is invoked if both it and user_data
+ *                                       are non-null.
  */
 BITCOINKERNEL_API btck_LoggingConnection* BITCOINKERNEL_WARN_UNUSED_RESULT btck_logging_connection_create(
     btck_LogCallback log_callback,
@@ -947,6 +962,89 @@ BITCOINKERNEL_API btck_LoggingConnection* BITCOINKERNEL_WARN_UNUSED_RESULT btck_
  * Stop logging and destroy the logging connection.
  */
 BITCOINKERNEL_API void btck_logging_connection_destroy(btck_LoggingConnection* logging_connection);
+
+/**
+ * @brief Get the message text from a btck_LogEntry. The message is not escaped,
+ * so it may contain newlines and other control characters.
+ *
+ * @param[in] entry Non-null btck_LogEntry
+ * @return          Message text
+ */
+BITCOINKERNEL_API btck_StringView btck_log_entry_get_message(
+    const btck_LogEntry* entry) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Get the name of the thread that produced the log message.
+ *
+ * @param[in] entry Non-null btck_LogEntry
+ * @return          Thread name
+ */
+BITCOINKERNEL_API btck_StringView btck_log_entry_get_thread_name(
+    const btck_LogEntry* entry) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Get the wall-clock time when the entry was logged.
+ *
+ * @param[in] entry Non-null btck_LogEntry
+ * @return          Nanoseconds since the Unix epoch
+ */
+BITCOINKERNEL_API int64_t btck_log_entry_get_timestamp_ns(
+    const btck_LogEntry* entry) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Get the mock time in effect when the entry was logged.
+ *
+ * @param[in] entry Non-null btck_LogEntry
+ * @return          Seconds since the Unix epoch, or 0 if no mock time is set
+ *                  (see btck_set_mock_time)
+ */
+BITCOINKERNEL_API int64_t btck_log_entry_get_mocktime_s(
+    const btck_LogEntry* entry) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Get the name of the source file that produced the log statement.
+ *
+ * @param[in] entry Non-null btck_LogEntry
+ * @return          File name
+ */
+BITCOINKERNEL_API btck_StringView btck_log_entry_get_file_name(
+    const btck_LogEntry* entry) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Get the name of the function that produced the log statement.
+ *
+ * @param[in] entry Non-null btck_LogEntry
+ * @return          Function name
+ */
+BITCOINKERNEL_API btck_StringView btck_log_entry_get_function_name(
+    const btck_LogEntry* entry) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Get the line number of the source code that produced the log statement.
+ *
+ * @param[in] entry Non-null btck_LogEntry
+ * @return          Line number
+ */
+BITCOINKERNEL_API uint32_t btck_log_entry_get_line(
+    const btck_LogEntry* entry) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Get the severity level of the log entry.
+ *
+ * @param[in] entry Non-null btck_LogEntry
+ * @return          Log level
+ */
+BITCOINKERNEL_API btck_LogLevel btck_log_entry_get_level(
+    const btck_LogEntry* entry) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Get the category of the log entry.
+ *
+ * @param[in] entry Non-null btck_LogEntry
+ * @return          Log category
+ */
+BITCOINKERNEL_API btck_LogCategory btck_log_entry_get_category(
+    const btck_LogEntry* entry) BITCOINKERNEL_ARG_NONNULL(1);
 
 ///@}
 
@@ -1196,6 +1294,22 @@ BITCOINKERNEL_API void btck_chainstate_manager_options_set_worker_threads_num(
     int worker_threads) BITCOINKERNEL_ARG_NONNULL(1);
 
 /**
+ * @brief Set the total database cache used by the chainstate manager.
+ *
+ * The total cache is split internally between the block tree database,
+ * chainstate database, and in-memory coins cache. If this function is not
+ * called, the total cache defaults to 450 MiB.
+ *
+ * @param[in] chainstate_manager_options Non-null, options to be set.
+ * @param[in] database_cache_bytes       The total database cache size in bytes. Values below 4 MiB are rejected.
+ *                                       On 32-bit systems, values above 1 GiB are also rejected.
+ * @return                               0 if the set was successful, non-zero if the set failed.
+ */
+BITCOINKERNEL_API int BITCOINKERNEL_WARN_UNUSED_RESULT btck_chainstate_manager_options_set_database_cache_bytes(
+    btck_ChainstateManagerOptions* chainstate_manager_options,
+    uint64_t database_cache_bytes) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
  * @brief Sets wipe db in the options. In combination with calling
  * @ref btck_chainstate_manager_import_blocks this triggers either a full reindex,
  * or a reindex of just the chainstate database.
@@ -1280,6 +1394,10 @@ BITCOINKERNEL_API btck_BlockValidationState* BITCOINKERNEL_WARN_UNUSED_RESULT bt
  * @brief Triggers the start of a reindex if the wipe options were previously
  * set for the chainstate manager. Can also import an array of existing block
  * files selected by the user.
+ *
+ * Do not call this while another btck_chainstate_manager_import_blocks call
+ * on the same chainstate manager is in progress. The process aborts when this
+ * is detected.
  *
  * @param[in] chainstate_manager        Non-null.
  * @param[in] block_file_paths_data     Nullable, array of block files described by their full filesystem paths.
@@ -1856,6 +1974,46 @@ BITCOINKERNEL_API void btck_txid_destroy(btck_Txid* txid);
 
 ///@}
 
+/** @name Wtxid
+ * Functions for working with wtxids.
+ */
+///@{
+
+/**
+ * @brief Copy a wtxid.
+ *
+ * @param[in] wtxid Non-null.
+ * @return          The copied wtxid.
+ */
+BITCOINKERNEL_API btck_Wtxid* BITCOINKERNEL_WARN_UNUSED_RESULT btck_wtxid_copy(
+    const btck_Wtxid* wtxid) BITCOINKERNEL_ARG_NONNULL(1);
+
+/**
+ * @brief Check if two wtxids are equal.
+ *
+ * @param[in] wtxid1 Non-null.
+ * @param[in] wtxid2 Non-null.
+ * @return           0 if the wtxid is not equal.
+ */
+BITCOINKERNEL_API int btck_wtxid_equals(
+    const btck_Wtxid* wtxid1, const btck_Wtxid* wtxid2) BITCOINKERNEL_ARG_NONNULL(1, 2);
+
+/**
+ * @brief Serializes the wtxid to bytes.
+ *
+ * @param[in] wtxid    Non-null.
+ * @param[out] output  The serialized wtxid.
+ */
+BITCOINKERNEL_API void btck_wtxid_to_bytes(
+    const btck_Wtxid* wtxid, unsigned char output[32]) BITCOINKERNEL_ARG_NONNULL(1, 2);
+
+/**
+ * Destroy the wtxid.
+ */
+BITCOINKERNEL_API void btck_wtxid_destroy(btck_Wtxid* wtxid);
+
+///@}
+
 /** @name Coin
  * Functions for working with coins.
  */
@@ -1940,7 +2098,7 @@ BITCOINKERNEL_API btck_BlockHash* BITCOINKERNEL_WARN_UNUSED_RESULT btck_block_ha
  * @brief Serializes the block hash to bytes.
  *
  * @param[in] block_hash     Non-null.
- * @param[in] output         The serialized block hash.
+ * @param[out] output        The serialized block hash.
  */
 BITCOINKERNEL_API void btck_block_hash_to_bytes(
     const btck_BlockHash* block_hash, unsigned char output[32]) BITCOINKERNEL_ARG_NONNULL(1, 2);
@@ -1997,6 +2155,15 @@ BITCOINKERNEL_API const btck_BlockHash* btck_block_header_get_prev_hash(
     const btck_BlockHeader* header) BITCOINKERNEL_ARG_NONNULL(1);
 
 /**
+ * @brief Get the Merkle root from btck_BlockHeader.
+ *
+ * @param[in] header Non-null btck_BlockHeader.
+ * @param[out] output The 32-byte Merkle root.
+ */
+BITCOINKERNEL_API void btck_block_header_get_merkle_root(
+    const btck_BlockHeader* header, unsigned char output[32]) BITCOINKERNEL_ARG_NONNULL(1, 2);
+
+/**
  * @brief Get the timestamp from btck_BlockHeader.
  *
  * @param[in] header    Non-null btck_BlockHeader
@@ -2047,6 +2214,28 @@ BITCOINKERNEL_API int BITCOINKERNEL_WARN_UNUSED_RESULT btck_block_header_to_byte
  * Destroy the btck_BlockHeader.
  */
 BITCOINKERNEL_API void btck_block_header_destroy(btck_BlockHeader* header);
+
+///@}
+
+/** @name Testing
+ * Functions intended for testing purposes only.
+ */
+///@{
+
+/**
+ * @brief Override the current time with a fixed timestamp for testing.
+ *
+ * Affects all kernel time reads globally. The caller is responsible
+ * for gating usage (e.g. restricting to regtest) if desired.
+ *
+ * The upper bound (4294967295) matches the maximum value of a block header
+ * timestamp.
+ *
+ * @param[in] timestamp Unix epoch seconds, or 0 to restore the system clock.
+ * @return              0 on success, non-zero if timestamp is outside the
+ *                      valid [0, 4294967295] range.
+ */
+BITCOINKERNEL_API int BITCOINKERNEL_WARN_UNUSED_RESULT btck_set_mock_time(int64_t timestamp);
 
 ///@}
 

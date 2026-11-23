@@ -63,10 +63,11 @@ static const CoinSelectionParams default_cs_params = init_cs_params();
 static OutputGroup MakeCoin(const CAmount& amount, bool is_eff_value = true, CoinSelectionParams cs_params = default_cs_params, int custom_spending_vsize = P2WPKH_INPUT_VSIZE)
 {
     // Always assume that we only have one input
+    const CAmount fees = cs_params.m_effective_feerate.GetFee(custom_spending_vsize);
     CMutableTransaction tx;
-    tx.vout.resize(1);
-    CAmount fees = cs_params.m_effective_feerate.GetFee(custom_spending_vsize);
-    tx.vout[0].nValue = amount + int(is_eff_value) * fees;
+    tx.vout = {
+        CTxOut{amount + int(is_eff_value) * fees, CScript{}},
+    };
     tx.nLockTime = next_lock_time++;        // so all transactions get different hashes
     OutputGroup group(cs_params);
     group.Insert(std::make_shared<COutput>(COutPoint(tx.GetHash(), 0), tx.vout.at(0), /*depth=*/1, /*input_bytes=*/custom_spending_vsize, /*solvable=*/true, /*safe=*/true, /*time=*/0, /*from_me=*/false, /*fees=*/fees), /*ancestors=*/0, /*cluster_count=*/0);
@@ -128,6 +129,7 @@ static void TestBnBSuccess(std::string test_title, std::vector<OutputGroup>& utx
     BOOST_CHECK_MESSAGE(result->GetSelectedValue() == expected_amount, strprintf("Selected amount mismatch in BnB-Success: %s. Expected %d, but got %d", test_title, expected_amount, result->GetSelectedValue()));
     BOOST_CHECK_MESSAGE(result->GetWeight() <= max_selection_weight, strprintf("Selected weight is higher than permitted in BnB-Success: %s. Expected %d, but got %d", test_title, max_selection_weight, result->GetWeight()));
     BOOST_CHECK_MESSAGE(result->GetSelectionsEvaluated() == expected_attempts, strprintf("Unexpected number of attempts in BnB-Success: %s. Expected %i attempts, but got %i", test_title, expected_attempts, result->GetSelectionsEvaluated()));
+    BOOST_CHECK_MESSAGE(result->GetAlgoCompleted(), "Expected BnB to exhaust the search space in BnB-Success: " + test_title);
 }
 
 static void TestBnBFail(std::string test_title, std::vector<OutputGroup>& utxo_pool, const CAmount& selection_target, const CoinSelectionParams& cs_params = default_cs_params, int max_selection_weight = MAX_STANDARD_TX_WEIGHT, const bool expect_max_weight_exceeded = false)
@@ -218,6 +220,26 @@ BOOST_AUTO_TEST_CASE(bnb_test)
         AddCoins(doppelganger_pool, {1 * CENT + cs_params.m_cost_of_change + 18}, cs_params);
         TestBnBFail("Exhaust looking for smallest 8 of 19 unique UTXOs", doppelganger_pool, /*selection_target=*/8 * CENT, cs_params);
     }
+}
+
+BOOST_AUTO_TEST_CASE(bnb_exhaustion_with_solution_test)
+{
+    std::vector<OutputGroup> utxo_pool;
+    utxo_pool.reserve(19);
+
+    CAmount selection_target{800'000};
+    // A hard case with no exact-match solution: BnB must still report that the algorithm did not complete once the
+    // search is pushed into the attempt limit, even though it finds a solution within cost_of_change of the target.
+    for (size_t i = 0; i < 19; ++i) {
+        utxo_pool.push_back(MakeCoin(100'000 + i, /*is_eff_value=*/true, default_cs_params));
+    }
+
+    const auto result{SelectCoinsBnB(utxo_pool, selection_target, /*cost_of_change=*/default_cs_params.m_cost_of_change, MAX_STANDARD_TX_WEIGHT)};
+    BOOST_CHECK_MESSAGE(result, "Falsy result in BnB-Success: Exhaust with early solution");
+    BOOST_CHECK(result->GetSelectedEffectiveValue() > selection_target + 28);
+    BOOST_CHECK_EQUAL(result->GetInputSet().size(), 8U);
+    BOOST_CHECK_EQUAL(result->GetSelectionsEvaluated(), 100'000U);
+    BOOST_CHECK(!result->GetAlgoCompleted());
 }
 
 BOOST_AUTO_TEST_CASE(bnb_feerate_sensitivity_test)

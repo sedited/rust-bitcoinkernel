@@ -37,6 +37,7 @@ class WalletSignerTest(BitcoinTestFramework):
 
     def set_test_params(self):
         self.num_nodes = 2
+        self.noban_tx_relay = True  # faster tx relay
 
         self.extra_args = [
             [],

@@ -3,7 +3,7 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-export LC_ALL=C
+export LC_ALL=C.UTF-8
 if [ -z "$OSSLSIGNCODE" ]; then
   OSSLSIGNCODE=osslsigncode
 fi
@@ -24,7 +24,7 @@ CERTFILE="win-codesign.cert"
 
 stty -echo
 printf "Enter the passphrase for %s: " "$1"
-read cs_key_pass
+read -r cs_key_pass
 printf "\n"
 stty echo
 

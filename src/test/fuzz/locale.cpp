@@ -2,16 +2,17 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <locale>
+
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <tinyformat.h>
+#include <util/check.h>
 #include <util/strencodings.h>
 #include <util/string.h>
 
-#include <cassert>
 #include <clocale>
 #include <cstdint>
-#include <locale>
 #include <string>
 #include <vector>
 
@@ -45,7 +46,6 @@ FUZZ_TARGET(locale)
     const char* c_locale = std::setlocale(LC_ALL, "C");
     assert(c_locale != nullptr);
 
-    const std::string random_string = fuzzed_data_provider.ConsumeRandomLengthString(5);
     const int64_t random_int64 = fuzzed_data_provider.ConsumeIntegral<int64_t>();
     const std::string tostring_without_locale = util::ToString(random_int64);
     const std::string strprintf_int_without_locale = strprintf("%d", random_int64);

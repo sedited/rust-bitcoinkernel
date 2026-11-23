@@ -21,7 +21,7 @@
 
 struct CDiskTxPos;
 
-static constexpr bool DEFAULT_TXOSPENDERINDEX{false};
+inline constexpr bool DEFAULT_TXOSPENDERINDEX{false};
 
 struct TxoSpender {
     CTransactionRef tx;
@@ -67,9 +67,5 @@ public:
      */
     util::Expected<std::optional<TxoSpender>, std::string> FindSpender(const COutPoint& txo) const;
 };
-
-/// The global txo spender index. May be null.
-extern std::unique_ptr<TxoSpenderIndex> g_txospenderindex;
-
 
 #endif // BITCOIN_INDEX_TXOSPENDERINDEX_H

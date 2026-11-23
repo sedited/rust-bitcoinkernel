@@ -6,21 +6,19 @@
 #include <rpc/protocol.h>
 #include <test/util/common.h>
 #include <test/util/logging.h>
+#include <test/util/net.h>
 #include <test/util/setup_common.h>
+#include <util/check.h>
+#include <util/overflow.h>
 #include <util/string.h>
 #include <util/threadpool.h>
 
 #include <boost/test/unit_test.hpp>
 
-using http_bitcoin::GetQueryParameterFromUri;
-using http_bitcoin::HTTPHeaders;
-using http_bitcoin::HTTPRemoteClient;
-using http_bitcoin::HTTPRequest;
-using http_bitcoin::HTTPResponse;
-using http_bitcoin::HTTPServer;
-using http_bitcoin::MAX_BODY_SIZE;
-using http_bitcoin::MAX_HEADERS_SIZE;
+#include <memory>
+
 using util::LineReader;
+using namespace bitcoin_http;
 
 // HTTP request captured from bitcoin-cli
 constexpr std::string_view full_request = "POST / HTTP/1.1\r\n"
@@ -188,9 +186,9 @@ BOOST_AUTO_TEST_CASE(http_response_tests)
     // Response points to headers which already exist because some of them
     // are set before we even know what the response will be.
     HTTPResponse res;
-    res.m_version = {.major = 1, .minor = 1};
-    res.m_status = HTTP_OK;
-    res.m_headers = std::move(headers);
+    res.version = {.major = 1, .minor = 1};
+    res.status = HTTP_OK;
+    res.headers = std::move(headers);
     BOOST_CHECK_EQUAL(
         res.StringifyHeaders(),
         "HTTP/1.1 200 OK\r\n"
@@ -203,82 +201,77 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
     {
         HTTPRequest req;
         LineReader reader(full_request, MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK(req.LoadBody(reader));
-        BOOST_CHECK_EQUAL(req.m_method, HTTPRequestMethod::POST);
+        BOOST_CHECK_EQUAL(req.Load(reader), HTTPRequest::State::Complete);
         BOOST_CHECK_EQUAL(req.GetRequestMethod(), HTTPRequestMethod::POST);
-        BOOST_CHECK_EQUAL(req.m_target, "/");
         BOOST_CHECK_EQUAL(req.GetURI(), "/");
-        BOOST_CHECK_EQUAL(req.m_version.major, 1);
-        BOOST_CHECK_EQUAL(req.m_version.minor, 1);
-        BOOST_CHECK_EQUAL(req.m_headers.FindFirst("Host"), "127.0.0.1");
-        BOOST_CHECK_EQUAL(req.m_headers.FindFirst("Connection"), "close");
-        BOOST_CHECK_EQUAL(req.m_headers.FindFirst("Content-Type"), "application/json");
-        BOOST_CHECK_EQUAL(req.m_headers.FindFirst("Authorization"), "Basic X19jb29raWVfXzo5OGQ5ODQ3MWNmNjg0NzAzYTkzN2EzNzk0ZDFlODQ1NjZmYTRkZjJiMzFkYjhhODI4ZGY4MjVjOTg5ZGI4OTVl");
-        BOOST_CHECK_EQUAL(req.m_headers.FindFirst("Content-Length"), "46");
-        BOOST_CHECK_EQUAL(req.m_body.size(), 46);
-        BOOST_CHECK_EQUAL(req.m_body, R"({"method":"getblockcount","params":[],"id":1})""\n");
+        BOOST_CHECK_EQUAL(req.GetVersion().major, 1);
+        BOOST_CHECK_EQUAL(req.GetVersion().minor, 1);
+        BOOST_CHECK_EQUAL(req.GetHeader("Host"), "127.0.0.1");
+        BOOST_CHECK_EQUAL(req.GetHeader("Connection"), "close");
+        BOOST_CHECK_EQUAL(req.GetHeader("Content-Type"), "application/json");
+        BOOST_CHECK_EQUAL(req.GetHeader("Authorization"), "Basic X19jb29raWVfXzo5OGQ5ODQ3MWNmNjg0NzAzYTkzN2EzNzk0ZDFlODQ1NjZmYTRkZjJiMzFkYjhhODI4ZGY4MjVjOTg5ZGI4OTVl");
+        BOOST_CHECK_EQUAL(req.GetHeader("Content-Length"), "46");
+        BOOST_CHECK_EQUAL(req.ReadBody(), R"({"method":"getblockcount","params":[],"id":1})""\n");
     }
     {
         // Malformed: no spaces between data
         HTTPRequest req;
         LineReader reader("GET/HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK_EXCEPTION(req.LoadControlData(reader), std::runtime_error, HasReason{"HTTP request line too short"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"HTTP request line too short"});
     }
     {
         // Malformed: too many spaces
         HTTPRequest req;
         LineReader reader("GET / HTTP / 1.0\r\nHost: 127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK_EXCEPTION(req.LoadControlData(reader), std::runtime_error, HasReason{"HTTP request line malformed"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"HTTP request line malformed"});
     }
     {
         // Malformed: slash missing before version
         HTTPRequest req;
         LineReader reader("GET / HTTP1.0\r\nHost: 127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK_EXCEPTION(req.LoadControlData(reader), std::runtime_error, HasReason{"HTTP request line too short"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"HTTP request line too short"});
     }
     {
         // Malformed: no decimal in version
         HTTPRequest req;
         LineReader reader("GET / HTTP/11\r\nHost: 127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK_EXCEPTION(req.LoadControlData(reader), std::runtime_error, HasReason{"HTTP request line too short"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"HTTP request line too short"});
     }
     {
         // Malformed: version is not a number
         HTTPRequest req;
         LineReader reader("GET / HTTP/1.x\r\nHost: 127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK_EXCEPTION(req.LoadControlData(reader), std::runtime_error, HasReason{"HTTP bad version"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"HTTP bad version"});
     }
     {
         // Malformed: version is out of range
         HTTPRequest req;
         LineReader reader("GET / HTTP/2.0\r\nHost: 127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK_EXCEPTION(req.LoadControlData(reader), std::runtime_error, HasReason{"HTTP bad version"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"HTTP bad version"});
     }
     {
         // Malformed: version is out of range
         HTTPRequest req;
         LineReader reader("GET / HTTP/0.9\r\nHost: 127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK_EXCEPTION(req.LoadControlData(reader), std::runtime_error, HasReason{"HTTP bad version"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"HTTP bad version"});
     }
     {
         // Malformed: version is out of range
         HTTPRequest req;
         LineReader reader("GET / HTTP/-1.0\r\nHost: 127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK_EXCEPTION(req.LoadControlData(reader), std::runtime_error, HasReason{"HTTP bad version"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"HTTP bad version"});
     }
     {
         // Malformed: version is not exactly two integers and a dot
         HTTPRequest req;
         LineReader reader("GET / HTTP/1.00\r\nHost: 127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK_EXCEPTION(req.LoadControlData(reader), std::runtime_error, HasReason{"HTTP bad version"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"HTTP bad version"});
     }
     {
         // Malformed: contains NUL
         HTTPRequest req;
         LineReader reader{std::string_view{"GET /safe\0/etc/passwd HTTP/1.00\r\nHost: 127.0.0.1\r\n\r\n", 50}, MAX_HEADERS_SIZE};
-        BOOST_CHECK_EXCEPTION(req.LoadControlData(reader), std::runtime_error, HasReason{"Invalid request line contains NUL"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"Invalid request line contains NUL"});
     }
     {
         // Malformed: differing Content-Length values, case insensitive
@@ -289,9 +282,7 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
                                                       "12345678";
         HTTPRequest req;
         util::LineReader reader{differing_length, /*max_line_length=*/MAX_HEADERS_SIZE};
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK_EXCEPTION(req.LoadBody(reader), std::runtime_error, HasReason{"Differing Content-Length values"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"Differing Content-Length values"});
     }
     {
         // Ok: multiple same Content-Length values
@@ -302,31 +293,26 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
                                                       "12345678";
         HTTPRequest req;
         util::LineReader reader{differing_length, /*max_line_length=*/MAX_HEADERS_SIZE};
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK(req.LoadBody(reader));
+        BOOST_CHECK_EQUAL(req.Load(reader), HTTPRequest::State::Complete);
     }
     {
         // Ok
         HTTPRequest req;
         LineReader reader("GET / HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK(req.LoadBody(reader));
-        BOOST_CHECK_EQUAL(req.m_method, HTTPRequestMethod::GET);
-        BOOST_CHECK_EQUAL(req.m_target, "/");
-        BOOST_CHECK_EQUAL(req.m_version.major, 1);
-        BOOST_CHECK_EQUAL(req.m_version.minor, 0);
-        BOOST_CHECK_EQUAL(req.m_headers.FindFirst("Host"), "127.0.0.1");
+        BOOST_CHECK_EQUAL(req.Load(reader), HTTPRequest::State::Complete);
+        BOOST_CHECK_EQUAL(req.GetRequestMethod(), HTTPRequestMethod::GET);
+        BOOST_CHECK_EQUAL(req.GetURI(), "/");
+        BOOST_CHECK_EQUAL(req.GetVersion().major, 1);
+        BOOST_CHECK_EQUAL(req.GetVersion().minor, 0);
+        BOOST_CHECK_EQUAL(req.GetHeader("Host"), "127.0.0.1");
         // no body is OK
-        BOOST_CHECK_EQUAL(req.m_body.size(), 0);
+        BOOST_CHECK_EQUAL(req.ReadBody(), "");
     }
     {
         // Malformed: missing colon
         HTTPRequest req;
         LineReader reader("GET / HTTP/1.0\r\nHost=127.0.0.1\r\n\r\n", MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK_EXCEPTION(req.LoadHeaders(reader), std::runtime_error, HasReason{"HTTP header missing colon (:)"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"HTTP header missing colon (:)"});
     }
     {
         // We might not have received enough data from the client which is not
@@ -334,34 +320,27 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
         // buffer has more data.
         HTTPRequest req;
         LineReader reader("GET / HTTP/1.0\r\nHost: ", MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(!req.LoadHeaders(reader));
+        BOOST_CHECK_EQUAL(req.Load(reader), HTTPRequest::State::NeedsHeaders);
     }
     {
         // No Content-Length: body is not read
         HTTPRequest req;
         LineReader reader("GET / HTTP/1.0\r\n\r\n" R"({"method":"getblockcount"})", MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK(req.LoadBody(reader));
+        BOOST_CHECK_EQUAL(req.Load(reader), HTTPRequest::State::Complete);
         // Don't try to read request body if Content-Length is missing
-        BOOST_CHECK_EQUAL(req.m_body.size(), 0);
+        BOOST_CHECK_EQUAL(req.ReadBody(), "");
     }
     {
         // Malformed: Content-Length is not a number
         HTTPRequest req;
         LineReader reader("GET / HTTP/1.0\r\nContent-Length: eleven\r\n\r\n" R"({"method":"getblockcount"})", MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK_EXCEPTION(req.LoadBody(reader), std::runtime_error, HasReason{"Cannot parse Content-Length value"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"Cannot parse Content-Length value"});
     }
     {
         // Malformed: Content-Length is negative
         HTTPRequest req;
         LineReader reader("GET / HTTP/1.0\r\nContent-Length: -8\r\n\r\n" R"({"method":"getblockcount"})", MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK_EXCEPTION(req.LoadBody(reader), std::runtime_error, HasReason{"Cannot parse Content-Length value"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"Cannot parse Content-Length value"});
     }
     {
         // Content-Length exceeds limit
@@ -370,9 +349,7 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
         const std::string request{"GET / HTTP/1.0\r\nContent-Length: " + util::ToString(excessive_size) + "\r\n\r\n" + std::move(huge_body)};
         HTTPRequest req;
         LineReader reader(request, MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK_EXCEPTION(req.LoadBody(reader), http_bitcoin::ContentTooLargeError, HasReason{"Max body size exceeded"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), ContentTooLargeError, HasReason{"Max body size exceeded"});
     }
     {
         // Content-Length exactly on the limit
@@ -380,18 +357,14 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
         const std::string request{"GET / HTTP/1.0\r\nContent-Length: " + util::ToString(MAX_BODY_SIZE) + "\r\n\r\n" + std::move(max_body)};
         HTTPRequest req;
         LineReader reader(request, MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK(req.LoadBody(reader));
+        BOOST_CHECK_EQUAL(req.Load(reader), HTTPRequest::State::Complete);
     }
     {
         // Content-Length indicates more data than we have in the buffer.
         // Not an error; we wait for more data before completing the body.
         HTTPRequest req;
         LineReader reader("GET / HTTP/1.0\r\nContent-Length: 1024\r\n\r\n" R"({"method":"getblockcount"})", MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK(!req.LoadBody(reader));
+        BOOST_CHECK_EQUAL(req.Load(reader), HTTPRequest::State::NeedsBody);
     }
     {
         // Support "chunked" transfer. Chunk lengths are ascii-encoded hex integers, whitespace ignored
@@ -406,10 +379,8 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
                                       "0\n"
                                       "\n";
         LineReader reader(ok_chunked, MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK(req.LoadBody(reader));
-        BOOST_CHECK_EQUAL(req.m_body, R"({"method":"getblockcount"})");
+        BOOST_CHECK_EQUAL(req.Load(reader), HTTPRequest::State::Complete);
+        BOOST_CHECK_EQUAL(req.ReadBody(), R"({"method":"getblockcount"})");
     }
     {
         // Prevent "chunked" transfer from exceeding size limit
@@ -424,9 +395,7 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
                                                 "0\n"
                                                 "\n";
         LineReader reader(excessive_chunk_size, MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK_EXCEPTION(req.LoadBody(reader), http_bitcoin::ContentTooLargeError, HasReason{"Chunk will exceed max body size"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), ContentTooLargeError, HasReason{"Chunk will exceed max body size"});
     }
     {
         // Allow (but ignore) Chunk Extensions
@@ -442,12 +411,11 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
                                       "Expires: Wed, 21 Oct 2026 07:28:00 GMT\n"
                                       "\n";
         LineReader reader(ok_chunked, MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK(req.LoadBody(reader));
-        BOOST_CHECK_EQUAL(req.m_body, R"({"method":"getblockcount"})");
-        // Chunk Trailer was cleared
+        BOOST_CHECK_EQUAL(req.Load(reader), HTTPRequest::State::Complete);
+        BOOST_CHECK_EQUAL(req.ReadBody(), R"({"method":"getblockcount"})");
+        // Chunk Trailer was parsed, but ignored
         BOOST_CHECK_EQUAL(reader.Remaining(), 0);
+        BOOST_CHECK(!req.GetHeader("Expires"));
     }
     {
         // Invalid "chunked" transfer, using roman numerals instead of hex for chunk length
@@ -462,9 +430,7 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
                                            "0\n"
                                            "\n";
         LineReader reader(invalid_chunked, MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK_EXCEPTION(req.LoadBody(reader), std::runtime_error, HasReason{"Cannot parse chunk length value"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"Cannot parse chunk length value"});
     }
     {
         // Invalid "chunked" transfer, missing chunk termination \n
@@ -479,30 +445,416 @@ BOOST_AUTO_TEST_CASE(http_request_tests)
                                            "0\n"
                                            "\n";
         LineReader reader(invalid_chunked, MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader));
-        BOOST_CHECK(req.LoadHeaders(reader));
-        BOOST_CHECK_EXCEPTION(req.LoadBody(reader), std::runtime_error, HasReason{"Improperly terminated chunk"});
+        BOOST_CHECK_EXCEPTION(req.Load(reader), std::runtime_error, HasReason{"Improperly terminated chunk"});
+    }
+}
+
+BOOST_AUTO_TEST_CASE(http_request_state_tests)
+{
+    // For these tests we just need a receive buffer for the requests to read from.
+    class DummyClient : public HTTPRemoteClient
+    {
+    public:
+        DummyClient() : HTTPRemoteClient{/*id=*/0, /*addr=*/CService(), /*socket=*/CreateSock(0, 0, 0)} {}
+
+        void Receive(std::string_view s)
+        {
+            MutateRecvBuffer().append(s);
+        }
+    };
+    using enum HTTPRequest::State;
+
+    {
+        // Step through state machine
+        HTTPRequest req;
+        BOOST_CHECK_EQUAL(req.GetState(), Init);
+
+        {
+            util::LineReader reader{"POST / HTTP/1.0\n", /*max_line_length=*/MAX_HEADERS_SIZE};
+            BOOST_CHECK_EQUAL(req.Load(reader), NeedsHeaders);
+        }
+        {
+            util::LineReader reader{"Host: 127.0.0.1\n"
+                                    "Content-Length: 10\n\n",
+                                    /*max_line_length=*/MAX_HEADERS_SIZE};
+            BOOST_CHECK_EQUAL(req.Load(reader), NeedsBody);
+        }
+        {
+            util::LineReader reader{"I miss you\n",
+                                    /*max_line_length=*/MAX_HEADERS_SIZE};
+            BOOST_CHECK_EQUAL(req.Load(reader), Complete);
+        }
     }
     {
-        // End of buffer reached without chunk termination, caller must wait for more data to arrive
-        HTTPRequest req;
-        std::string delayed_chunked = "GET / HTTP/1.0\n"
-                                      "Transfer-Encoding: chunked\n"
-                                      "\n"
-                                      "10\n"
-                                      R"({"method":"getbl)""\n"
-                                      "a\n"
-                                      R"(ockcount"})";
-        LineReader reader1(delayed_chunked, MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader1));
-        BOOST_CHECK(req.LoadHeaders(reader1));
-        BOOST_CHECK(!req.LoadBody(reader1));
-        // more data arrives!
-        delayed_chunked += "\n0\n\n";
-        LineReader reader2(delayed_chunked, MAX_HEADERS_SIZE);
-        BOOST_CHECK(req.LoadControlData(reader2));
-        BOOST_CHECK(req.LoadHeaders(reader2));
-        BOOST_CHECK(req.LoadBody(reader2));
+        // Read body over multiple data pushes, multiple requests in same push
+        std::shared_ptr<DummyClient> client{std::make_shared<DummyClient>()};
+        BOOST_CHECK(!client->GetRequest());
+
+        client->Receive("POST / HTTP/1.0\n"
+                        "Host: 127.0.0.1\n"
+                        "Content-Length: 10\n\n"
+                        "I miss");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        // Because of the Content-Length header we know the body is not complete
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // Finish sending first request and include second request in the same buffer
+        client->Receive(" you"
+                        "GET /endpoint HTTP/1.0\n\n");
+        auto req{HTTPRemoteClient::TryReadRequest(client)};
+        BOOST_REQUIRE(req);
+        BOOST_CHECK_EQUAL(req->GetState(), Complete);
+        BOOST_CHECK_EQUAL(req->GetURI(), "/");
+        BOOST_CHECK(!client->GetRequest());
+        BOOST_CHECK_EQUAL(req->ReadBody(), "I miss you");
+        req->WriteReply(HTTP_OK, ""); // Mark client as no longer busy
+        // Next request sitting in buffer
+        BOOST_CHECK_EQUAL(client->GetRecvBuffer().size(), 24);
+
+        // Read second request
+        req = HTTPRemoteClient::TryReadRequest(client);
+        BOOST_REQUIRE(req);
+        BOOST_CHECK(!client->GetRequest());
+        BOOST_CHECK_EQUAL(req->GetState(), Complete);
+        BOOST_CHECK_EQUAL(req->GetURI(), "/endpoint");
+        BOOST_CHECK_EQUAL(req->ReadBody().size(), 0);
+        // Buffer is cleared
+        BOOST_CHECK_EQUAL(client->GetRecvBuffer().size(), 0);
+    }
+    {
+        // A Content-Length body is drained out of the receive buffer as it
+        // arrives, instead of accumulating there until the request is complete.
+
+        std::shared_ptr<DummyClient> client{std::make_shared<DummyClient>()};
+        BOOST_CHECK(!client->GetRequest());
+
+        client->Receive("POST / HTTP/1.0\n"
+                        "Content-Length: 30000\n\n");
+        HTTPRemoteClient::TryReadRequest(client);
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // Body arrives in 10kB pieces. Each one is copied onto m_body and
+        // erased from the receive buffer, which never holds more than one piece.
+        for (int i = 1; i <= 3; ++i) {
+            client->Receive(std::string(10000, 'x'));
+            BOOST_CHECK_EQUAL(client->GetRecvBuffer().size(), 10000);
+            auto req{HTTPRemoteClient::TryReadRequest(client)};
+            if (i < 3) {
+                BOOST_CHECK(!req.get());
+                BOOST_CHECK_EQUAL(client->GetRequest()->ReadBody().size(), 10000 * i);
+            } else {
+                BOOST_CHECK(req.get());
+                BOOST_CHECK_EQUAL(req->ReadBody().size(), 10000 * i);
+                BOOST_CHECK_EQUAL(req->GetState(), Complete);
+                BOOST_CHECK(!client->GetRequest());
+            }
+            BOOST_CHECK_EQUAL(client->GetRecvBuffer().size(), 0);
+        }
+    }
+    {
+        // A body sent in the same push as the next request is split correctly
+        std::shared_ptr<DummyClient> client{std::make_shared<DummyClient>()};
+        BOOST_CHECK(!client->GetRequest());
+
+        client->Receive("POST / HTTP/1.0\n"
+                        "Content-Length: 4\n\n"
+                        "body"
+                        "GET /next HTTP/1.0\n\n");
+        auto req{HTTPRemoteClient::TryReadRequest(client)};
+        BOOST_CHECK_EQUAL(req->GetState(), Complete);
+        BOOST_CHECK_EQUAL(req->ReadBody(), "body");
+        // Only the second request is left over
+        BOOST_CHECK_EQUAL(client->GetRecvBuffer().size(), 20);
+    }
+    {
+        // Chunked transfer with state
+        std::shared_ptr<DummyClient> client{std::make_shared<DummyClient>()};
+        BOOST_CHECK(!client->GetRequest());
+
+        // First chunk is incomplete
+        client->Receive("GET / HTTP/1.0\n"
+                        "Transfer-Encoding: chunked\n"
+                        "\n"
+                        "10\n"
+                        R"({"method)");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_REQUIRE(client->GetRequest()->GetChunkSize());
+        BOOST_CHECK_EQUAL(*client->GetRequest()->GetChunkSize(), 16);
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetChunkProgress(), 8);
+        BOOST_CHECK_EQUAL(client->GetRequest()->ReadBody().size(), 8);
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // More data arrives, chunk is completed.
+        client->Receive(R"(":"getbl)""\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        // State is reset
+        BOOST_CHECK(!client->GetRequest()->GetChunkSize());
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetChunkProgress(), 0);
+        // New data is added to body but body is still incomplete
+        BOOST_CHECK_EQUAL(client->GetRequest()->ReadBody().size(), 16);
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // Next chunk arrives without terminal CRLF
+        client->Receive("a\n"
+                        R"(ockcount"})");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK(client->GetRequest()->GetChunkSize());
+        BOOST_CHECK_EQUAL(*client->GetRequest()->GetChunkSize(), 10);
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetChunkProgress(), 10);
+        BOOST_CHECK_EQUAL(client->GetRequest()->ReadBody().size(), 26);
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // Chunk terminal CRLF arrives with final (size 0) chunk
+        client->Receive("\n0\n\n");
+        auto req{HTTPRemoteClient::TryReadRequest(client)};
+        // Body size hasn't changed
+        BOOST_CHECK_EQUAL(req->ReadBody().size(), 26);
+        // We're done
+        BOOST_CHECK_EQUAL(req->GetState(), Complete);
+        BOOST_CHECK_EQUAL(req->ReadBody(), R"({"method":"getblockcount"})");
+    }
+    {
+        // Invalid headers: error state stops reading
+        std::shared_ptr<DummyClient> client{std::make_shared<DummyClient>()};
+
+        // Request is in the buffer
+        client->Receive("POST / HTTP/1.0\n"
+                        "Host: 127.0.0.1\n");
+        BOOST_CHECK(!client->GetRecvBuffer().empty());
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsHeaders);
+        client->Receive("Invalid header with no colon\n"
+                        "\n"
+                        "body is not read");
+        // Reading throws an error, sets state
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), Error);
+
+        // We read up to the invalid line
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetHeader("Host"), "127.0.0.1");
+        // Buffer was cleared, client should just be disconnected now
+        BOOST_CHECK(client->GetRecvBuffer().empty());
+
+        // Even if more data comes in, trying to read again in error state is a no-op
+        client->Receive("Content-Length: 2\n\nok");
+        BOOST_CHECK_EQUAL(client->GetRecvBuffer().size(), 21);
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRecvBuffer().size(), 21);
+    }
+    {
+        // Headers sent in batches that are below MAX_HEADERS_SIZE but the total is excessive
+        std::shared_ptr<DummyClient> client{std::make_shared<DummyClient>()};
+        BOOST_CHECK(!client->GetRequest());
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), Init);
+
+        client->Receive("POST /huge HTTP/1.0\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsHeaders);
+
+        for (int i = 0; i < 410; ++i) {
+            client->Receive("key:value\n");
+        }
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsHeaders);
+
+        for (int i = 0; i < 409; ++i) {
+            client->Receive("key:value\n");
+        }
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsHeaders);
+
+        // We're at 819 x 10-byte headers
+        // The limit is 8192, three more bytes should throw.
+        client->Receive("k:\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), Error);
+    }
+    {
+        // Client sends chunks that are below the limit but the total is excessive
+        std::shared_ptr<DummyClient> client{std::make_shared<DummyClient>()};
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), Init);
+
+        client->Receive("POST /huge HTTP/1.0\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsHeaders);
+
+        client->Receive("Transfer-Encoding: chunked\n\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // Send 16-byte chunk
+        client->Receive("10\nno auto updates!\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // The next chunk will be of size 32MiB - 16 + 1, below the limit
+        // on its own but not if it were added to the total cumulative body so far.
+        // We don't need to actually send or prepare this amount of data.
+        client->Receive("1fffff1\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), Error);
+    }
+    {
+        // Ensure chunk trailer is parsed over state lines
+        std::shared_ptr<DummyClient> client{std::make_shared<DummyClient>()};
+        BOOST_CHECK(!client->GetRequest());
+
+        // Send a 1-byte chunk then send the 0-chunk with a trailer but no terminal CRLF
+        client->Receive("GET / HTTP/1.0\n"
+                        "Transfer-Encoding: chunked\n"
+                        "\n"
+                        "1\n"
+                        "x\n"
+                        "0\n"
+                        "Digest: sha-4=deadbeef\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // Send first part of another trailer line
+        client->Receive("Expires:");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // Finish the trailer line
+        client->Receive("never\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // Terminate
+        client->Receive("\n");
+        auto req{HTTPRemoteClient::TryReadRequest(client)};
+        BOOST_CHECK_EQUAL(req->GetState(), Complete);
+        BOOST_CHECK_EQUAL(req->ReadBody(), "x");
+    }
+    {
+        // Ensure chunk trailer counts towards the headers size limit
+        std::shared_ptr<DummyClient> client{std::make_shared<DummyClient>()};
+        BOOST_CHECK(!client->GetRequest());
+
+        client->Receive("POST /huge HTTP/1.0\n"
+                        "Transfer-Encoding: chunked\n"); //   27 bytes
+        for (int i = 0; i < 816; ++i) {
+            client->Receive("key:value\n");              // 8160
+        }
+        client->Receive("\n"                             //    1
+                        "1\n"
+                        "x\n"
+                        "0\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), NeedsBody);
+
+        // We're in the trailer section with a total of 8188 bytes of headers.
+        // The limit is 8192, five more bytes should throw.
+        client->Receive("k:vv\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(client));
+        BOOST_CHECK_EQUAL(client->GetRequest()->GetState(), Error);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(http_should_disconnect_tests)
+{
+    struct Client : HTTPRemoteClient {
+        Client(std::unique_ptr<Sock> socket = CreateSock(0, 0, 0))
+            : HTTPRemoteClient{/*id=*/0, /*addr=*/CService(), /*socket=*/std::move(socket)} {}
+        using HTTPRemoteClient::MutateRecvBuffer;
+    };
+    // Prevent the clock from actually progressing during this scope.
+    const FakeSteadyClock clock;
+    constexpr auto timeout{30s};
+    const auto now{MockableSteadyClock::now()};
+
+    {
+        // Nothing to disconnect for yet.
+        auto idle{std::make_shared<Client>()};
+        BOOST_CHECK(!idle->ShouldDisconnect(now, timeout, /*disconnect_all=*/false));
+        // A shutdown waits for a connection that is still busy, and it starts busy.
+        BOOST_CHECK(!idle->ShouldDisconnect(now, timeout, /*disconnect_all=*/true));
+        // Past -rpcservertimeout, which a timeout of 0 disables.
+        BOOST_CHECK( idle->ShouldDisconnect(now + timeout + 1s, timeout, /*disconnect_all=*/false));
+        // Timeout was disabled by user.
+        BOOST_CHECK(!idle->ShouldDisconnect(now + timeout + 1s, /*rpcservertimeout=*/0s, /*disconnect_all=*/false));
+    }
+
+    {
+        struct SlowSocket : ZeroSock {
+            ssize_t Send(const void*, size_t len, int) const override {
+                return CeilDiv(len, 2U); // Only let through half per call
+            }
+        private:
+            SlowSocket& operator=(Sock&&) override {
+                AssertUnreachable(); // Move of Sock into SlowSocket not allowed.
+            }
+        };
+
+        // A request handed to a worker holds the idle timeout off until the reply is sent.
+        auto busy_slow{std::make_shared<Client>(std::make_unique<SlowSocket>())};
+        busy_slow->MutateRecvBuffer().append("GET / HTTP/1.0\n\n");
+        {
+            std::unique_ptr request{HTTPRemoteClient::TryReadRequest(busy_slow)};
+            BOOST_REQUIRE(request);
+            // Avoid disconnecting even if we are past the timeout, a worker is busy.
+            BOOST_CHECK(!busy_slow->ShouldDisconnect(now + timeout + 1s, timeout, /*disconnect_all=*/false));
+            BOOST_CHECK(!busy_slow->ShouldDisconnect(now + timeout + 1s, timeout, /*disconnect_all=*/true));
+            // Worker becomes finished with the request.
+            request->WriteReply(HTTP_OK);
+        }
+        // Don't disconnect here as WriteReply() was unable to complete the
+        // optimistic send of the full response due to the SlowSocket.
+        BOOST_CHECK(!busy_slow->ShouldDisconnect(now + timeout - 1s, timeout, /*disconnect_all=*/false));
+        // Disconnect anyway if we are past the timeout.
+        BOOST_CHECK( busy_slow->ShouldDisconnect(now + timeout + 1s, timeout, /*disconnect_all=*/false));
+
+        // Finish sending response.
+        while (busy_slow->ReadyToSend()) {
+            busy_slow->MaybeSendBytesFromBuffer();
+        }
+        // Now we are done sending we are ready to disconnect despite being below the timeout.
+        BOOST_CHECK( busy_slow->ShouldDisconnect(now + timeout - 1s, timeout, /*disconnect_all=*/false));
+    }
+
+    {
+        // Allow disconnecting directly after WriteReply() when it is able to
+        // complete the optimistic send of the full response due to
+        // ZeroSock::Send() claiming its able to send everything.
+        auto busy_fast{std::make_shared<Client>(std::make_unique<ZeroSock>())};
+        busy_fast->MutateRecvBuffer().append("GET / HTTP/1.0\n\n");
+        {
+            std::unique_ptr request{HTTPRemoteClient::TryReadRequest(busy_fast)};
+            BOOST_REQUIRE(request);
+            // Worker becomes finished with the request.
+            request->WriteReply(HTTP_OK);
+        }
+        BOOST_CHECK( busy_fast->ShouldDisconnect(now + timeout - 1s, timeout, /*disconnect_all=*/false));
+
+        DebugLogHelper ban_idle_message{"HTTP client idle timeout", [](const std::string* s) {
+            if (s) BOOST_ERROR("Should not get idle message when m_disconnect is already set.");
+            return false;
+        }};
+        BOOST_CHECK( busy_fast->ShouldDisconnect(now + timeout + 1s, timeout, /*disconnect_all=*/false));
+    }
+
+    {
+        // A keep-alive HTTP 1.1 client whose reply is out is neither flagged
+        // nor idle, so the shutdown branch is the only thing that can release it.
+        auto keepalive{std::make_shared<Client>(std::make_unique<ZeroSock>())};
+        keepalive->MutateRecvBuffer().append("GET / HTTP/1.1\nHost: 127.0.0.1\n\n");
+        {
+            std::unique_ptr request{HTTPRemoteClient::TryReadRequest(keepalive)};
+            BOOST_REQUIRE(request);
+            request->WriteReply(HTTP_OK);
+        }
+        BOOST_CHECK(!keepalive->ShouldDisconnect(now, timeout + 1s, /*disconnect_all=*/false));
+        BOOST_CHECK( keepalive->ShouldDisconnect(now, timeout + 1s, /*disconnect_all=*/true));
+    }
+
+    {
+        // A malformed request flags the client, and that outranks the rest.
+        auto bad{std::make_shared<Client>()};
+        bad->MutateRecvBuffer().append("GET / HTTP/1.0\nInvalid header with no colon\n\n");
+        BOOST_CHECK(!HTTPRemoteClient::TryReadRequest(bad));
+        BOOST_CHECK(bad->ShouldDisconnect(now, /*rpcservertimeout=*/0s, /*disconnect_all=*/false));
     }
 }
 
@@ -510,7 +862,7 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
 {
     // Hard code the timestamp for the Date header in the HTTP response
     // Wed Dec 11 00:47:09 2024 UTC
-    SetMockTime(1733878029);
+    FakeNodeClock clock{1733878029s};
 
     // Prepare a request handler that just stores received requests so we can examine them.
     // Mutex is required to prevent a race between this test's main thread and the server's I/O loop.
@@ -522,6 +874,7 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
     };
 
     HTTPServer server{StoreRequest};
+    server.InitHTTPAllowList();
 
     {
         // We can only bind to NET_IPV4 and NET_IPV6
@@ -550,6 +903,9 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
     // Create a mock client with pre-loaded request data and add it to the local CreateSock queue.
     // Keep a handle for the mock client's send and receive pipes so we can examine
     // the data it "receives".
+    // No keep-alive, so the server closes once the reply is flushed, and says so.
+    DebugLogHelper find_close{"Done sending to client without keep-alive"};
+
     std::shared_ptr<DynSock::Pipes> mock_client_socket_pipes{ConnectClient(std::as_bytes(std::span(full_request)))};
 
     // Wait up to a minute to find and connect the client in the I/O loop
@@ -572,12 +928,13 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
             // Connected client should have one request already from the static content.
             if (requests.size() == 1) {
                 // Check the received request
-                BOOST_CHECK_EQUAL(requests.front()->m_body, R"({"method":"getblockcount","params":[],"id":1})""\n");
+                BOOST_CHECK_EQUAL(requests.front()->ReadBody(), R"({"method":"getblockcount","params":[],"id":1})""\n");
                 BOOST_CHECK_EQUAL(requests.front()->GetPeer().ToStringAddrPort(), "5.5.5.5:6789");
 
                 // Inspect the connection pointed to from the request
-                client = requests.front()->m_client;
-                BOOST_CHECK_EQUAL(client->m_origin, "5.5.5.5:6789");
+                client = requests.front()->GetClient();
+                BOOST_REQUIRE(client);
+                BOOST_CHECK_EQUAL(client->GetOrigin(), "5.5.5.5:6789");
 
                 // Respond to request
                 requests.front()->WriteReply(HTTP_OK, "874140\n");
@@ -590,7 +947,16 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
     }
 
     // Check the sent response from the mock client at the other end of the mock socket
+    constexpr std::string_view expected_response{
+        "HTTP/1.1 200 OK\r\n"
+        "Date: Wed, 11 Dec 2024 00:47:09 GMT\r\n"
+        "Content-Length: 7\r\n"
+        "Content-Type: text/html; charset=ISO-8859-1\r\n"
+        "Connection: close\r\n"
+        "\r\n"
+        "874140\n"};
     std::string actual;
+    actual.reserve(expected_response.length());
     // Wait up to one minute for all the bytes to appear in the "send" pipe.
     char buf[0x10000] = {};
     attempts = 6000;
@@ -599,20 +965,14 @@ BOOST_AUTO_TEST_CASE(http_server_socket_tests)
         ssize_t bytes_read = mock_client_socket_pipes->send.GetBytes(buf, sizeof(buf), 0);
         if (bytes_read > 0) {
             actual.append(buf, bytes_read);
-            if (actual.length() == 146) {
+            if (actual.length() >= expected_response.length()) {
                 break;
             }
         }
         std::this_thread::sleep_for(10ms);
         --attempts;
     }
-    BOOST_CHECK(actual.starts_with("HTTP/1.1 200 OK\r\n"));
-    BOOST_CHECK(actual.ends_with("\r\n874140\n"));
-    // Headers can be sorted in any order, and will be, since we use unordered_map
-    BOOST_CHECK(actual.find("Connection: close\r\n") != std::string::npos);
-    BOOST_CHECK(actual.find("Content-Length: 7\r\n") != std::string::npos);
-    BOOST_CHECK(actual.find("Content-Type: text/html; charset=ISO-8859-1\r\n") != std::string::npos);
-    BOOST_CHECK(actual.find("Date: Wed, 11 Dec 2024 00:47:09 GMT\r\n") != std::string::npos);
+    BOOST_CHECK_EQUAL(actual, expected_response);
 
     // Wait up to one minute for connection to be automatically closed, because
     // keep-alive was not set by the client and we are done responding to their request.
@@ -647,6 +1007,7 @@ BOOST_AUTO_TEST_CASE(http_socket_error_tests)
         // Can't call BOOST_REQUIRE from worker thread
         Assert(workers.Submit(std::move(item)));
     }};
+    server.InitHTTPAllowList();
 
     // All replies will be the same size
     static constexpr std::size_t reply_length = std::string_view{
@@ -671,7 +1032,7 @@ BOOST_AUTO_TEST_CASE(http_socket_error_tests)
     {
     public:
         explicit ErrorSock(std::shared_ptr<Pipes> pipes) : DynSock{std::move(pipes)} {}
-        DynSock& operator=(Sock&&) override { assert(false); return *this; }
+        DynSock& operator=(Sock&&) override { AssertUnreachable(); }
 
         ssize_t Send(const void* buf, size_t len, int flags) const override
         {
@@ -784,6 +1145,51 @@ BOOST_AUTO_TEST_CASE(http_socket_error_tests)
     server.InterruptNet();
     server.JoinSocketsThreads();
     server.StopListening();
+}
+
+BOOST_AUTO_TEST_CASE(http_server_rejects_disallowed_client_before_read)
+{
+    // DynSock reports accepted connections as coming from 5.5.5.5.
+    gArgs.ForceSetArg("-rpcallowip", "4.4.4.4");
+
+    std::atomic_bool request_dispatched{false};
+    HTTPServer server{[&request_dispatched](std::unique_ptr<HTTPRequest>&&) {
+        request_dispatched = true;
+    }};
+    BOOST_REQUIRE(server.InitHTTPAllowList());
+
+    CService addr_bind{Lookup("0.0.0.0", /*portDefault=*/0, /*fAllowLookup=*/false).value()};
+    BOOST_REQUIRE(server.BindAndStartListening(addr_bind));
+    server.StartSocketsThreads();
+
+    // Queue a complete request; the server should never read from it.
+    std::shared_ptr<DynSock::Pipes> client_pipes{
+        ConnectClient(std::as_bytes(std::span(full_request)))};
+
+    // Wait for the socket to close with an EOF (bytes_read == 0)
+    // 'bytes_read > 0' means the server replied to the prohibited client
+    // 'bytes_read < 0' is an error, expected until the connection is fully processed by the I/O loop
+    ssize_t bytes_read{};
+    char buf[0x10000]{};
+    for (int attempts{0}; attempts != 1'000; ++attempts) {
+        bytes_read = client_pipes->send.GetBytes(&buf, sizeof(buf), MSG_PEEK);
+        if (bytes_read >= 0) break;
+        std::this_thread::sleep_for(10ms);
+    }
+
+    BOOST_CHECK_EQUAL(bytes_read, 0);
+    BOOST_CHECK(!request_dispatched);
+    BOOST_CHECK_EQUAL(server.GetConnectionsCount(), 0);
+
+    server.InterruptNet();
+    server.JoinSocketsThreads();
+    server.StopListening();
+
+    // 'recv' buffer still holds the client's request untouched which
+    // proves the server never called Recv()
+    const ssize_t recv_bytes{client_pipes->recv.GetBytes(&buf, sizeof(buf))};
+    BOOST_REQUIRE_EQUAL(recv_bytes, static_cast<ssize_t>(full_request.size()));
+    BOOST_CHECK_EQUAL(std::string_view(buf, recv_bytes), full_request);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

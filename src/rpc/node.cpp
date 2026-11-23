@@ -3,14 +3,12 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
+
+#include <rpc/register.h> // IWYU pragma: associated
 
 #include <chainparams.h>
-#include <httpserver.h>
-#include <index/blockfilterindex.h>
-#include <index/coinstatsindex.h>
-#include <index/txindex.h>
-#include <index/txospenderindex.h>
+#include <index/base.h>
 #include <interfaces/chain.h>
 #include <interfaces/echo.h>
 #include <interfaces/init.h>
@@ -18,18 +16,30 @@
 #include <kernel/cs_main.h>
 #include <logging.h>
 #include <node/context.h>
+#include <rpc/protocol.h>
+#include <rpc/request.h>
 #include <rpc/server.h>
 #include <rpc/server_util.h>
 #include <rpc/util.h>
 #include <scheduler.h>
+#include <support/lockedpool.h>
+#include <sync.h>
 #include <tinyformat.h>
 #include <univalue.h>
-#include <util/any.h>
 #include <util/check.h>
 #include <util/time.h>
+#include <validationinterface.h>
 
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
+#include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 #ifdef HAVE_MALLOC_INFO
 #include <malloc.h>
 #endif
@@ -69,7 +79,7 @@ static RPCMethod setmocktime()
         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Mocktime must be in the range [0, %s], not %s.", max_time, time));
     }
 
-    SetMockTime(time);
+    SetMockTime(std::chrono::seconds{time});
     const NodeContext& node_context{EnsureAnyNodeContext(request.context)};
     for (const auto& chain_client : node_context.chain_clients) {
         chain_client->setMockTime(time);
@@ -378,28 +388,17 @@ static RPCMethod getindexinfo()
                     HelpExampleCli("getindexinfo", "")
                   + HelpExampleRpc("getindexinfo", "")
                   + HelpExampleCli("getindexinfo", "txindex")
-                  + HelpExampleRpc("getindexinfo", "txindex")
+                  + HelpExampleRpc("getindexinfo", R"("txindex")")
                 },
                 [](const RPCMethod& self, const JSONRPCRequest& request) -> UniValue
 {
     UniValue result(UniValue::VOBJ);
     const std::string index_name{self.MaybeArg<std::string_view>("index_name").value_or("")};
+    const NodeContext& node{EnsureAnyNodeContext(request.context)};
 
-    if (g_txindex) {
-        result.pushKVs(SummaryToJSON(g_txindex->GetSummary(), index_name));
+    for (const auto* index : node.indexes) {
+        result.pushKVs(SummaryToJSON(index->GetSummary(), index_name));
     }
-
-    if (g_coin_stats_index) {
-        result.pushKVs(SummaryToJSON(g_coin_stats_index->GetSummary(), index_name));
-    }
-
-    if (g_txospenderindex) {
-        result.pushKVs(SummaryToJSON(g_txospenderindex->GetSummary(), index_name));
-    }
-
-    ForEachBlockFilterIndex([&result, &index_name](const BlockFilterIndex& index) {
-        result.pushKVs(SummaryToJSON(index.GetSummary(), index_name));
-    });
 
     return result;
 },

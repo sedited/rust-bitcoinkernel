@@ -2,6 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <util/string.h>
+
 #include <blockfilter.h>
 #include <clientversion.h>
 #include <common/args.h>
@@ -23,12 +25,11 @@
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
+#include <util/check.h>
 #include <util/fees.h>
 #include <util/strencodings.h>
-#include <util/string.h>
 #include <util/translation.h>
 
-#include <cassert>
 #include <cstdint>
 #include <cstdlib>
 #include <ios>
@@ -40,7 +41,7 @@ using common::AmountErrMsg;
 using common::AmountHighWarn;
 using common::FeeModeFromString;
 using common::ResolveErrMsg;
-using util::ContainsNoNUL;
+using util::ContainsNUL;
 using util::Join;
 using util::RemovePrefix;
 using util::SplitString;
@@ -100,7 +101,7 @@ FUZZ_TARGET(string)
     (void)TrimString(random_string_1);
     (void)TrimString(random_string_1, random_string_2);
     (void)UrlDecode(random_string_1);
-    (void)ContainsNoNUL(random_string_1);
+    (void)ContainsNUL(random_string_1);
     try {
         throw scriptnum_error{random_string_1};
     } catch (const std::runtime_error&) {

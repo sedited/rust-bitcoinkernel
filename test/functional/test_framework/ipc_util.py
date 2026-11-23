@@ -45,7 +45,7 @@ async def destroying(obj, ctx):
         await obj.destroy(ctx)
 
 
-async def wait_and_do(wait_fn, do_fn):
+async def wait_and_do(wait_fn, do_fn, sleep_time=0.1):
     """Call wait_fn, then sleep, then call do_fn in a parallel task. Wait for
     both tasks to complete."""
     wait_started = asyncio.Event()
@@ -58,7 +58,7 @@ async def wait_and_do(wait_fn, do_fn):
 
     async def do():
         await wait_started.wait()
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(sleep_time)
         # Let do_fn be either a callable or an awaitable object
         if inspect.isawaitable(do_fn):
             await do_fn
@@ -159,15 +159,17 @@ async def make_mining_ctx(self, node_index=0):
     mining = init.makeMining(ctx).result
     return ctx, mining
 
-def assert_capnp_failed(e, description_prefix):
-    assert e.description.startswith(description_prefix), f"Expected description starting with '{description_prefix}', got '{e.description}'"
-    assert_equal(e.type, "FAILED")
+
+async def assert_capnp_raises(fun, description_prefix):
+    try:
+        await fun()
+        raise AssertionError(f"Function unexpectedly succeeded without raising {description_prefix!r}")
+    except capnp.lib.capnp.KjException as e:
+        assert e.description.startswith(description_prefix), f"Expected description starting with '{description_prefix}', got '{e.description}'"
+        assert_equal(e.type, "FAILED")
 
 
 async def assert_create_new_block_fails(ctx, mining, opts, expected_msg):
     """Assert that mining.createNewBlock fails with the expected remote exception."""
-    try:
-        await mining.createNewBlock(ctx, opts)
-        raise AssertionError("createNewBlock unexpectedly succeeded")
-    except capnp.lib.capnp.KjException as e:
-        assert_capnp_failed(e, f"remote exception: std::exception: {expected_msg}")
+    await assert_capnp_raises(lambda: mining.createNewBlock(ctx, opts),
+                              f"remote exception: std::exception: {expected_msg}")

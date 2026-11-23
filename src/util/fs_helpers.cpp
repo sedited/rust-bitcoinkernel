@@ -3,13 +3,13 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
 
 #include <util/fs_helpers.h>
 #include <random.h>
 #include <sync.h>
 #include <tinyformat.h>
-#include <util/byte_units.h> // IWYU pragma: keep
+#include <util/byte_units.h>
 #include <util/check.h>
 #include <util/fs.h>
 #include <util/log.h>
@@ -147,10 +147,10 @@ void DirectoryCommit(const fs::path& dirname)
 #endif
 }
 
-bool TruncateFile(FILE* file, unsigned int length)
+bool TruncateFile(FILE* file, uint64_t length)
 {
 #if defined(WIN32)
-    return _chsize(_fileno(file), length) == 0;
+    return _chsize_s(_fileno(file), length) == 0;
 #else
     return ftruncate(fileno(file), length) == 0;
 #endif
@@ -197,15 +197,12 @@ int RaiseFileDescriptorLimit(int min_fd)
  * this function tries to make a particular range of a file allocated (corresponding to disk space)
  * it is advisory, and the range specified in the arguments will never contain live data
  */
-void AllocateFileRange(FILE* file, unsigned int offset, unsigned int length)
+void AllocateFileRange(FILE* file, uint64_t offset, uint64_t length)
 {
 #if defined(WIN32)
     // Windows-specific version
     HANDLE hFile = (HANDLE)_get_osfhandle(_fileno(file));
-    LARGE_INTEGER nFileSize;
-    int64_t nEndPos = (int64_t)offset + length;
-    nFileSize.u.LowPart = nEndPos & 0xFFFFFFFF;
-    nFileSize.u.HighPart = nEndPos >> 32;
+    LARGE_INTEGER nFileSize{.QuadPart = int64_t(offset + length)};
     SetFilePointerEx(hFile, nFileSize, 0, FILE_BEGIN);
     SetEndOfFile(hFile);
 #elif defined(__APPLE__)
@@ -232,7 +229,7 @@ void AllocateFileRange(FILE* file, unsigned int offset, unsigned int length)
     // Fallback version
     // TODO: just write one byte per block
     static const char buf[65536] = {};
-    if (fseek(file, offset, SEEK_SET)) {
+    if (FileSeek64(file, offset, SEEK_SET)) {
         return;
     }
     while (length > 0) {
@@ -330,14 +327,7 @@ bool IsDirWritable(const fs::path& dir_path)
     FastRandomContext rng;
     const auto tmp = dir_path / fs::PathFromString(strprintf(".tmp_%d", rng.rand64()));
 
-    const char* mode;
-#ifdef __MINGW64__
-    mode = "w"; // Temporary workaround for https://github.com/bitcoin/bitcoin/issues/30210
-#else
-    mode = "wx";
-#endif
-
-    if (const auto created{fsbridge::fopen(tmp, mode)}) {
+    if (const auto created{fsbridge::fopen(tmp, "wx")}) {
         std::fclose(created);
         std::error_code ec;
         fs::remove(tmp, ec); // clean up, ignore errors

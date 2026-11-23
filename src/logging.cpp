@@ -19,6 +19,7 @@
 
 using util::Join;
 using util::RemovePrefixView;
+using util::RemoveSuffixView;
 
 const char * const DEFAULT_DEBUGLOGFILE = "debug.log";
 constexpr auto MAX_USER_SETABLE_SEVERITY_LEVEL{BCLog::Level::Info};
@@ -209,6 +210,7 @@ static const std::map<std::string, BCLog::LogFlags, std::less<>> LOG_CATEGORIES_
     {"txpackages", BCLog::TXPACKAGES},
     {"kernel", BCLog::KERNEL},
     {"privatebroadcast", BCLog::PRIVBROADCAST},
+    {"mining", BCLog::MINING},
 };
 
 static const std::unordered_map<BCLog::LogFlags, std::string> LOG_CATEGORIES_BY_FLAG{
@@ -253,7 +255,7 @@ std::string BCLog::Logger::LogLevelToStr(BCLog::Level level)
     case BCLog::Level::Error:
         return "error";
     }
-    assert(false);
+    AssertUnreachable();
 }
 
 static std::string LogCategoryToStr(BCLog::LogFlags category)
@@ -330,15 +332,16 @@ namespace BCLog {
     /** Belts and suspenders: make sure outgoing log messages don't contain
      * potentially suspicious characters, such as terminal control codes.
      *
-     * This escapes control characters except newline ('\n') in C syntax.
-     * It escapes instead of removes them to still allow for troubleshooting
-     * issues where they accidentally end up in strings.
+     * This escapes control characters, including newline, in C syntax,
+     * so untrusted data can't forge log lines. It escapes instead of removes
+     * them to still allow for troubleshooting issues where they accidentally
+     * end up in strings.
      */
     std::string LogEscapeMessage(std::string_view str) {
         std::string ret;
         for (char ch_in : str) {
             uint8_t ch = (uint8_t)ch_in;
-            if ((ch >= 32 || ch == '\n') && ch != '\x7f') {
+            if (ch >= 32 && ch != '\x7f') {
                 ret += ch_in;
             } else {
                 ret += strprintf("\\x%02x", ch);
@@ -366,7 +369,7 @@ std::string BCLog::Logger::GetLogPrefix(BCLog::LogFlags category, BCLog::Level l
         // If there is a category, Debug is implied, so don't add the level
 
         // Only add separator if we have a category
-        if (has_category) s += ":";
+        if (has_category) s += ':';
         s += Logger::LogLevelToStr(level);
     }
 
@@ -425,9 +428,9 @@ std::string BCLog::Logger::Format(const util::log::Entry& entry) const
     }
 
     result += GetLogPrefix(static_cast<LogFlags>(entry.category), entry.level);
-    result += LogEscapeMessage(entry.message);
-
-    if (!result.ends_with('\n')) result += '\n';
+    // Strip the conventional trailing '\n' that many callers still pass, so only embedded newlines are escaped
+    result += LogEscapeMessage(RemoveSuffixView(entry.message, "\n"));
+    result += '\n';
     return result;
 }
 

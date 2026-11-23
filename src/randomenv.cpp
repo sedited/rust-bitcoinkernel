@@ -3,7 +3,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
 
 #include <randomenv.h>
 
@@ -449,7 +449,7 @@ void RandAddStaticEnv(CSHA512& hasher)
      AddSysctl<CTL_KERN, KERN_OSTYPE>(hasher);
 #    endif
 #    ifdef KERN_POSIX1
-     AddSysctl<CTL_KERN, KERN_OSREV>(hasher);
+     AddSysctl<CTL_KERN, KERN_POSIX1>(hasher);
 #    endif
 #    ifdef KERN_VERSION
      AddSysctl<CTL_KERN, KERN_VERSION>(hasher);

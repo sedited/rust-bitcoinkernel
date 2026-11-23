@@ -29,7 +29,7 @@ defaults:
 jobs:
   test-each-commit:
     name: 'test ancestor commits'
-    runs-on: ${{ github.repository == 'bitcoin/bitcoin' && 'warp-ubuntu-latest-x64-8x' || 'ubuntu-latest' }}
+    runs-on: ${{ github.repository == 'bitcoin/bitcoin' && 'warp-ubuntu-2604-x64-8x' || 'ubuntu-26.04' }}
     env:
       TEST_RUNNER_PORT_MIN: "14000"  # Use a larger port range to avoid colliding with other CI services.
     if: github.event_name == 'pull_request' && github.event.pull_request.commits != 1
@@ -95,7 +95,7 @@ jobs:
           git config user.email "ci@example.com"
           git config user.name "CI"
       - run: |
-          sudo apt-get update
+          sudo apt-get update --error-on=any
           sudo apt-get install clang mold ccache build-essential cmake ninja-build pkgconf python3-zmq libboost-dev libsqlite3-dev systemtap-sdt-dev libzmq3-dev qt6-base-dev qt6-tools-dev qt6-l10n-tools libqrencode-dev capnproto libcapnp-dev -y
           sudo pip3 install --break-system-packages pycapnp
       - name: Compile and run tests
@@ -146,11 +146,9 @@ jobs:
 
       - name: Clang version
         run: |
-          # Use the latest Xcode supported by the version of macOS denoted in
-          # doc/release-notes-empty-template.md and providing at least the
-          # minimum clang version denoted in doc/dependencies.md.
-          # See: https://developer.apple.com/documentation/xcode-release-notes/xcode-16_2-release-notes
-          sudo xcode-select --switch /Applications/Xcode_16.2.app
+          # Use the minimum Xcode version denoted in doc/dependencies.md.
+          # See: https://developer.apple.com/documentation/xcode-release-notes/xcode-26_3-release-notes
+          sudo xcode-select --switch /Applications/Xcode_26.3.app
           clang --version
 
       - name: Install Homebrew packages
@@ -209,9 +207,9 @@ jobs:
         job-type: [standard, fuzz]
         include:
           - job-type: standard
-            job-name: 'Windows native, VS'
+            job-name: 'Windows native, clang-cl'
           - job-type: fuzz
-            job-name: 'Windows native, fuzz, VS'
+            job-name: 'Windows native, fuzz, clang-cl'
 
     steps:
       - *ANNOTATION_PR_NUMBER
@@ -304,25 +302,13 @@ jobs:
         run: echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   windows-cross:
-    name: 'Windows-cross to x86_64, ${{ matrix.crt }}'
+    name: 'Windows-cross to x86_64'
     needs: record-frozen-commit
     runs-on: ${{ github.repository == 'bitcoin/bitcoin' && 'warp-ubuntu-latest-x64-4x' || 'ubuntu-latest' }}
     if: ${{ vars.SKIP_BRANCH_PUSH != 'true' || github.event_name == 'pull_request' }}
 
-    strategy:
-      fail-fast: false
-      matrix:
-        crt: [msvcrt, ucrt]
-        include:
-          - crt: msvcrt
-            file-env: './ci/test/00_setup_env_win64_msvcrt.sh'
-            artifact-name: 'x86_64-w64-mingw32-executables'
-          - crt: ucrt
-            file-env: './ci/test/00_setup_env_win64.sh'
-            artifact-name: 'x86_64-w64-mingw32ucrt-executables'
-
     env:
-      FILE_ENV: ${{ matrix.file-env }}
+      FILE_ENV: './ci/test/00_setup_env_win64.sh'
       DANGER_CI_ON_HOST_FOLDERS: 1
 
     steps:
@@ -358,7 +344,7 @@ jobs:
       - name: Upload built executables
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact-name }}-${{ github.run_id }}
+          name: x86_64-w64-mingw32ucrt-executables-${{ github.run_id }}
           path: |
             ${{ env.BASE_BUILD_DIR }}/bin/*.dll
             ${{ env.BASE_BUILD_DIR }}/bin/*.exe
@@ -367,19 +353,9 @@ jobs:
             ${{ env.BASE_BUILD_DIR }}/test/config.ini
 
   windows-native-test:
-    name: 'Windows, ${{ matrix.crt }}, test cross-built'
+    name: 'Windows, test cross-built'
     runs-on: windows-2022
     needs: [windows-cross, record-frozen-commit]
-
-    strategy:
-      fail-fast: false
-      matrix:
-        crt: [msvcrt, ucrt]
-        include:
-          - crt: msvcrt
-            artifact-name: 'x86_64-w64-mingw32-executables'
-          - crt: ucrt
-            artifact-name: 'x86_64-w64-mingw32ucrt-executables'
 
     env:
       PYTHONUTF8: 1
@@ -396,12 +372,15 @@ jobs:
       - name: Download built executables
         uses: actions/download-artifact@v8
         with:
-          name: ${{ matrix.artifact-name }}-${{ github.run_id }}
+          name: x86_64-w64-mingw32ucrt-executables-${{ github.run_id }}
 
       - name: Run bitcoind.exe
         run: py -3 .github/ci-windows-cross.py print_version
 
       - *IMPORT_VS_ENV
+
+      - name: Check imported DLLs
+        run: py -3 .github/ci-windows-cross.py check_imports
 
       - name: Check executable manifests
         run: py -3 .github/ci-windows-cross.py check_manifests
@@ -427,6 +406,8 @@ jobs:
     env:
       DANGER_CI_ON_HOST_FOLDERS: 1
       FILE_ENV: ${{ matrix.file-env }}
+      RUN_UNIT_TESTS: ${{ matrix.run_unit_tests }}
+      RUN_FUNCTIONAL_TESTS: ${{ matrix.run_functional_tests }}
 
     strategy:
       fail-fast: false
@@ -444,6 +425,8 @@ jobs:
             timeout-minutes: 120
             file-env: './ci/test/00_setup_env_arm.sh'
             provider: 'gha'
+            run_unit_tests: false
+            run_functional_tests: false
 
           - name: 'ASan + LSan + UBSan + integer'
             warp-runner: 'warp-ubuntu-2404-x64-8x' # has to match container in ci/test/00_setup_env_native_asan.sh for tracing tools
@@ -487,11 +470,11 @@ jobs:
             timeout-minutes: 120
             file-env: './ci/test/00_setup_env_native_nowallet.sh'
 
-          - name: 'i686, no IPC'
+          - name: 'i686'
             warp-runner: 'warp-ubuntu-latest-x64-8x'
             fallback-runner: 'ubuntu-latest'
             timeout-minutes: 120
-            file-env: './ci/test/00_setup_env_i686_no_ipc.sh'
+            file-env: './ci/test/00_setup_env_i686.sh'
 
           - name: 'fuzzer,address,undefined,integer'
             warp-runner: 'warp-ubuntu-latest-x64-16x'
@@ -571,7 +554,7 @@ jobs:
         run: sed -i "s|\${INSTALL_BCC_TRACING_TOOLS}|true|g" ./ci/test/00_setup_env_native_asan.sh
 
       - name: Set mmap_rnd_bits
-        if: ${{ env.CONTAINER_NAME == 'ci_native_tsan' || env.CONTAINER_NAME == 'ci_native_msan' || env.CONTAINER_NAME == 'ci_native_fuzz_msan' }}
+        if: ${{ env.CONTAINER_NAME == 'ci_native_tsan' || env.CONTAINER_NAME == 'ci_native_msan' || env.CONTAINER_NAME == 'ci_native_fuzz_with_msan' }}
         # Prevents crashes due to high ASLR entropy
         run: sudo sysctl -w vm.mmap_rnd_bits=28
 

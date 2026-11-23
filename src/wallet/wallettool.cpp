@@ -20,7 +20,7 @@ namespace WalletTool {
 // deleter here.
 static void WalletToolReleaseWallet(CWallet* wallet)
 {
-    wallet->WalletLogPrintf("Releasing wallet\n");
+    wallet->WalletLogPrintf("Releasing wallet");
     wallet->Close();
     delete wallet;
 }
@@ -124,10 +124,9 @@ bool ExecuteWalletToolFunc(const ArgsManager& args, const std::string& command)
         options.require_format = DatabaseFormat::SQLITE;
 
         const std::shared_ptr<CWallet> wallet_instance = MakeWallet(name, path, options);
-        if (wallet_instance) {
-            WalletShowInfo(wallet_instance.get());
-            wallet_instance->Close();
-        }
+        if (!wallet_instance) return false;
+        WalletShowInfo(wallet_instance.get());
+        wallet_instance->Close();
     } else if (command == "info") {
         DatabaseOptions options;
         ReadDatabaseArgs(args, options);
@@ -162,11 +161,7 @@ bool ExecuteWalletToolFunc(const ArgsManager& args, const std::string& command)
         return ret;
     } else if (command == "createfromdump") {
         bilingual_str error;
-        std::vector<bilingual_str> warnings;
-        bool ret = CreateFromDump(args, name, path, error, warnings);
-        for (const auto& warning : warnings) {
-            tfm::format(std::cout, "%s\n", warning.original);
-        }
+        bool ret = CreateFromDump(args, name, path, error);
         if (!ret && !error.empty()) {
             tfm::format(std::cerr, "%s\n", error.original);
         }

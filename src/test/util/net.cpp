@@ -15,6 +15,7 @@
 #include <serialize.h>
 #include <span.h>
 #include <sync.h>
+#include <util/check.h>
 
 #include <chrono>
 #include <optional>
@@ -236,8 +237,7 @@ bool ZeroSock::WaitMany(std::chrono::milliseconds timeout, EventsPerSock& events
 
 ZeroSock& ZeroSock::operator=(Sock&& other)
 {
-    assert(false && "Move of Sock into ZeroSock not allowed.");
-    return *this;
+    AssertUnreachable(); // Move of Sock into ZeroSock not allowed.
 }
 
 StaticContentsSock::StaticContentsSock(const std::string& contents)
@@ -257,13 +257,12 @@ ssize_t StaticContentsSock::Recv(void* buf, size_t len, int flags) const
 
 StaticContentsSock& StaticContentsSock::operator=(Sock&& other)
 {
-    assert(false && "Move of Sock into StaticContentsSock not allowed.");
-    return *this;
+    AssertUnreachable(); // Move of Sock into StaticContentsSock not allowed.
 }
 
 ssize_t DynSock::Pipe::GetBytes(void* buf, size_t len, int flags)
 {
-    WAIT_LOCK(m_mutex, lock);
+    LOCK(m_mutex);
 
     if (m_data.empty()) {
         if (m_eof) {
@@ -283,67 +282,17 @@ ssize_t DynSock::Pipe::GetBytes(void* buf, size_t len, int flags)
     return read_bytes;
 }
 
-std::optional<CNetMessage> DynSock::Pipe::GetNetMsg()
-{
-    V1Transport transport{NodeId{0}};
-
-    {
-        WAIT_LOCK(m_mutex, lock);
-
-        WaitForDataOrEof(lock);
-        if (m_eof && m_data.empty()) {
-            return std::nullopt;
-        }
-
-        for (;;) {
-            std::span<const uint8_t> s{m_data};
-            if (!transport.ReceivedBytes(s)) {  // Consumed bytes are removed from the front of s.
-                return std::nullopt;
-            }
-            m_data.erase(m_data.begin(), m_data.begin() + m_data.size() - s.size());
-            if (transport.ReceivedMessageComplete()) {
-                break;
-            }
-            if (m_data.empty()) {
-                WaitForDataOrEof(lock);
-                if (m_eof && m_data.empty()) {
-                    return std::nullopt;
-                }
-            }
-        }
-    }
-
-    bool reject{false};
-    CNetMessage msg{transport.GetReceivedMessage(/*time=*/{}, reject)};
-    if (reject) {
-        return std::nullopt;
-    }
-    return std::make_optional<CNetMessage>(std::move(msg));
-}
-
 void DynSock::Pipe::PushBytes(const void* buf, size_t len)
 {
     LOCK(m_mutex);
     const uint8_t* b = static_cast<const uint8_t*>(buf);
     m_data.insert(m_data.end(), b, b + len);
-    m_cond.notify_all();
 }
 
 void DynSock::Pipe::Eof()
 {
     LOCK(m_mutex);
     m_eof = true;
-    m_cond.notify_all();
-}
-
-void DynSock::Pipe::WaitForDataOrEof(UniqueLock<Mutex>& lock)
-{
-    Assert(lock.mutex() == &m_mutex);
-
-    m_cond.wait(lock, [&]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
-        AssertLockHeld(m_mutex);
-        return !m_data.empty() || m_eof;
-    });
 }
 
 DynSock::DynSock(std::shared_ptr<Pipes> pipes, Queue* accept_sockets)
@@ -428,6 +377,5 @@ bool DynSock::WaitMany(std::chrono::milliseconds timeout, EventsPerSock& events_
 
 DynSock& DynSock::operator=(Sock&&)
 {
-    assert(false && "Move of Sock into DynSock not allowed.");
-    return *this;
+    AssertUnreachable(); // Move of Sock into DynSock not allowed.
 }

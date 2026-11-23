@@ -231,7 +231,7 @@ class WindowsMmapReadableFile : public RandomAccessFile {
   }
 
   Status Read(uint64_t offset, size_t n, Slice* result,
-              char* scratch) const override {
+              char*) const override {
     if (offset + n > length_) {
       *result = Slice();
       return WindowsError(filename_, ERROR_INVALID_PARAMETER);
@@ -675,9 +675,9 @@ class WindowsEnv : public Env {
   }
 
  private:
-  void BackgroundThreadMain();
+  [[noreturn]] void BackgroundThreadMain();
 
-  static void BackgroundThreadEntryPoint(WindowsEnv* env) {
+  [[noreturn]] static void BackgroundThreadEntryPoint(WindowsEnv* env) {
     env->BackgroundThreadMain();
   }
 

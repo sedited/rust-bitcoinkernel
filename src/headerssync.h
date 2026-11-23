@@ -8,6 +8,7 @@
 #include <arith_uint256.h>
 #include <chain.h>
 #include <consensus/params.h>
+#include <kernel/chainparams.h>
 #include <net.h>
 #include <primitives/block.h>
 #include <uint256.h>
@@ -15,6 +16,7 @@
 #include <util/hasher.h>
 
 #include <deque>
+#include <stdexcept>
 #include <vector>
 
 // A compressed CBlockHeader, which leaves out the prevhash
@@ -99,8 +101,13 @@ struct CompressedHeader {
  * sync (temporary, per-peer storage).
  */
 
-class HeadersSyncState {
+class HeadersSyncState
+{
 public:
+    struct SystemClockError : std::runtime_error {
+        using std::runtime_error::runtime_error;
+    };
+
     ~HeadersSyncState() = default;
 
     enum class State {
@@ -135,6 +142,8 @@ public:
      * consensus_params: parameters needed for difficulty adjustment validation
      * chain_start: best known fork point that the peer's headers branch from
      * minimum_required_work: amount of chain work required to accept the chain
+     *
+     * @throws SystemClockError if system clock is too far behind chain_start MTP.
      */
     HeadersSyncState(NodeId id, const Consensus::Params& consensus_params,
                      const HeadersSyncParams& params, const CBlockIndex& chain_start,

@@ -8,9 +8,13 @@
 #include <addresstype.h>
 #include <consensus/amount.h>
 #include <rpc/util.h>
+
+#include <cstdint>
 #include <map>
-#include <string>
 #include <optional>
+#include <string>
+#include <utility>
+#include <vector>
 
 struct bilingual_str;
 struct FlatSigningProvider;
@@ -40,9 +44,6 @@ void SignTransactionResultToJSON(CMutableTransaction& mtx, bool complete, const 
   * @param  coins         Map of unspent outputs - coins in mempool and current chain UTXO set, may be extended by previous txns outputs after call
   */
 void ParsePrevouts(const UniValue& prevTxsUnival, FlatSigningProvider* keystore, std::map<COutPoint, Coin>& coins);
-
-/** Normalize univalue-represented inputs and add them to the transaction */
-void AddInputs(CMutableTransaction& rawTx, const UniValue& inputs_in, bool rbf);
 
 /** Normalize univalue-represented outputs */
 UniValue NormalizeOutputs(const UniValue& outputs_in);

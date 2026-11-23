@@ -16,6 +16,7 @@
 #include <test/fuzz/util/threadinterrupt.h>
 #include <test/util/setup_common.h>
 #include <test/util/time.h>
+#include <util/check.h>
 #include <util/translation.h>
 
 #include <cstdint>
@@ -206,7 +207,10 @@ FUZZ_TARGET(connman, .init = initialize_connman)
                 CSerializedNetMsg serialized_net_msg;
                 serialized_net_msg.m_type = fuzzed_data_provider.ConsumeRandomLengthString(CMessageHeader::MESSAGE_TYPE_SIZE);
                 serialized_net_msg.data = ConsumeRandomLengthByteVector(fuzzed_data_provider);
-                connman.PushMessage(&random_node, std::move(serialized_net_msg));
+                const auto nodes{connman.TestNodes()};
+                if (nodes.empty()) return;
+                CNode* receiver{PickValue(fuzzed_data_provider, nodes)};
+                connman.PushMessage(receiver, std::move(serialized_net_msg));
             },
             [&] {
                 const auto set_active{fuzzed_data_provider.ConsumeBool()};

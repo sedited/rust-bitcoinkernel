@@ -18,6 +18,7 @@ import platform
 import random
 import re
 import shlex
+import threading
 import time
 import types
 
@@ -63,8 +64,9 @@ def assert_fee_amount(fee, tx_size, feerate_BTC_kvB):
     target_fee = get_fee(tx_size, feerate_BTC_kvB)
     if fee < target_fee:
         raise AssertionError("Fee of %s BTC too low! (Should be %s BTC)" % (str(fee), str(target_fee)))
-    # allow the wallet's estimation to be at most 2 bytes off
-    high_fee = get_fee(tx_size + 2, feerate_BTC_kvB)
+    # Allow the wallet's estimate to be up to 3 bytes over: a low-R ECDSA
+    # signature can be shorter than the 71 bytes the wallet assumes.
+    high_fee = get_fee(tx_size + 3, feerate_BTC_kvB)
     if fee > high_fee:
         raise AssertionError("Fee of %s BTC too high! (Should be %s BTC)" % (str(fee), str(target_fee)))
 
@@ -305,11 +307,11 @@ class Binaries:
         "Return argv array that should be used to invoke bitcoin-chainstate"
         return self._argv("chainstate", self.paths.bitcoinchainstate)
 
-    def _argv(self, command, bin_path, need_ipc=False):
+    def _argv(self, command, bin_path, *, need_ipc=False, use_gui=False):
         """Return argv array that should be used to invoke the command.
 
-        It either uses the bitcoin wrapper executable (if BITCOIN_CMD is set or
-        need_ipc is True), or the direct binary path (bitcoind, etc). When
+        It either uses the bitcoin wrapper executable (if BITCOIN_CMD, need_ipc,
+        or use_gui are set), or the direct binary path (bitcoind, etc). When
         bin_dir is set (by tests calling binaries from previous releases) it
         always uses the direct path.
 
@@ -319,11 +321,12 @@ class Binaries:
         """
         if self.bin_dir is not None:
             return [os.path.join(self.bin_dir, os.path.basename(bin_path))]
-        elif self.paths.bitcoin_cmd is not None or need_ipc:
-            # If the current test needs IPC functionality, use the bitcoin
-            # wrapper binary and append -m so it calls multiprocess binaries.
+        elif self.paths.bitcoin_cmd is not None or need_ipc or use_gui:
+            # If the current test needs IPC or GUI functionality, use the
+            # bitcoin wrapper binary and add appropriate options.
             bitcoin_cmd = self.paths.bitcoin_cmd or [self.paths.bitcoin_bin]
-            return self.valgrind_cmd + bitcoin_cmd + (["-m"] if need_ipc else []) + [command]
+            subcommand = "gui" if use_gui and command == "node" else command
+            return self.valgrind_cmd + bitcoin_cmd + (["-m"] if need_ipc else []) + [subcommand]
         else:
             return self.valgrind_cmd + [bin_path]
 
@@ -412,12 +415,12 @@ def ensure_for(*, duration, f, check_interval=0.2):
     # to checking once in the beginning and once at the end of duration
     if check_interval <= 0 or check_interval > duration:
         check_interval = duration
-    time_end = time.time() + duration
+    time_end = time.monotonic() + duration
     predicate_source = "''''\n" + inspect.getsource(f) + "'''"
     while True:
         if not f():
             raise AssertionError(f"Predicate {predicate_source} became false within {duration} seconds")
-        if time.time() > time_end:
+        if time.monotonic() > time_end:
             return
         time.sleep(check_interval)
 
@@ -432,13 +435,17 @@ def wait_until_helper_internal(predicate, *, timeout=60, lock=None, timeout_fact
     `p2p.py` has a preset lock.
     """
     timeout = timeout * timeout_factor
-    time_end = time.time() + timeout
+    time_end = time.monotonic() + timeout
 
-    while time.time() < time_end:
+    while time.monotonic() < time_end:
         if lock:
             with lock:
                 if predicate():
                     return
+                if isinstance(lock, threading.Condition):
+                    # Wake up early when the lock owner signals a state change
+                    lock.wait(check_interval)
+                    continue
         else:
             if predicate():
                 return
@@ -517,8 +524,11 @@ def initialize_datadir(dirname, n, chain, disable_autoconnect=True):
 
 
 def write_config(config_path, *, n, chain, extra_config="", disable_autoconnect=True):
-    # Translate chain subdirectory name to config name
-    if chain == 'testnet3':
+    # Translate chain name to config name
+    if chain == 'main':
+        chain_name_conf_arg = None
+        chain_name_conf_section = None
+    elif chain == 'testnet3':
         chain_name_conf_arg = 'testnet'
         chain_name_conf_section = 'test'
     else:
@@ -556,15 +566,18 @@ def write_config(config_path, *, n, chain, extra_config="", disable_autoconnect=
             f.write("connect=0\n")
         # Limit max connections to mitigate test failures on some systems caused by the warning:
         # "Warning: Reducing -maxconnections from <...> to <...> due to system limitations".
-        # The value is calculated as follows:
-        #  available_fds = 256          // Same as FD_SETSIZE on NetBSD.
-        #  MIN_CORE_FDS = 151           // Number of file descriptors required for core functionality.
-        #  MAX_ADDNODE_CONNECTIONS = 8  // Maximum number of -addnode outgoing nodes.
-        #  nBind == 3                   // Maximum number of bound interfaces used in a test.
+        # For details, consult the `AppInitParameterInteraction` function in src/init.cpp.
+        #  available_fds = 256                // Same as FD_SETSIZE on NetBSD.
+        #  MIN_CORE_FDS = 151                 // Number of file descriptors required for core functionality.
+        #  MAX_ADDNODE_CONNECTIONS = 8        // Maximum number of -addnode outgoing nodes.
+        #  num_p2p_bind = 3                   // Maximum number of bound P2P interfaces (-bind and -whitebind) used in a test.
+        #  num_rpc_bind = 2                   // Maximum number of HTTP sockets used in a test.
+        #  DEFAULT_MAX_HTTP_CONNECTIONS = 16  // Reserved for connected HTTP clients.
         #
-        #  min_required_fds = MIN_CORE_FDS + MAX_ADDNODE_CONNECTIONS + nBind = 151 + 8 + 3 = 162;
-        #  nMaxConnections = available_fds - min_required_fds = 256 - 161 = 94;
-        f.write("maxconnections=94\n")
+        #  min_required_fds = MIN_CORE_FDS + MAX_ADDNODE_CONNECTIONS + num_p2p_bind + num_rpc_bind + DEFAULT_MAX_HTTP_CONNECTIONS =
+        #    = 151 + 8 + 3 + 2 + 16 = 180;
+        #  num_p2p_max_connections = available_fds - min_required_fds = 256 - 180 = 76;
+        f.write("maxconnections=76\n")
         f.write("par=" + str(min(2, os.cpu_count())) + "\n")
         # Use a single prevoutfetch worker thread to keep per-node resource usage low.
         f.write("prevoutfetchthreads=1\n")
@@ -703,16 +716,11 @@ def dumb_sync_blocks(*, src, dst, height=None):
     height = height or src.getblockcount()
     for i in range(dst.getblockcount() + 1, height + 1):
         block_hash = src.getblockhash(i)
-        block = src.getblock(blockhash=block_hash, verbosity=0)
+        # Use boolean verbosity for v0.14.x compatibility.
+        block = src.getblock(blockhash=block_hash, verbose=False)
         dst.submitblock(block)
     assert_equal(dst.getblockcount(), height)
 
-
-def sync_txindex(test_framework, node):
-    test_framework.log.debug("Waiting for node txindex to sync")
-    sync_start = int(time.time())
-    test_framework.wait_until(lambda: node.getindexinfo("txindex")["txindex"]["synced"])
-    test_framework.log.debug(f"Synced in {time.time() - sync_start} seconds")
 
 def wallet_importprivkey(wallet_rpc, privkey, timestamp, *, label=""):
     desc = descsum_create("combo(" + privkey + ")")
@@ -733,3 +741,7 @@ def is_dir_writable(dir_path: pathlib.Path) -> bool:
         return True
     except OSError:
         return False
+
+def bitflipper(input):
+    assert isinstance(input, bytes)
+    return (int.from_bytes(input, "little") ^ (1 << random.randrange(len(input) * 8))).to_bytes(len(input), "little")

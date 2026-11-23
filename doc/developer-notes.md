@@ -634,23 +634,15 @@ cmake -B build -DSANITIZERS=address,undefined
 cmake -B build -DSANITIZERS=thread
 ```
 
-If you are compiling with GCC you will typically need to install corresponding
-"san" libraries to actually compile with these flags, e.g. libasan for the
-address sanitizer, libtsan for the thread sanitizer, and libubsan for the
-undefined sanitizer. If you are missing required libraries, the build
-will fail with a linker error when testing the sanitizer flags.
-
 The test suite should pass cleanly with the `thread` and `undefined` sanitizers. You
-may need to use a suppressions file, see `test/sanitizer_suppressions`. They may be
-used as follows:
+may use `build/test/with_sanitizer_env.py` to apply the project's default
+sanitizer options and suppressions:
 ```bash
-export LSAN_OPTIONS="suppressions=$(pwd)/test/sanitizer_suppressions/lsan"
-export TSAN_OPTIONS="suppressions=$(pwd)/test/sanitizer_suppressions/tsan:halt_on_error=1:second_deadlock_stack=1"
-export UBSAN_OPTIONS="suppressions=$(pwd)/test/sanitizer_suppressions/ubsan:print_stacktrace=1:halt_on_error=1:report_error_type=1"
+build/test/with_sanitizer_env.py ctest --test-dir build
 ```
 
-See the CI config for more examples, and upstream documentation for more information
-about any additional options.
+Any sanitizer option set in the environment takes precedence over the default, e.g.
+`ASAN_OPTIONS=detect_leaks=0 build/test/with_sanitizer_env.py ctest --test-dir build`.
 
 Not all sanitizer options can be enabled at the same time, e.g. trying to build
 with `-DSANITIZERS=address,thread` will fail in the build as
@@ -672,6 +664,35 @@ Additional resources:
 
 A few non-style-related recommendations for developers, as well as points to
 pay attention to for reviewers of Bitcoin Core code.
+
+## General Testing
+
+As a rule of thumb, an externally observable change (new feature, bug fix, or
+changed default) should be accompanied by an automated test.
+New tests are usually not needed for behavior-preserving work that is easy to
+validate, such as moving code, renaming, or mechanical refactors.
+When an automated test would be brittle or have limited long-term value,
+a manual testing guide in the commit message or PR description is an
+acceptable alternative.
+
+### Commit Structure for Tests
+
+Test placement depends on existing coverage and the type of change:
+
+* When existing tests already cover the behavior being changed, update them in
+  the same commit as the change. The diff records the old and new expectations
+  together and shows the change was intentional.
+* For a simple feature or bug fix without existing coverage, the change and its
+  test can often be in the same commit.
+* For a non-trivial refactor, if the relevant invariant is not already covered
+  by automated tests, first add that coverage in a separate test commit. The
+  refactor commit should not need to update test expectations.
+* For a non-trivial change to existing behavior without coverage, consider
+  adding a preceding commit with a [characterization test](https://en.wikipedia.org/wiki/Characterization_test)
+  to document the current behavior. Mark assertions whose expected values will
+  change with `TODO` comments so they are not mistaken for intended behavior.
+  Remove the comments when updating those assertions in the behavior-changing
+  commit.
 
 ## Locking/mutex usage notes
 
@@ -773,6 +794,11 @@ logging messages. They should be used as follows:
   severe problems that the node admin should address, but are not
   severe enough to warrant shutting down the node (e.g., system time
   appears to be wrong, unknown soft fork appears to have activated).
+
+- `LogWarnThenDebug(BCLog::CATEGORY, fmt, params...)` should be used
+  for errors that indicate a systematic problem that should be addressed
+  (and thus warrant a warning) but are likely to occur frequently if they
+  occur at all, so later occurrences are demoted to debug level.
 
 - `LogTrace(BCLog::CATEGORY, fmt, params...)` should be used in place of
   `LogDebug` for log messages that would be unusable on a production
@@ -897,14 +923,14 @@ int GetInt(Tabs tab)
         case Tabs::info: return 0;
         case Tabs::console: return 1;
         } // no default case, so the compiler can warn about missing cases
-        assert(false);
+        AssertUnreachable();
     }();
     LogInfo("Tab %s", ret);
     return ret;
 }
 ```
 
-*Rationale*: The comment documents skipping `default:` label, and it complies with `clang-format` rules. The assertion prevents firing of `-Wreturn-type` warning on some compilers.
+*Rationale*: The comment documents skipping the `default:` case, and it complies with `clang-format` rules. `AssertUnreachable()` prevents `-Wreturn-type` warnings on some compilers.
 
 ## Strings and formatting
 
@@ -1272,8 +1298,8 @@ Release notes should be written for any PR that:
 - changes an API or configuration model
 - makes any other visible change to the end-user experience.
 
-Release notes should be added to a PR-specific release note file at
-`/doc/release-notes-<PR number>.md` to avoid conflicts between multiple PRs.
+Release notes should be added to a uniquely named release note file, such as
+`/doc/release-notes-remove-feature-foo.md`, to avoid conflicts between multiple PRs.
 All `release-notes*` files are merged into a single `release-notes-<version>.md` file prior to the release.
 
 ## RPC interface guidelines

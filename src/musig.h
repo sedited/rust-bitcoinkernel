@@ -6,6 +6,7 @@
 #define BITCOIN_MUSIG_H
 
 #include <pubkey.h>
+#include <util/not_null.h>
 
 #include <optional>
 #include <vector>
@@ -15,7 +16,7 @@ struct secp256k1_musig_keyagg_cache;
 class MuSig2SecNonceImpl;
 struct secp256k1_musig_secnonce;
 
-constexpr size_t MUSIG2_PUBNONCE_SIZE{66};
+inline constexpr size_t MUSIG2_PUBNONCE_SIZE{66};
 
 //! Compute the full aggregate pubkey from the given participant pubkeys in their current order.
 //! Outputs the secp256k1_musig_keyagg_cache and validates that the computed aggregate pubkey matches an expected aggregate pubkey.
@@ -40,7 +41,7 @@ CExtPubKey CreateMuSig2SyntheticXpub(const CPubKey& pubkey);
 class MuSig2SecNonce
 {
 private:
-    std::unique_ptr<MuSig2SecNonceImpl> m_impl;
+    util::NotNullUniquePtr<MuSig2SecNonceImpl> m_impl;
 
 public:
     MuSig2SecNonce();
