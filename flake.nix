@@ -90,7 +90,7 @@
         packages =
           # Android build infrastructure (unfree NDK + SDK).
           let
-            ndkVersion = "27.2.12479018"; # which NDK release to download
+            ndkVersion = "28.2.13676358"; # which NDK release to download
             lockfile = ./Cargo-minimal.lock;
             ANDROID_API_LEVEL = "24";
             crateVersion =
