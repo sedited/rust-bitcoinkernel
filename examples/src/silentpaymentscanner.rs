@@ -9,8 +9,8 @@ use bitcoin::Transaction;
 use bitcoin::{PrivateKey, XOnlyPublicKey};
 use bitcoinkernel::{
     prelude::*, Block, BlockSpentOutputs, BlockTreeEntry, ChainType, ChainstateManager,
-    ChainstateManagerBuilder, Context, ContextBuilder, KernelError, Log, Logger,
-    TransactionSpentOutputsRef,
+    ChainstateManagerBuilder, Context, ContextBuilder, KernelError, Log, LogEntry, LogLevel,
+    Logger, TransactionSpentOutputsRef,
 };
 use env_logger::Builder;
 use log::LevelFilter;
@@ -246,10 +246,15 @@ impl SilentPaymentScanner {
 struct MainLog {}
 
 impl Log for MainLog {
-    fn log(&self, message: &str) {
-        log::info!(
-            target: "libbitcoinkernel",
-            "{}", message.strip_suffix("\r\n").or_else(|| message.strip_suffix('\n')).unwrap_or(message));
+    fn log(&mut self, entry: LogEntry<'_>) {
+        let level = match entry.level() {
+            LogLevel::Trace => log::Level::Trace,
+            LogLevel::Debug => log::Level::Debug,
+            LogLevel::Info => log::Level::Info,
+            LogLevel::Warning => log::Level::Warn,
+            LogLevel::Error => log::Level::Error,
+        };
+        log::log!(target: "libbitcoinkernel", level, "{}", entry.message());
     }
 }
 

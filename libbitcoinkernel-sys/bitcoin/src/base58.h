@@ -3,19 +3,22 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-/**
- * Why base-58 instead of standard base-64 encoding?
- * - Don't want 0OIl characters that look the same in some fonts and
- *      could be used to create visually identical looking data.
- * - A string with non-alphanumeric characters is not as easily accepted as input.
- * - E-mail usually won't line-break if there's no punctuation to break at.
- * - Double-clicking selects the whole string as one word if it's all alphanumeric.
- */
+//! @file
+//! @brief Base58 and Base58Check encoding and decoding.
+//!
+//! Why base-58 instead of standard base-64 encoding?
+//! - Don't want 0OIl characters that look the same in some fonts and
+//!      could be used to create visually identical looking data.
+//! - A string with non-alphanumeric characters is not as easily accepted as input.
+//! - E-mail usually won't line-break if there's no punctuation to break at.
+//! - Double-clicking selects the whole string as one word if it's all alphanumeric.
+
 #ifndef BITCOIN_BASE58_H
 #define BITCOIN_BASE58_H
 
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 /**
@@ -27,7 +30,7 @@ std::string EncodeBase58(std::span<const unsigned char> input);
  * Decode a base58-encoded string (str) into a byte vector (vchRet).
  * return true if decoding is successful.
  */
-[[nodiscard]] bool DecodeBase58(const std::string& str, std::vector<unsigned char>& vchRet, int max_ret_len);
+[[nodiscard]] bool DecodeBase58(std::string_view str, std::vector<unsigned char>& vchRet, int max_ret_len);
 
 /**
  * Encode a byte span into a base58-encoded string, including checksum
@@ -38,6 +41,6 @@ std::string EncodeBase58Check(std::span<const unsigned char> input);
  * Decode a base58-encoded string (str) that includes a checksum into a byte
  * vector (vchRet), return true if decoding is successful
  */
-[[nodiscard]] bool DecodeBase58Check(const std::string& str, std::vector<unsigned char>& vchRet, int max_ret_len);
+[[nodiscard]] bool DecodeBase58Check(std::string_view str, std::vector<unsigned char>& vchRet, int max_ret_len);
 
 #endif // BITCOIN_BASE58_H

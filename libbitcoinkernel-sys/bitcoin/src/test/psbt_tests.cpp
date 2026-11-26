@@ -2,12 +2,30 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://www.opensource.org/licenses/mit-license.php.
 
+#include <addresstype.h>
+#include <key.h>
 #include <psbt.h>
+#include <script/descriptor.h>
+#include <script/script.h>
+#include <script/signingprovider.h>
+#include <script/solver.h>
+#include <test/util/common.h>
+#include <test/util/setup_common.h>
+#include <util/strencodings.h>
+#include <util/string.h>
 
 #include <boost/test/unit_test.hpp>
-#include <test/util/setup_common.h>
+
+#include <cstddef>
+#include <string>
+#include <vector>
 
 BOOST_FIXTURE_TEST_SUITE(psbt_tests, BasicTestingSetup)
+
+// Bit positions in BIP 370's transaction modifiable flags.
+static constexpr std::size_t INPUTS_MODIFIABLE{0};
+static constexpr std::size_t OUTPUTS_MODIFIABLE{1};
+static constexpr std::size_t HAS_SIGHASH_SINGLE{2};
 
 static PSBTProprietary MakeProprietary(uint64_t subtype, uint8_t key_data, uint8_t value)
 {
@@ -49,6 +67,7 @@ BOOST_AUTO_TEST_CASE(psbt2_timelock_test)
     CheckTimeLock("cHNidP8BAgQCAAAAAQMEAAAAAAEEAQIBBQEBAfsEAgAAAAABDiAPdY2/vU2nwWyKMwnDyB4RAPVh6mRttbAXUsSF4b3enwEPBAEAAAABEQSLjcRiARIEECcAAAABDiA6Gzs8g31kiep6Mdjmx91QPAAb7z4GlY51dICNaMp4pQEPBAAAAAABEQSMjcRiAAEDCE+TNXcAAAAAAQQWABQLE1LKzQPPaqG388jWOIZxs0peEQA=", 1657048460);
     CheckTimeLock("cHNidP8BAgQCAAAAAQMEAAAAAAEEAQIBBQEBAfsEAgAAAAABDiAPdY2/vU2nwWyKMwnDyB4RAPVh6mRttbAXUsSF4b3enwEPBAEAAAAAAQ4gOhs7PIN9ZInqejHY5sfdUDwAG+8+BpWOdXSAjWjKeKUBDwQAAAAAAREEjI3EYgABAwhPkzV3AAAAAAEEFgAUCxNSys0Dz2qht/PI1jiGcbNKXhEA", 1657048460);
     CheckTimeLock("cHNidP8BAgQCAAAAAQMEAAAAAAEEAQIBBQEBAfsEAgAAAAABDiAPdY2/vU2nwWyKMwnDyB4RAPVh6mRttbAXUsSF4b3enwEPBAEAAAABEgQQJwAAAAEOIDobOzyDfWSJ6nox2ObH3VA8ABvvPgaVjnV0gI1oynilAQ8EAAAAAAERBIyNxGIAAQMIT5M1dwAAAAABBBYAFAsTUsrNA89qobfzyNY4hnGzSl4RAA==", std::nullopt);
+    CheckTimeLock("cHNidP8BAgQCAAAAAQMEAAAAAAEEAQIBBQEBAfsEAgAAAAABDiA6Gzs8g31kiep6Mdjmx91QPAAb7z4GlY51dICNaMp4pQEPBAAAAAABEQSMjcRiAAEOIA91jb+9TafBbIozCcPIHhEA9WHqZG21sBdSxIXhvd6fAQ8EAQAAAAESBBAnAAAAAQMIT5M1dwAAAAABBBYAFAsTUsrNA89qobfzyNY4hnGzSl4RAA==", std::nullopt);
 }
 
 BOOST_AUTO_TEST_CASE(psbt2_addinput)
@@ -58,7 +77,7 @@ BOOST_AUTO_TEST_CASE(psbt2_addinput)
     CMutableTransaction mtx;
     PartiallySignedTransaction psbt(mtx, /*version=*/2);
     psbt.m_tx_modifiable.emplace();
-    psbt.m_tx_modifiable->set(0, true);
+    psbt.m_tx_modifiable->set(INPUTS_MODIFIABLE);
     BOOST_CHECK_EQUAL(psbt.inputs.size(), 0);
 
     // Same PSBT version is required
@@ -83,12 +102,12 @@ BOOST_AUTO_TEST_CASE(psbt2_addinput)
     BOOST_CHECK_EQUAL(psbt.inputs.size(), 2);
 
     // Disabling inputs modifiable flag prevents adding new inputs
-    psbt.m_tx_modifiable->set(0, false);
+    psbt.m_tx_modifiable->reset(INPUTS_MODIFIABLE);
     rng.fillrand(MakeWritableByteSpan(txid));
     PSBTInput psbtin3(/*psbt_version=*/2, Txid::FromUint256(txid), /*prev_out=*/0);
     BOOST_CHECK(!psbt.AddInput(psbtin3));
     BOOST_CHECK_EQUAL(psbt.inputs.size(), 2);
-    psbt.m_tx_modifiable->set(0, true);
+    psbt.m_tx_modifiable->set(INPUTS_MODIFIABLE);
 
     // Make sure that timelock compatibility checks are working
     // No previous required timelocks, new input with both height and time timelocks is allowed
@@ -155,7 +174,7 @@ BOOST_AUTO_TEST_CASE(psbt2_addoutput)
     CMutableTransaction mtx;
     PartiallySignedTransaction psbt(mtx, /*version=*/2);
     psbt.m_tx_modifiable.emplace();
-    psbt.m_tx_modifiable->set(1, true);
+    psbt.m_tx_modifiable->set(OUTPUTS_MODIFIABLE);
     BOOST_CHECK_EQUAL(psbt.outputs.size(), 0);
 
     // Same PSBT version is required
@@ -167,11 +186,11 @@ BOOST_AUTO_TEST_CASE(psbt2_addoutput)
     BOOST_CHECK_EQUAL(psbt.outputs.size(), 1);
 
     // Disabling outputs modifiable flag prevents adding new outputs
-    psbt.m_tx_modifiable->set(1, false);
+    psbt.m_tx_modifiable->reset(OUTPUTS_MODIFIABLE);
     PSBTOutput psbtout2(/*psbt_version=*/2, /*amount=*/1, CScript());
     BOOST_CHECK(!psbt.AddOutput(psbtout2));
     BOOST_CHECK_EQUAL(psbt.outputs.size(), 1);
-    psbt.m_tx_modifiable->set(1, true);
+    psbt.m_tx_modifiable->set(OUTPUTS_MODIFIABLE);
     PSBTOutput psbtout3(/*psbt_version=*/2, /*amount=*/1, CScript());
     BOOST_CHECK(psbt.AddOutput(psbtout3));
     BOOST_CHECK_EQUAL(psbt.outputs.size(), 2);
@@ -183,8 +202,8 @@ BOOST_AUTO_TEST_CASE(merge_proprietary_fields)
     tx.vin.emplace_back(COutPoint{});
     tx.vout.emplace_back(0, CScript{});
 
-    PartiallySignedTransaction left(tx);
-    PartiallySignedTransaction right(tx);
+    PartiallySignedTransaction left(tx, /*version=*/2);
+    PartiallySignedTransaction right(tx, /*version=*/2);
 
     const auto left_prop = MakeProprietary(/*subtype=*/1, /*key_data=*/0x01, /*value=*/0xaa);
     const auto right_prop = MakeProprietary(/*subtype=*/2, /*key_data=*/0x02, /*value=*/0xbb);
@@ -214,6 +233,187 @@ BOOST_AUTO_TEST_CASE(merge_proprietary_fields)
     const auto output_it = left.outputs[0].m_proprietary.find(right_prop);
     BOOST_REQUIRE(output_it != left.outputs[0].m_proprietary.end());
     BOOST_CHECK(output_it->value == right_prop.value);
+}
+
+struct PSBTOutputTest {
+    CPubKey pubkey;
+    FlatSigningProvider provider;
+    CScript script_pubkey;
+
+    explicit PSBTOutputTest(std::string descriptor)
+    {
+        CKey key{GenerateRandomKey()};
+        pubkey = key.GetPubKey();
+        provider.keys.emplace(pubkey.GetID(), key);
+
+        util::ReplaceAll(descriptor, "<KEY>", HexStr(pubkey));
+        std::string error;
+        auto descriptors{Parse(descriptor, provider, error, /*require_checksum=*/false)};
+        BOOST_REQUIRE_MESSAGE(!descriptors.empty(), error);
+        std::vector<CScript> output_scripts;
+        BOOST_REQUIRE(descriptors[0]->Expand(/*pos=*/0, provider, output_scripts, provider));
+        BOOST_REQUIRE_EQUAL(output_scripts.size(), 1);
+        script_pubkey = output_scripts[0];
+    }
+
+    PSBTOutput UpdateOutput(bool has_input) const
+    {
+        CMutableTransaction tx;
+        if (has_input) tx.vin.emplace_back();
+        tx.vout.emplace_back(0, script_pubkey);
+        PartiallySignedTransaction psbt{tx, /*version=*/2};
+        UpdatePSBTOutput(provider, psbt, 0);
+        return psbt.outputs[0];
+    }
+};
+
+BOOST_AUTO_TEST_CASE(update_psbt_output_keypaths)
+{
+    for (bool has_input : {false, true}) {
+        for (const auto& descriptor : {"pkh(<KEY>)", "wpkh(<KEY>)"}) {
+            PSBTOutputTest test{descriptor};
+            auto out{test.UpdateOutput(has_input)};
+            BOOST_CHECK(out.hd_keypaths.contains(test.pubkey));
+            BOOST_CHECK(out.redeem_script.empty());
+            BOOST_CHECK(out.witness_script.empty());
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(update_psbt_output_redeem_script)
+{
+    for (bool has_input : {false, true}) {
+        PSBTOutputTest test{"sh(wpkh(<KEY>))"};
+        auto out{test.UpdateOutput(has_input)};
+        BOOST_CHECK_EQUAL(out.redeem_script, GetScriptForDestination(WitnessV0KeyHash{test.pubkey}));
+        BOOST_CHECK(out.hd_keypaths.contains(test.pubkey));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(update_psbt_output_witness_script)
+{
+    for (bool has_input : {false, true}) {
+        PSBTOutputTest test{"wsh(pk(<KEY>))"};
+        auto out{test.UpdateOutput(has_input)};
+        BOOST_CHECK_EQUAL(out.witness_script, GetScriptForRawPubKey(test.pubkey));
+        BOOST_CHECK(out.hd_keypaths.contains(test.pubkey));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(update_psbt_output_miniscript_timelock)
+{
+    for (bool has_input : {false, true}) {
+        PSBTOutputTest test{"wsh(and_v(v:pk(<KEY>),older(144)))"};
+        auto out{test.UpdateOutput(has_input)};
+        BOOST_CHECK_EQUAL(GetScriptForDestination(WitnessV0ScriptHash{out.witness_script}), test.script_pubkey);
+        BOOST_CHECK(out.hd_keypaths.contains(test.pubkey));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(update_psbt_output_taproot)
+{
+    for (bool has_input : {false, true}) {
+        PSBTOutputTest test{"rawtr(<KEY>)"};
+        auto out{test.UpdateOutput(has_input)};
+        BOOST_CHECK(out.m_tap_bip32_paths.contains(XOnlyPubKey{test.pubkey}));
+        BOOST_CHECK(out.hd_keypaths.empty());
+    }
+}
+
+BOOST_AUTO_TEST_CASE(psbt_merge_only_same_version)
+{
+    CMutableTransaction mtx;
+    PartiallySignedTransaction psbt_v0(mtx, /*version*/0);
+    PartiallySignedTransaction psbt_v2(mtx, /*version*/2);
+    BOOST_REQUIRE(psbt_v0.GetUniqueID() == psbt_v2.GetUniqueID());
+    BOOST_CHECK(!psbt_v0.Merge(psbt_v2));
+    BOOST_CHECK(!psbt_v2.Merge(psbt_v0));
+}
+
+BOOST_AUTO_TEST_CASE(psbt_merge_fallback_locktime)
+{
+    CMutableTransaction mtx;
+    PartiallySignedTransaction psbt1(mtx, /*version*/2);
+    PartiallySignedTransaction psbt2(mtx, /*version*/2);
+    psbt1.m_tx_modifiable.emplace();
+    psbt1.m_tx_modifiable->set(INPUTS_MODIFIABLE);
+    BOOST_REQUIRE_EQUAL(psbt1.inputs.size(), 0);
+    psbt2.m_tx_modifiable.emplace();
+    psbt2.m_tx_modifiable->set(INPUTS_MODIFIABLE);
+    BOOST_REQUIRE_EQUAL(psbt2.inputs.size(), 0);
+
+
+    PSBTInput psbtin(/*psbt_version=*/2, Txid::FromUint256(uint256::ONE), /*prev_out=*/0);
+    psbtin.height_locktime = 100;
+    BOOST_REQUIRE(psbt1.AddInput(psbtin));
+    BOOST_REQUIRE(psbt2.AddInput(psbtin));
+
+    psbt1.fallback_locktime = std::nullopt;
+    psbt2.fallback_locktime = 21;
+    BOOST_CHECK(psbt1.Merge(psbt2));
+    BOOST_REQUIRE(psbt1.fallback_locktime.has_value());
+    BOOST_CHECK_EQUAL(*psbt1.fallback_locktime, 21);
+
+    psbt1.fallback_locktime = 5;
+    psbt2.fallback_locktime = 19;
+    BOOST_CHECK(psbt1.Merge(psbt2));
+    BOOST_REQUIRE(psbt1.fallback_locktime.has_value());
+    BOOST_CHECK_EQUAL(*psbt1.fallback_locktime, 5);
+
+    psbt1.fallback_locktime = 21;
+    psbt2.fallback_locktime = std::nullopt;
+    BOOST_CHECK(psbt1.Merge(psbt2));
+    BOOST_REQUIRE(psbt1.fallback_locktime.has_value());
+    BOOST_CHECK_EQUAL(*psbt1.fallback_locktime, 21);
+}
+
+BOOST_AUTO_TEST_CASE(psbt_merge_modifiable)
+{
+    CMutableTransaction mtx;
+    PartiallySignedTransaction psbt1(mtx, /*version*/2);
+    PartiallySignedTransaction psbt2(mtx, /*version*/2);
+
+    BOOST_CHECK(psbt1.Merge(psbt2));
+    BOOST_CHECK(!psbt1.m_tx_modifiable.has_value());
+
+    psbt1.m_tx_modifiable.emplace();
+    psbt1.m_tx_modifiable->set(INPUTS_MODIFIABLE);
+    BOOST_CHECK(psbt1.Merge(psbt2));
+    BOOST_REQUIRE(psbt1.m_tx_modifiable.has_value());
+    BOOST_CHECK(!psbt1.m_tx_modifiable->test(INPUTS_MODIFIABLE));
+
+    psbt1.m_tx_modifiable.reset();
+    psbt2.m_tx_modifiable.emplace();
+    psbt2.m_tx_modifiable->set(INPUTS_MODIFIABLE);
+    psbt2.m_tx_modifiable->set(HAS_SIGHASH_SINGLE);
+    BOOST_CHECK(psbt1.Merge(psbt2));
+    BOOST_REQUIRE(psbt1.m_tx_modifiable.has_value());
+    BOOST_CHECK(!psbt1.m_tx_modifiable->test(INPUTS_MODIFIABLE));
+    BOOST_CHECK(psbt1.m_tx_modifiable->test(HAS_SIGHASH_SINGLE));
+
+    psbt1.m_tx_modifiable.emplace();
+    psbt1.m_tx_modifiable->set(HAS_SIGHASH_SINGLE);
+    psbt2.m_tx_modifiable.reset();
+    BOOST_CHECK(psbt1.Merge(psbt2));
+    BOOST_REQUIRE(psbt1.m_tx_modifiable.has_value());
+    BOOST_CHECK(psbt1.m_tx_modifiable->test(HAS_SIGHASH_SINGLE));
+
+    psbt1.m_tx_modifiable.reset();
+    psbt2.m_tx_modifiable.emplace();
+    psbt2.m_tx_modifiable->set(HAS_SIGHASH_SINGLE);
+    BOOST_CHECK(psbt1.Merge(psbt2));
+    BOOST_REQUIRE(psbt1.m_tx_modifiable.has_value());
+    BOOST_CHECK(psbt1.m_tx_modifiable->test(HAS_SIGHASH_SINGLE));
+
+    psbt1.m_tx_modifiable.emplace();
+    psbt1.m_tx_modifiable->set(INPUTS_MODIFIABLE);
+    psbt1.m_tx_modifiable->set(OUTPUTS_MODIFIABLE);
+    psbt2.m_tx_modifiable.emplace();
+    psbt2.m_tx_modifiable->set(INPUTS_MODIFIABLE);
+    psbt2.m_tx_modifiable->set(OUTPUTS_MODIFIABLE);
+    BOOST_CHECK(psbt1.Merge(psbt2));
+    BOOST_REQUIRE(psbt1.m_tx_modifiable.has_value());
+    BOOST_CHECK(psbt1.m_tx_modifiable->test(INPUTS_MODIFIABLE) && psbt1.m_tx_modifiable->test(OUTPUTS_MODIFIABLE));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

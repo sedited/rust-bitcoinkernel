@@ -6,7 +6,9 @@
 
 from decimal import Decimal
 import re
+import socket
 import subprocess
+import threading
 
 from test_framework.blocktools import COINBASE_MATURITY
 from test_framework.netutil import test_ipv6_local
@@ -19,6 +21,8 @@ from test_framework.util import (
     get_auth_cookie,
     rpc_port,
 )
+from test_framework.wallet_util import WalletUnlock
+
 import time
 
 # The block reward of coinbaseoutput.nValue (50) BTC/block matures after
@@ -115,6 +119,28 @@ class TestBitcoinCli(BitcoinTestFramework):
         expected = [["data=test"], 42]
         assert_equal(result, expected)
 
+    def test_empty_response_body(self):
+        self.log.info("Test that a response with Content-Length: 0 does not wait for the peer to close")
+
+        # A real node closes the connection, so only a raw socket can keep it open
+        listener = socket.socket()
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(1)
+
+        def serve():
+            conn, _ = listener.accept()
+            with conn:
+                conn.sendall(b'HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n')
+                # Keep the connection open so the client cannot rely on EOF
+                while conn.recv(4096):
+                    pass
+
+        threading.Thread(target=serve, daemon=True).start()
+        with listener:
+            assert_raises_process_error(
+                1, 'Authorization failed',
+                self.nodes[0].cli(f'-rpcport={listener.getsockname()[1]}', '-rpcclienttimeout=10').echo)
+
     def run_test(self):
         """Main test logic"""
         self.test_echojson_positional_equals()
@@ -145,8 +171,13 @@ class TestBitcoinCli(BitcoinTestFramework):
         assert_equal(['foo', 'bar'], self.nodes[0].cli(f'-rpcuser={user}', '-stdin', '-stdinrpcpass', input=f'{password}\nfoo\nbar').echo())
         assert_raises_process_error(1, 'Incorrect rpcuser or rpcpassword were specified', self.nodes[0].cli(f'-rpcuser={user}', '-stdin', '-stdinrpcpass', input='foo').echo)
 
+        self.log.info("Test -rpcclienttimeout=0 (no timeout)")
+        assert_equal(BLOCKS, self.nodes[0].cli('-rpcclienttimeout=0').getblockcount())
+
         self.log.info("Test connecting to a non-existing server")
         assert_raises_process_error(1, "Could not connect to the server", self.nodes[0].cli('-rpcport=1').echo)
+
+        self.test_empty_response_body()
 
         self.log.info("Test handling of invalid ports in rpcconnect")
         assert_raises_process_error(1, "Invalid port provided in -rpcconnect: 127.0.0.1:notaport", self.nodes[0].cli("-rpcconnect=127.0.0.1:notaport").echo)
@@ -222,8 +253,7 @@ class TestBitcoinCli(BitcoinTestFramework):
 
         self.log.info("Test -getinfo returns expected network and blockchain info")
         if self.is_wallet_compiled():
-            self.import_deterministic_coinbase_privkeys()
-            self.nodes[0].encryptwallet(password)
+            self.import_deterministic_coinbase_privkeys(encrypted=True)
         cli_get_info_string = self.nodes[0].cli('-getinfo').send_cli()
         cli_get_info = cli_get_info_string_to_dict(cli_get_info_string)
 
@@ -263,17 +293,16 @@ class TestBitcoinCli(BitcoinTestFramework):
             # Setup to test -getinfo, -generate, and -rpcwallet= with multiple wallets.
             wallets = [self.default_wallet_name, 'Encrypted', 'secret']
             amounts = [BALANCE + Decimal('9.999928'), Decimal(9), Decimal(31)]
-            self.nodes[0].createwallet(wallet_name=wallets[1])
+            self.nodes[0].createwallet(wallet_name=wallets[1], passphrase=self.default_wallet_pass)
             self.nodes[0].createwallet(wallet_name=wallets[2])
             w1 = self.nodes[0].get_wallet_rpc(wallets[0])
             w2 = self.nodes[0].get_wallet_rpc(wallets[1])
             w3 = self.nodes[0].get_wallet_rpc(wallets[2])
             rpcwallet2 = f'-rpcwallet={wallets[1]}'
             rpcwallet3 = f'-rpcwallet={wallets[2]}'
-            w1.walletpassphrase(password, self.rpc_timeout)
-            w2.encryptwallet(password)
-            w1.sendtoaddress(w2.getnewaddress(), amounts[1])
-            w1.sendtoaddress(w3.getnewaddress(), amounts[2])
+            with WalletUnlock(w1, self.default_wallet_pass):
+                w1.sendtoaddress(w2.getnewaddress(), amounts[1])
+                w1.sendtoaddress(w3.getnewaddress(), amounts[2])
 
             # Mine a block to confirm; adds a block reward (50 BTC) to the default wallet.
             self.generate(self.nodes[0], 1)
@@ -339,7 +368,6 @@ class TestBitcoinCli(BitcoinTestFramework):
             # Test bitcoin-cli -generate.
             n1 = 3
             n2 = 4
-            w2.walletpassphrase(password, self.rpc_timeout)
             blocks = self.nodes[0].getblockcount()
 
             self.log.info('Test -generate with no args')
@@ -445,11 +473,11 @@ class TestBitcoinCli(BitcoinTestFramework):
         self.nodes[0].wait_for_rpc_connection()
         assert_equal(blocks, BLOCKS + 25)
 
-        self.log.info("Test -rpcwait option waits at most -rpcwaittimeout seconds for startup")
+        self.log.info("Test -rpcwait option waits at least -rpcwaittimeout seconds for startup")
         self.stop_node(0)  # stop the node so we time out
-        start_time = time.time()
-        assert_raises_process_error(1, "Could not connect to the server", self.nodes[0].cli('-rpcwait', '-rpcwaittimeout=5').echo)
-        assert_greater_than_or_equal(time.time(), start_time + 5)
+        start_time = time.monotonic()  # match bitcoin-cli steady_clock so the floor measures real wait
+        assert_raises_process_error(1, "Could not connect to the server", self.nodes[0].cli('-rpcwait', '-rpcwaittimeout=1').echo)
+        assert_greater_than_or_equal(time.monotonic() - start_time, 1)
 
         self.log.info("Test that only one of -addrinfo, -generate, -getinfo, -netinfo may be specified at a time")
         assert_raises_process_error(1, "Only one of -getinfo, -netinfo may be specified", self.nodes[0].cli('-getinfo', '-netinfo').send_cli)

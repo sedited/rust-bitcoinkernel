@@ -162,6 +162,8 @@ bool Sock::Wait(std::chrono::milliseconds timeout, Event requested, Event* occur
 
 bool Sock::WaitMany(std::chrono::milliseconds timeout, EventsPerSock& events_per_sock) const
 {
+    timeout = std::min<std::chrono::milliseconds>(timeout, MAX_WAIT_TIMEOUT);
+
 #ifdef USE_POLL
     std::vector<pollfd> pfds;
     for (const auto& [sock, events] : events_per_sock) {
@@ -214,12 +216,14 @@ bool Sock::WaitMany(std::chrono::milliseconds timeout, EventsPerSock& events_per
         const auto& s = sock->m_socket;
         if (events.requested & RecvEvent) {
             FD_SET(s, &recv);
+            FD_SET(s, &err);
         }
         if (events.requested & SendEvent) {
             FD_SET(s, &send);
         }
-        FD_SET(s, &err);
-        socket_max = std::max(socket_max, s);
+        if (events.requested & (RecvEvent | SendEvent)) {
+            socket_max = std::max(socket_max, s);
+        }
     }
 
     timeval tv = MillisToTimeval(timeout);

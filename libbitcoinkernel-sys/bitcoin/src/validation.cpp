@@ -3,7 +3,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
 
 #include <validation.h>
 
@@ -146,13 +146,6 @@ const CBlockIndex* Chainstate::FindForkInGlobalIndex(const CBlockLocator& locato
     return m_chain.Genesis();
 }
 
-bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
-                       const CCoinsViewCache& inputs, script_verify_flags flags, bool cacheSigStore,
-                       bool cacheFullScriptStore, PrecomputedTransactionData& txdata,
-                       ValidationCache& validation_cache,
-                       std::vector<CScriptCheck>* pvChecks = nullptr)
-                       EXCLUSIVE_LOCKS_REQUIRED(cs_main);
-
 bool CheckFinalTxAtTip(const CBlockIndex& active_chain_tip, const CTransaction& tx)
 {
     AssertLockHeld(cs_main);
@@ -199,7 +192,7 @@ std::optional<std::vector<int>> CalculatePrevHeights(
                               ? tip.nHeight + 1 // Assume all mempool transaction confirm in the next block.
                               : coin->nHeight;
         } else {
-            LogInfo("ERROR: %s: Missing input %d in transaction \'%s\'\n", __func__, i, tx.GetHash().GetHex());
+            LogWarning("%s: Missing input %d in transaction \'%s\'", __func__, i, tx.GetHash().GetHex());
             return std::nullopt;
         }
     }
@@ -436,7 +429,7 @@ static bool CheckInputsFromMempoolAndCache(const CTransaction& tx, TxValidationS
     }
 
     // Call CheckInputScripts() to cache signature and script validity against current tip consensus rules.
-    return CheckInputScripts(tx, state, view, flags, /* cacheSigStore= */ true, /* cacheFullScriptStore= */ true, txdata, validation_cache);
+    return CheckInputScripts(tx, state, view, flags, CheckInputScriptsFor::Mempool, /* cacheSigStore= */ true, /* cacheFullScriptStore= */ true, txdata, validation_cache);
 }
 
 namespace {
@@ -455,7 +448,6 @@ public:
     // We put the arguments we're handed into a struct, so we can pass them
     // around easier.
     struct ATMPArgs {
-        const CChainParams& m_chainparams;
         const int64_t m_accept_time;
         const bool m_bypass_limits;
         /*
@@ -488,11 +480,10 @@ public:
         const std::optional<CFeeRate> m_client_maxfeerate;
 
         /** Parameters for single transaction mempool validation. */
-        static ATMPArgs SingleAccept(const CChainParams& chainparams, int64_t accept_time,
+        static ATMPArgs SingleAccept(int64_t accept_time,
                                      bool bypass_limits, std::vector<COutPoint>& coins_to_uncache,
                                      bool test_accept) {
-            return ATMPArgs{/*chainparams=*/ chainparams,
-                            /*accept_time=*/ accept_time,
+            return ATMPArgs{/*accept_time=*/ accept_time,
                             /*bypass_limits=*/ bypass_limits,
                             /*coins_to_uncache=*/ coins_to_uncache,
                             /*test_accept=*/ test_accept,
@@ -505,10 +496,9 @@ public:
         }
 
         /** Parameters for test package mempool validation through testmempoolaccept. */
-        static ATMPArgs PackageTestAccept(const CChainParams& chainparams, int64_t accept_time,
+        static ATMPArgs PackageTestAccept(int64_t accept_time,
                                           std::vector<COutPoint>& coins_to_uncache) {
-            return ATMPArgs{/*chainparams=*/ chainparams,
-                            /*accept_time=*/ accept_time,
+            return ATMPArgs{/*accept_time=*/ accept_time,
                             /*bypass_limits=*/ false,
                             /*coins_to_uncache=*/ coins_to_uncache,
                             /*test_accept=*/ true,
@@ -521,10 +511,9 @@ public:
         }
 
         /** Parameters for child-with-parents package validation. */
-        static ATMPArgs PackageChildWithParents(const CChainParams& chainparams, int64_t accept_time,
+        static ATMPArgs PackageChildWithParents(int64_t accept_time,
                                                 std::vector<COutPoint>& coins_to_uncache, const std::optional<CFeeRate>& client_maxfeerate) {
-            return ATMPArgs{/*chainparams=*/ chainparams,
-                            /*accept_time=*/ accept_time,
+            return ATMPArgs{/*accept_time=*/ accept_time,
                             /*bypass_limits=*/ false,
                             /*coins_to_uncache=*/ coins_to_uncache,
                             /*test_accept=*/ false,
@@ -538,8 +527,7 @@ public:
 
         /** Parameters for a single transaction within a package. */
         static ATMPArgs SingleInPackageAccept(const ATMPArgs& package_args) {
-            return ATMPArgs{/*chainparams=*/ package_args.m_chainparams,
-                            /*accept_time=*/ package_args.m_accept_time,
+            return ATMPArgs{/*accept_time=*/ package_args.m_accept_time,
                             /*bypass_limits=*/ false,
                             /*coins_to_uncache=*/ package_args.m_coins_to_uncache,
                             /*test_accept=*/ package_args.m_test_accept,
@@ -554,8 +542,7 @@ public:
     private:
         // Private ctor to avoid exposing details to clients and allowing the possibility of
         // mixing up the order of the arguments. Use static functions above instead.
-        ATMPArgs(const CChainParams& chainparams,
-                 int64_t accept_time,
+        ATMPArgs(int64_t accept_time,
                  bool bypass_limits,
                  std::vector<COutPoint>& coins_to_uncache,
                  bool test_accept,
@@ -564,8 +551,7 @@ public:
                  bool package_submission,
                  bool package_feerates,
                  std::optional<CFeeRate> client_maxfeerate)
-            : m_chainparams{chainparams},
-              m_accept_time{accept_time},
+            : m_accept_time{accept_time},
               m_bypass_limits{bypass_limits},
               m_coins_to_uncache{coins_to_uncache},
               m_test_accept{test_accept},
@@ -681,18 +667,17 @@ private:
 
     bool PackageRBFChecks(const std::vector<CTransactionRef>& txns,
                           std::vector<Workspace>& workspaces,
-                          int64_t total_vsize,
                           PackageValidationState& package_state) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Run the script checks using our policy flags. As this can be slow, we should
     // only invoke this on transactions that have otherwise passed policy checks.
-    bool PolicyScriptChecks(const ATMPArgs& args, Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
+    bool PolicyScriptChecks(Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Re-run the script checks, using consensus flags, and try to cache the
     // result in the scriptcache. This should be done after
     // PolicyScriptChecks(). This requires that all inputs either be in our
     // utxo set or in the mempool.
-    bool ConsensusScriptChecks(const ATMPArgs& args, Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
+    bool ConsensusScriptChecks(Workspace& ws) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
 
     // Try to add the transaction to the mempool, removing any conflicts first.
     void FinalizeSubpackage(const ATMPArgs& args) EXCLUSIVE_LOCKS_REQUIRED(cs_main, m_pool.cs);
@@ -995,8 +980,6 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
     const Txid& hash = ws.m_hash;
     TxValidationState& state = ws.m_state;
 
-    CFeeRate newFeeRate(ws.m_modified_fees, ws.m_vsize);
-
     CTxMemPool::setEntries all_conflicts;
 
     // Calculate all conflicting entries and enforce Rule #5.
@@ -1041,7 +1024,6 @@ bool MemPoolAccept::ReplacementChecks(Workspace& ws)
 
 bool MemPoolAccept::PackageRBFChecks(const std::vector<CTransactionRef>& txns,
                                      std::vector<Workspace>& workspaces,
-                                     const int64_t total_vsize,
                                      PackageValidationState& package_state)
 {
     AssertLockHeld(cs_main);
@@ -1137,18 +1119,18 @@ bool MemPoolAccept::PackageRBFChecks(const std::vector<CTransactionRef>& txns,
     return true;
 }
 
-bool MemPoolAccept::PolicyScriptChecks(const ATMPArgs& args, Workspace& ws)
+bool MemPoolAccept::PolicyScriptChecks(Workspace& ws)
 {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
     const CTransaction& tx = *ws.m_ptx;
     TxValidationState& state = ws.m_state;
 
-    constexpr script_verify_flags scriptVerifyFlags = STANDARD_SCRIPT_VERIFY_FLAGS;
+    const script_verify_flags scriptVerifyFlags = (m_pool.m_opts.require_standard ? STANDARD_SCRIPT_VERIFY_FLAGS : m_active_chainstate.m_chainman.m_all_consensus_script_flags);
 
     // Check input scripts and signatures.
     // This is done last to help prevent CPU exhaustion denial-of-service attacks.
-    if (!CheckInputScripts(tx, state, m_view, scriptVerifyFlags, true, false, ws.m_precomputed_txdata, GetValidationCache())) {
+    if (!CheckInputScripts(tx, state, m_view, scriptVerifyFlags, CheckInputScriptsFor::Mempool, true, false, ws.m_precomputed_txdata, GetValidationCache())) {
         // Detect a failure due to a missing witness so that p2p code can handle rejection caching appropriately.
         if (!tx.HasWitness() && SpendsNonAnchorWitnessProg(tx, m_view)) {
             state.Invalid(TxValidationResult::TX_WITNESS_STRIPPED,
@@ -1160,7 +1142,7 @@ bool MemPoolAccept::PolicyScriptChecks(const ATMPArgs& args, Workspace& ws)
     return true;
 }
 
-bool MemPoolAccept::ConsensusScriptChecks(const ATMPArgs& args, Workspace& ws)
+bool MemPoolAccept::ConsensusScriptChecks(Workspace& ws)
 {
     AssertLockHeld(cs_main);
     AssertLockHeld(m_pool.cs);
@@ -1184,9 +1166,10 @@ bool MemPoolAccept::ConsensusScriptChecks(const ATMPArgs& args, Workspace& ws)
     // invalid blocks (using TestBlockValidity), however allowing such
     // transactions into the mempool can be exploited as a DoS attack.
     script_verify_flags currentBlockScriptVerifyFlags{GetBlockScriptFlags(*m_active_chainstate.m_chain.Tip(), m_active_chainstate.m_chainman)};
+
     if (!CheckInputsFromMempoolAndCache(tx, state, m_view, m_pool, currentBlockScriptVerifyFlags,
                                         ws.m_precomputed_txdata, m_active_chainstate.CoinsTip(), GetValidationCache())) {
-        LogError("BUG! PLEASE REPORT THIS! CheckInputScripts failed against latest-block but not STANDARD flags %s, %s", hash.ToString(), state.ToString());
+        LogError("BUG! PLEASE REPORT THIS! CheckInputScripts failed against latest-block but not mempool flags %s, %s", hash.ToString(), state.ToString());
         return Assume(false);
     }
 
@@ -1261,7 +1244,7 @@ bool MemPoolAccept::SubmitPackage(const ATMPArgs& args, std::vector<Workspace>& 
     // mempool or UTXO set. Submit each transaction to the mempool immediately after calling
     // ConsensusScriptChecks to make the outputs available for subsequent transactions.
     for (Workspace& ws : workspaces) {
-        if (!ConsensusScriptChecks(args, ws)) {
+        if (!ConsensusScriptChecks(ws)) {
             results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
             // Since PolicyScriptChecks() passed, this should never fail.
             Assume(false);
@@ -1386,9 +1369,9 @@ MempoolAcceptResult MemPoolAccept::AcceptSingleTransactionInternal(const CTransa
 
     // Perform the inexpensive checks first and avoid hashing and signature verification unless
     // those checks pass, to mitigate CPU exhaustion denial-of-service attacks.
-    if (!PolicyScriptChecks(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
+    if (!PolicyScriptChecks(ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
-    if (!ConsensusScriptChecks(args, ws)) return MempoolAcceptResult::Failure(ws.m_state);
+    if (!ConsensusScriptChecks(ws)) return MempoolAcceptResult::Failure(ws.m_state);
 
     const CFeeRate effective_feerate{ws.m_modified_fees, static_cast<int32_t>(ws.m_vsize)};
     // Tx was accepted, but not added
@@ -1519,7 +1502,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactionsInternal(con
     }
 
     // Apply package mempool RBF checks.
-    if (m_subpackage.m_rbf && !PackageRBFChecks(txns, workspaces, m_subpackage.m_total_vsize, package_state)) {
+    if (m_subpackage.m_rbf && !PackageRBFChecks(txns, workspaces, package_state)) {
         return PackageMempoolAcceptResult(package_state, std::move(results));
     }
 
@@ -1542,7 +1525,7 @@ PackageMempoolAcceptResult MemPoolAccept::AcceptMultipleTransactionsInternal(con
 
     for (Workspace& ws : workspaces) {
         ws.m_package_feerate = package_feerate;
-        if (!PolicyScriptChecks(args, ws)) {
+        if (!PolicyScriptChecks(ws)) {
             // Exit early to avoid doing pointless work. Update the failed tx result; the rest are unfinished.
             package_state.Invalid(PackageValidationResult::PCKG_TX, "transaction failed");
             results.emplace(ws.m_ptx->GetWitnessHash(), MempoolAcceptResult::Failure(ws.m_state));
@@ -1783,13 +1766,12 @@ MempoolAcceptResult AcceptToMemoryPool(Chainstate& active_chainstate, const CTra
                                        int64_t accept_time, bool bypass_limits, bool test_accept)
 {
     AssertLockHeld(::cs_main);
-    const CChainParams& chainparams{active_chainstate.m_chainman.GetParams()};
     assert(active_chainstate.GetMempool() != nullptr);
     CTxMemPool& pool{*active_chainstate.GetMempool()};
 
     std::vector<COutPoint> coins_to_uncache;
 
-    auto args = MemPoolAccept::ATMPArgs::SingleAccept(chainparams, accept_time, bypass_limits, coins_to_uncache, test_accept);
+    auto args = MemPoolAccept::ATMPArgs::SingleAccept(accept_time, bypass_limits, coins_to_uncache, test_accept);
     MempoolAcceptResult result = MemPoolAccept(pool, active_chainstate).AcceptSingleTransactionAndCleanup(tx, args);
 
     if (result.m_result_type != MempoolAcceptResult::ResultType::VALID) {
@@ -1819,14 +1801,13 @@ PackageMempoolAcceptResult ProcessNewPackage(Chainstate& active_chainstate, CTxM
     assert(std::all_of(package.cbegin(), package.cend(), [](const auto& tx){return tx != nullptr;}));
 
     std::vector<COutPoint> coins_to_uncache;
-    const CChainParams& chainparams = active_chainstate.m_chainman.GetParams();
     auto result = [&]() EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
         AssertLockHeld(cs_main);
         if (test_accept) {
-            auto args = MemPoolAccept::ATMPArgs::PackageTestAccept(chainparams, GetTime(), coins_to_uncache);
+            auto args = MemPoolAccept::ATMPArgs::PackageTestAccept(GetTime(), coins_to_uncache);
             return MemPoolAccept(pool, active_chainstate).AcceptMultipleTransactionsAndCleanup(package, args);
         } else {
-            auto args = MemPoolAccept::ATMPArgs::PackageChildWithParents(chainparams, GetTime(), coins_to_uncache, client_maxfeerate);
+            auto args = MemPoolAccept::ATMPArgs::PackageChildWithParents(GetTime(), coins_to_uncache, client_maxfeerate);
             return MemPoolAccept(pool, active_chainstate).AcceptPackage(package, args);
         }
     }();
@@ -1864,7 +1845,7 @@ void CoinsViews::InitCache(int32_t prevoutfetch_threads)
 {
     AssertLockHeld(::cs_main);
     m_cacheview = std::make_unique<CCoinsViewCache>(&m_catcherview);
-    auto thread_pool{std::make_shared<ThreadPool>("prevout")};
+    auto thread_pool{util::MakeNotNullShared<ThreadPool>("prevout")};
     if (prevoutfetch_threads > 0) {
         thread_pool->Start(prevoutfetch_threads);
         LogInfo("Block input prevout fetching uses %d additional threads", prevoutfetch_threads);
@@ -2064,14 +2045,10 @@ ValidationCache::ValidationCache(const size_t script_execution_cache_bytes, cons
  * Setting cacheSigStore/cacheFullScriptStore to false will remove elements from the corresponding cache
  * which are matched. This is useful for checking blocks where we will likely never need the cache
  * entry again.
- *
- * Note that we may set state.reason to NOT_STANDARD for extra soft-fork flags in flags, block-checking
- * callers should probably reset it to CONSENSUS in such cases.
- *
- * Non-static (and redeclared) in src/test/txvalidationcache_tests.cpp
  */
 bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
-                       const CCoinsViewCache& inputs, script_verify_flags flags, bool cacheSigStore,
+                       const CCoinsViewCache& inputs, script_verify_flags flags, CheckInputScriptsFor check_for,
+                       bool cacheSigStore,
                        bool cacheFullScriptStore, PrecomputedTransactionData& txdata,
                        ValidationCache& validation_cache,
                        std::vector<CScriptCheck>* pvChecks)
@@ -2128,11 +2105,13 @@ bool CheckInputScripts(const CTransaction& tx, TxValidationState& state,
             // non-standard DER encodings or non-null dummy
             // arguments) or due to new consensus rules introduced in
             // soft forks.
-            if (flags & STANDARD_NOT_MANDATORY_VERIFY_FLAGS) {
+            switch (check_for) {
+            case CheckInputScriptsFor::Mempool:
                 return state.Invalid(TxValidationResult::TX_NOT_STANDARD, strprintf("mempool-script-verify-flag-failed (%s)", ScriptErrorString(result->first)), result->second);
-            } else {
+            case CheckInputScriptsFor::Block:
                 return state.Invalid(TxValidationResult::TX_CONSENSUS, strprintf("block-script-verify-flag-failed (%s)", ScriptErrorString(result->first)), result->second);
             }
+            AssertUnreachable();
         }
     }
 
@@ -2259,6 +2238,82 @@ DisconnectResult Chainstate::DisconnectBlock(const CBlock& block, const CBlockIn
     return fClean ? DISCONNECT_OK : DISCONNECT_UNCLEAN;
 }
 
+namespace {
+/* If STANDARD_SCRIPT_VERIFY_FLAGS doesn't cover a consensus flag,
+ * MemPoolAccept::PolicyScriptChecks may accept txs that violate the
+ * corresponding consensus rule, which would cause us to create invalid
+ * block templates.
+ */
+static_assert((CONSENSUS_SCRIPT_VERIFY_FLAGS & STANDARD_SCRIPT_VERIFY_FLAGS) == CONSENSUS_SCRIPT_VERIFY_FLAGS, "standard flags must be a superset of consensus flags");
+
+/* Check that there's no inconsistency with the policy/policy.h value */
+static_assert(CONSENSUS_SCRIPT_VERIFY_FLAGS == MANDATORY_SCRIPT_VERIFY_FLAGS);
+
+/** Helper class for building up script_verify_flags values for consensus
+ *  checks (particularly GetBlockScriptFlags() and
+ *  GetAllConsensusScriptFlags()). Designed so that flags can
+ *  only be added with constant expressions, and will trigger a
+ *  compile-time error on any attempt to include flags other than
+ *  CONSENSUS_SCRIPT_VERIFY_FLAGS. This approach avoids enforcing any
+ *  particular structure on the consensus logic that enables flags,
+ *  keeping flexibility for future soft forks.
+ */
+class ConsensusScriptVerifyFlags
+{
+public:
+    using value_type = script_verify_flags::value_type;
+
+    consteval ConsensusScriptVerifyFlags(script_verify_flags flags)
+    {
+        if ((flags & CONSENSUS_SCRIPT_VERIFY_FLAGS) != flags) throw;
+        m_value = flags.as_int();
+    }
+
+    consteval ConsensusScriptVerifyFlags(script_verify_flag_name flag) : ConsensusScriptVerifyFlags{script_verify_flags{flag}} { }
+
+    /* Merging two sets of consensus script verify flags is fine */
+    ConsensusScriptVerifyFlags& operator|=(const ConsensusScriptVerifyFlags& flags)
+    {
+        m_value |= flags.m_value;
+        return *this;
+    }
+
+    /* Allow masking with generic script_verify_flags, since that
+     * cannot add non-consensus flags */
+    ConsensusScriptVerifyFlags& operator&=(const script_verify_flags& flags)
+    {
+        m_value &= flags.as_int();
+        return *this;
+    }
+
+    operator script_verify_flags() const
+    {
+        return script_verify_flags::from_int(m_value);
+    }
+
+private:
+    value_type m_value{0};
+};
+
+template<script_verify_flag_name VFN>
+ConsensusScriptVerifyFlags add_pending_flag(const Consensus::Params& params, auto dep)
+{
+    if (DeploymentEnabled(params, dep)) return VFN;
+    return SCRIPT_VERIFY_NONE;
+}
+} // namespace
+
+script_verify_flags ChainstateManager::GetAllConsensusScriptFlags(const Consensus::Params& params)
+{
+    ConsensusScriptVerifyFlags flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT};
+    flags |= add_pending_flag<SCRIPT_VERIFY_DERSIG>(params, Consensus::DEPLOYMENT_DERSIG);
+    flags |= add_pending_flag<SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY>(params, Consensus::DEPLOYMENT_CLTV);
+    flags |= add_pending_flag<SCRIPT_VERIFY_CHECKSEQUENCEVERIFY>(params, Consensus::DEPLOYMENT_CSV);
+    flags |= add_pending_flag<SCRIPT_VERIFY_NULLDUMMY>(params, Consensus::DEPLOYMENT_SEGWIT);
+
+    return flags;
+}
+
 script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const ChainstateManager& chainman)
 {
     const Consensus::Params& consensusparams = chainman.GetConsensus();
@@ -2271,10 +2326,12 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
     // mainnet.
     // For simplicity, always leave P2SH+WITNESS+TAPROOT on except for the two
     // violating blocks.
-    script_verify_flags flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT};
+    ConsensusScriptVerifyFlags flags{SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS | SCRIPT_VERIFY_TAPROOT};
     const auto it{consensusparams.script_flag_exceptions.find(*Assert(block_index.phashBlock))};
     if (it != consensusparams.script_flag_exceptions.end()) {
-        flags = it->second;
+        // only trimming flags, not trying to enable new ones
+        flags &= it->second;
+        Assume(flags == it->second);
     }
 
     // Enforce the DERSIG (BIP66) rule
@@ -2296,6 +2353,10 @@ script_verify_flags GetBlockScriptFlags(const CBlockIndex& block_index, const Ch
     if (DeploymentActiveAt(block_index, chainman, Consensus::DEPLOYMENT_SEGWIT)) {
         flags |= SCRIPT_VERIFY_NULLDUMMY;
     }
+
+    // Note: flags returned from this function must also be included in
+    // GetAllConsensusScriptFlags() above.
+    Assume((chainman.m_all_consensus_script_flags & flags) == flags);
 
     return flags;
 }
@@ -2591,10 +2652,10 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
             // they need to be added to control which runs them asynchronously. Otherwise, CheckInputScripts runs the checks before returning.
             if (control) {
                 std::vector<CScriptCheck> vChecks;
-                tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache, &vChecks);
+                tx_ok = CheckInputScripts(tx, tx_state, view, flags, CheckInputScriptsFor::Block, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache, &vChecks);
                 if (tx_ok) control->Add(std::move(vChecks));
             } else {
-                tx_ok = CheckInputScripts(tx, tx_state, view, flags, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache);
+                tx_ok = CheckInputScripts(tx, tx_state, view, flags, CheckInputScriptsFor::Block, fCacheResults, fCacheResults, txsdata[i], m_chainman.m_validation_cache);
             }
             if (!tx_ok) {
                 // Any transaction validation failure in ConnectBlock is a block consensus failure
@@ -2630,7 +2691,7 @@ bool Chainstate::ConnectBlock(const CBlock& block, BlockValidationState& state, 
         }
     }
     if (!state.IsValid()) {
-        LogInfo("Block validation error: %s", state.ToString());
+        LogWarning("Block validation error: %s", state.ToString());
         return false;
     }
     const auto time_4{SteadyClock::now()};
@@ -2792,10 +2853,9 @@ bool Chainstate::FlushStateToDisk(
                 LOG_TIME_MILLIS_WITH_CATEGORY("write block and undo data to disk", BCLog::BENCH);
 
                 // First make sure all block and undo data is flushed to disk.
-                // TODO: Handle return error, or add detailed comment why it is
-                // safe to not return an error upon failure.
                 if (!m_blockman.FlushChainstateBlockFile(m_chain.Height())) {
-                    LogWarning("%s: Failed to flush block file.\n", __func__);
+                    // FlushChainstateBlockFile() already reported the specific error through flushError()
+                    return state.Error("Failed to flush block or undo file");
                 }
             }
 
@@ -2844,9 +2904,16 @@ bool Chainstate::FlushStateToDisk(
             m_chainman.m_options.signals->ChainStateFlushed(this->GetRole(), GetLocator(m_last_flushed_block));
         }
 
-        if (!m_chainman.m_interrupt && ShouldCompactChainstate(m_chainman.IsInitialBlockDownload())) {
+        if (!m_chainman.m_interrupt && !CoinsDB().IsMemoryOnly() && ShouldCompactChainstate(m_chainman.IsInitialBlockDownload())) {
             try {
-                CoinsDB().CompactFullAsync();
+                const fs::path path{StoragePath()};
+                const uint64_t min_free_space{m_chainman.GetParams().AssumedChainStateSize() * 1_GiB};
+                if (CheckDiskSpace(path, min_free_space)) {
+                    CoinsDB().CompactFullAsync();
+                } else {
+                    LogWarning("Deferring chainstate compaction of %s: %.2f GiB free, %u GiB needed. Free up some space so compaction can run.",
+                               fs::PathToString(path), fs::space(path).available / double{1_GiB}, CeilDiv(min_free_space, 1_GiB));
+                }
             } catch (const std::exception& e) {
                 LogWarning("Failed to start chainstate compaction (%s)", e.what());
             }
@@ -3089,14 +3156,19 @@ bool Chainstate::ConnectTip(
              Ticks<MillisecondsDouble>(time_5 - time_4),
              Ticks<SecondsDouble>(m_chainman.time_chainstate),
              Ticks<MillisecondsDouble>(m_chainman.time_chainstate) / m_chainman.num_blocks_total);
-    // Remove conflicting transactions from the mempool.;
+    // Remove conflicting transactions from the mempool.
+    std::vector<RemovedMempoolTransactionInfo> txs_removed_for_block;
     if (m_mempool) {
-        m_mempool->removeForBlock(block_to_connect->vtx, pindexNew->nHeight);
+        txs_removed_for_block = m_mempool->removeForBlock(block_to_connect->vtx);
         disconnectpool.removeForBlock(block_to_connect->vtx);
     }
     // Update m_chain & related variables.
     m_chain.SetTip(*pindexNew);
     m_chainman.UpdateIBDStatus();
+    // Not fired while IBD is active. removeForBlock() above still runs.
+    if (m_mempool && m_chainman.m_options.signals && !m_chainman.IsInitialBlockDownload()) {
+        m_chainman.m_options.signals->MempoolTransactionsRemovedForBlock(block_to_connect, std::move(txs_removed_for_block), pindexNew->nHeight);
+    }
     UpdateTip(pindexNew);
 
     const auto time_6{SteadyClock::now()};
@@ -5847,7 +5919,7 @@ util::Result<void> ChainstateManager::PopulateAndValidateSnapshot(
                     return util::Error{Untranslated(strprintf("Bad snapshot data after deserializing %d coins - bad tx out value",
                               coins_count - coins_left))};
                 }
-                coins_cache.EmplaceCoinInternalDANGER(std::move(outpoint), std::move(coin));
+                coins_cache.EmplaceCoinInternalDANGER(outpoint, std::move(coin));
 
                 --coins_left;
                 ++coins_processed;
@@ -6001,8 +6073,8 @@ SnapshotCompletionResult ChainstateManager::MaybeValidateSnapshot(Chainstate& va
             validated_cs.m_assumeutxo != Assumeutxo::VALIDATED ||
             !validated_cs.m_chain.Tip() ||
             // Or the validated chainstate is not targeting the snapshot block...
-            !validated_cs.m_target_blockhash ||
-            *validated_cs.m_target_blockhash != *unvalidated_cs.m_from_snapshot_blockhash ||
+            !validated_cs.TargetBlockHash() ||
+            *validated_cs.TargetBlockHash() != *unvalidated_cs.m_from_snapshot_blockhash ||
             // Or the validated chainstate has not reached the snapshot block yet...
             !validated_cs.ReachedTarget()) {
        // Then the snapshot cannot be validated and there is nothing to do.
@@ -6163,6 +6235,7 @@ ChainstateManager::ChainstateManager(const util::SignalInterrupt& interrupt, Opt
       m_interrupt{interrupt},
       m_options{Flatten(std::move(options))},
       m_blockman{interrupt, std::move(blockman_options)},
+      m_all_consensus_script_flags{GetAllConsensusScriptFlags(m_options.chainparams.GetConsensus())},
       m_validation_cache{m_options.script_execution_cache_bytes, m_options.signature_cache_bytes}
 {
 }
@@ -6198,8 +6271,8 @@ Chainstate& ChainstateManager::AddChainstate(std::unique_ptr<Chainstate> chainst
     Chainstate& prev_chainstate{CurrentChainstate()};
     assert(prev_chainstate.m_assumeutxo == Assumeutxo::VALIDATED);
     // Set target block for historical chainstate to snapshot block.
-    assert(!prev_chainstate.m_target_blockhash);
-    prev_chainstate.m_target_blockhash = chainstate->m_from_snapshot_blockhash;
+    assert(!prev_chainstate.TargetBlockHash());
+    prev_chainstate.SetTargetBlockHash(*Assert(chainstate->m_from_snapshot_blockhash));
     m_chainstates.push_back(std::move(chainstate));
     Chainstate& curr_chainstate{CurrentChainstate()};
     assert(&curr_chainstate == m_chainstates.back().get());
@@ -6268,7 +6341,7 @@ bool ChainstateManager::DeleteChainstate(Chainstate& chainstate)
     }
     std::unique_ptr<Chainstate> prev_chainstate{Assert(RemoveChainstate(chainstate))};
     Chainstate& curr_chainstate{CurrentChainstate()};
-    assert(prev_chainstate->m_mempool->size() == 0);
+    assert(!prev_chainstate->m_mempool || prev_chainstate->m_mempool->size() == 0);
     assert(!curr_chainstate.m_mempool);
     std::swap(curr_chainstate.m_mempool, prev_chainstate->m_mempool);
     return true;

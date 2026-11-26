@@ -2,20 +2,26 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <private_broadcast.h>
+
 #include <consensus/tx_check.h>
 #include <consensus/validation.h>
 #include <net.h>
 #include <primitives/transaction.h>
-#include <private_broadcast.h>
 #include <test/fuzz/FuzzedDataProvider.h>
 #include <test/fuzz/fuzz.h>
 #include <test/fuzz/util.h>
 #include <test/fuzz/util/net.h>
 #include <test/util/setup_common.h>
 #include <test/util/time.h>
+#include <util/check.h>
 #include <util/overflow.h>
 #include <util/time.h>
 
+#include <algorithm>
+#include <optional>
+#include <ranges>
+#include <unordered_map>
 #include <unordered_set>
 
 struct CTransactionRefHash {
@@ -34,24 +40,34 @@ struct CTransactionRefComp {
 
 FUZZ_TARGET(private_broadcast)
 {
-    SeedRandomStateForTest(SeedRand::ZEROS);
     FuzzedDataProvider fdp(buffer.data(), buffer.size());
     FakeNodeClock clock_ctx{ConsumeTime(fdp)};
 
     const size_t cap{fdp.ConsumeIntegralInRange<size_t>(1, 12)};
-    PrivateBroadcast pb{cap};
+    const size_t max_send_attempts{fdp.ConsumeIntegralInRange<size_t>(1, 12)};
+    PrivateBroadcast pb{cap, max_send_attempts};
 
-    // Random transaction that the test generated and passed to Add(). Trimmed when Remove() is called.
+    // Random transactions that the test generated and passed to Add(). Trimmed by Remove() and Add() cleanup.
     // The values are the number of times a transaction was picked for sending.
     std::unordered_map<CTransactionRef, size_t, CTransactionRefHash, CTransactionRefComp> transactions;
+    // The values are the number of times a transaction is planned to be sent.
+    std::unordered_map<CTransactionRef, size_t, CTransactionRefHash, CTransactionRefComp> planned_sends;
+    std::unordered_set<CTransactionRef, CTransactionRefHash, CTransactionRefComp> resolved_transactions;
+    // When each transaction was added, or reset by adding it again.
+    std::unordered_map<CTransactionRef, NodeClock::time_point, CTransactionRefHash, CTransactionRefComp> time_added;
+    // When each node confirmed reception. Only looked up through nodes_sent_to.
+    std::unordered_map<NodeId, NodeClock::time_point> confirmed_at;
 
-    // Ids of nodes that were passed to PickTxForSend(). Trimmed when Remove() is called.
-    std::unordered_set<NodeId> nodes_sent_to;
-
-    // A subset of `nodes_sent_to`, node ids passed to NodeConfirmedReception(). Trimmed when Remove() is called.
-    std::unordered_set<NodeId> nodes_that_confirmed_reception;
+    // Transactions passed to PickTxForSend(), indexed by node id. Trimmed when
+    // Remove() is called or a transaction is reset or cleaned up by Add().
+    std::unordered_map<NodeId, CTransactionRef> nodes_sent_to;
+    std::unordered_set<NodeId> disconnected_nodes;
 
     NodeId next_nodeid{0}; // Generate unique node ids.
+
+    const auto is_pending{[&](const auto& entry) {
+        return entry.second < std::min(planned_sends.at(entry.first), max_send_attempts);
+    }};
 
     const auto ExistentOrNewNodeId = [&next_nodeid, &fdp](){
         if (next_nodeid == 0 || fdp.ConsumeBool()) {
@@ -71,15 +87,40 @@ FUZZ_TARGET(private_broadcast)
                     tx = PickIterator(fdp, transactions)->first;
                 }
 
+                auto cleanup_candidates{resolved_transactions};
+                for (const auto& [nodeid, sent_tx] : nodes_sent_to) {
+                    if (!disconnected_nodes.contains(nodeid)) cleanup_candidates.erase(sent_tx);
+                }
+                std::erase_if(transactions, [&](const auto& entry) {
+                    if (!cleanup_candidates.contains(entry.first) || is_pending(entry)) return false;
+                    planned_sends.erase(entry.first);
+                    resolved_transactions.erase(entry.first);
+                    return true;
+                });
+                std::erase_if(nodes_sent_to, [&](const auto& entry) { return !transactions.contains(entry.second); });
+
                 const bool present_before{transactions.contains(tx)};
                 const auto res{pb.Add(tx)};
                 if (present_before) {
-                    Assert(res == PrivateBroadcast::AddResult::AlreadyPresent);
+                    auto tx_it{transactions.find(tx)};
+                    Assert(tx_it != transactions.end());
+                    if (tx_it->second < max_send_attempts) {
+                        Assert(res == PrivateBroadcast::AddResult::AlreadyPresent);
+                    } else {
+                        Assert(res == PrivateBroadcast::AddResult::Added);
+                        tx_it->second = 0;
+                        planned_sends[tx] = PrivateBroadcast::INITIAL_CONNECTION_COUNT;
+                        time_added[tx] = NodeClock::now();
+                        resolved_transactions.erase(tx);
+                        std::erase_if(nodes_sent_to, [&](const auto& entry) { return CTransactionRefComp{}(entry.second, tx); });
+                    }
                 } else if (transactions.size() >= cap) {
                     Assert(res == PrivateBroadcast::AddResult::QueueFull);
                 } else {
                     Assert(res == PrivateBroadcast::AddResult::Added);
                     transactions.emplace(tx, 0);
+                    planned_sends.emplace(tx, PrivateBroadcast::INITIAL_CONNECTION_COUNT);
+                    time_added[tx] = NodeClock::now();
                 }
             },
             [&] { // Remove()
@@ -89,28 +130,24 @@ FUZZ_TARGET(private_broadcast)
                 const auto transactions_it{PickIterator(fdp, transactions)};
                 const CTransactionRef& tx{transactions_it->first};
 
-                size_t num_nodes_that_confirmed_tx{0};
+                // Remove relevant entries from nodes_sent_to[] if any.
+                std::erase_if(nodes_sent_to, [&](const auto& entry) { return CTransactionRefComp{}(entry.second, tx); });
 
-                // Remove relevant entries from nodes_sent_to[] and nodes_that_confirmed_reception[] if any.
-                for (auto it = nodes_sent_to.begin(); it != nodes_sent_to.end();) {
-                    const NodeId nodeid{*it};
-                    const auto opt_tx_for_node{pb.GetTxForNode(nodeid)};
-                    if (opt_tx_for_node.has_value() && opt_tx_for_node.value() == tx) {
-                        it = nodes_sent_to.erase(it);
-                        if (nodes_that_confirmed_reception.erase(nodeid) > 0) {
-                            ++num_nodes_that_confirmed_tx;
-                        }
-                    } else {
-                        ++it;
-                    }
-                }
+                const auto remaining_sends{pb.Remove(tx)};
 
-                const auto opt_num_confirmed{pb.Remove(tx)};
-
-                Assert(opt_num_confirmed.has_value());
-                Assert(opt_num_confirmed.value() == num_nodes_that_confirmed_tx);
+                Assert(remaining_sends.has_value());
+                Assert(remaining_sends.value() == std::min(planned_sends.at(tx), max_send_attempts) - transactions_it->second);
                 Assert(!pb.Remove(tx).has_value());
+                planned_sends.erase(tx);
+                resolved_transactions.erase(tx);
                 transactions.erase(transactions_it);
+            },
+            [&] { // MarkResolved()
+                const CTransactionRef tx{transactions.empty() || fdp.ConsumeBool() ?
+                                             MakeTransactionRef(ConsumeTransaction(fdp, std::nullopt)) :
+                                             PickIterator(fdp, transactions)->first};
+                Assert(pb.MarkResolved(tx) == transactions.contains(tx));
+                if (transactions.contains(tx)) resolved_transactions.insert(tx);
             },
             [&] { // PickTxForSend()
                 // Only give pristine node ids to PickTxForSend() as required.
@@ -126,17 +163,18 @@ FUZZ_TARGET(private_broadcast)
                     // (fewest sends = highest priority), so PickTxForSend() must return a transaction
                     // with the minimum send count of any in the queue. Ties are broken by state we
                     // don't model, so only check this key.
+                    auto pending_transactions{transactions | std::views::filter(is_pending)};
                     const size_t min_picked{std::ranges::min_element(
-                        transactions, {}, [](const auto& el) { return el.second; })->second};
+                        pending_transactions, {}, [](const auto& el) { return el.second; })->second};
                     const auto picked_it{transactions.find(opt_tx.value())};
                     Assert(picked_it != transactions.end());
                     Assert(picked_it->second == min_picked); // picked the least-sent transaction
                     ++picked_it->second; // PickTxForSend() recorded exactly one send
 
-                    const auto& [_, inserted]{nodes_sent_to.emplace(will_send_to_nodeid)};
+                    const auto& [_, inserted]{nodes_sent_to.emplace(will_send_to_nodeid, opt_tx.value())};
                     Assert(inserted);
                 } else {
-                    Assert(transactions.empty());
+                    Assert(std::ranges::none_of(transactions, is_pending));
                 }
             },
             [&] { // GetTxForNode()
@@ -147,6 +185,7 @@ FUZZ_TARGET(private_broadcast)
                 if (nodes_sent_to.contains(nodeid)) {
                     Assert(opt_tx.has_value());
                     Assert(transactions.contains(opt_tx.value()));
+                    Assert(opt_tx.value() == nodes_sent_to.at(nodeid));
                 } else {
                     Assert(!opt_tx.has_value());
                 }
@@ -155,31 +194,27 @@ FUZZ_TARGET(private_broadcast)
                 const NodeId nodeid{ExistentOrNewNodeId()};
 
                 pb.NodeConfirmedReception(nodeid);
-
-                if (nodes_sent_to.contains(nodeid)) {
-                    // nodeid was previously passed to PickTxForSend(), so NodeConfirmedReception()
-                    // must have changed the internal state. Remember this to later check that
-                    // DidNodeConfirmReception() works correctly.
-                    nodes_that_confirmed_reception.emplace(nodeid);
-                }
+                if (nodes_sent_to.contains(nodeid)) confirmed_at[nodeid] = NodeClock::now();
             },
-            [&] { // DidNodeConfirmReception()
+            [&] { // NodeDisconnected()
                 const NodeId nodeid{ExistentOrNewNodeId()};
-
-                const bool confirmed{pb.DidNodeConfirmReception(nodeid)};
-
-                if (nodes_that_confirmed_reception.contains(nodeid)) {
-                    Assert(confirmed);
-                } else {
-                    Assert(!confirmed);
-                }
+                pb.NodeDisconnected(nodeid);
+                if (nodes_sent_to.contains(nodeid)) disconnected_nodes.insert(nodeid);
             },
             [&] { // HavePendingTransactions()
-                if (pb.HavePendingTransactions()) {
-                    Assert(!transactions.empty());
+                if (std::ranges::any_of(transactions, is_pending)) {
+                    Assert(pb.HavePendingTransactions());
                 } else {
-                    Assert(transactions.empty());
+                    Assert(!pb.HavePendingTransactions());
                 }
+            },
+            [&] { // TryGrantRetry()
+                if (transactions.empty()) return;
+                const auto tx_it{PickIterator(fdp, transactions)};
+                auto& count{planned_sends.at(tx_it->first)};
+                const bool can_retry{!resolved_transactions.contains(tx_it->first) && !is_pending(*tx_it) && count < max_send_attempts};
+                Assert(pb.TryGrantRetry(tx_it->first) == can_retry);
+                if (can_retry) ++count;
             },
             [&] { // GetStale()
                 const auto stale{pb.GetStale()};
@@ -187,18 +222,42 @@ FUZZ_TARGET(private_broadcast)
                 Assert(stale.size() <= transactions.size());
 
                 for (const auto& stale_tx : stale) {
-                    Assert(transactions.contains(stale_tx));
+                    const auto it{transactions.find(stale_tx)};
+                    Assert(it != transactions.end());
+                    Assert(!resolved_transactions.contains(stale_tx));
+                    Assert(planned_sends.at(stale_tx) < max_send_attempts);
                 }
+
+                // Every transaction that should be stale must be returned, not only a subset.
+                const auto now{NodeClock::now()};
+                std::unordered_set<CTransactionRef, CTransactionRefHash, CTransactionRefComp> expected;
+                for (const auto& [tx, num_picked] : transactions) {
+                    if (resolved_transactions.contains(tx) || planned_sends.at(tx) >= max_send_attempts) continue;
+                    std::optional<NodeClock::time_point> last_confirmed;
+                    for (const auto& [nodeid, sent_tx] : nodes_sent_to) {
+                        if (!CTransactionRefComp{}(sent_tx, tx)) continue;
+                        if (const auto c{confirmed_at.find(nodeid)}; c != confirmed_at.end()) {
+                            last_confirmed = std::max(last_confirmed.value_or(c->second), c->second);
+                        }
+                    }
+                    const bool is_stale{last_confirmed ? *last_confirmed < now - PrivateBroadcast::STALE_DURATION :
+                                                         time_added.at(tx) < now - PrivateBroadcast::INITIAL_STALE_DURATION};
+                    if (is_stale) expected.insert(tx);
+                }
+                Assert(stale.size() == expected.size());
+                for (const auto& stale_tx : stale) Assert(expected.erase(stale_tx) == 1);
             },
             [&] { // GetBroadcastInfo()
                 const auto all_broadcast_info{pb.GetBroadcastInfo()};
 
-                Assert(all_broadcast_info.size() == transactions.size());
+                Assert(all_broadcast_info.size() == transactions.size() - resolved_transactions.size());
 
                 for (const auto& info : all_broadcast_info) {
                     const auto it{transactions.find(info.tx)};
                     Assert(it != transactions.end());
+                    Assert(!resolved_transactions.contains(info.tx));
                     Assert(info.peers.size() == it->second); // exactly the sends we recorded
+                    Assert(info.attempts_remaining == max_send_attempts - it->second);
                 }
             },
             [&] {

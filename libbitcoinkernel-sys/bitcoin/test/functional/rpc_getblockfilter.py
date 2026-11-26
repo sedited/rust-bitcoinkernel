@@ -50,6 +50,16 @@ class GetBlockFilterTest(BitcoinTestFramework):
         bad_block_hash = "0123456789abcdef" * 4
         assert_raises_rpc_error(-5, "Block not found", self.nodes[0].getblockfilter, bad_block_hash, "basic")
 
+        # Test getblockfilter for a known header before connecting its block
+        block = self.generateblock(self.nodes[1], output="raw(55)", transactions=[], submit=False)
+        self.nodes[0].submitheader(block["hex"][:160])
+
+        # The header is known, but the block has never been connected
+        assert_raises_rpc_error(
+            -5, "Filter not found. Block was not connected to active chain.",
+            self.nodes[0].getblockfilter, block["hash"], "basic",
+        )
+
         # Test getblockfilter with undefined filter type
         genesis_hash = self.nodes[0].getblockhash(0)
         assert_raises_rpc_error(-5, "Unknown filtertype", self.nodes[0].getblockfilter, genesis_hash, "unknown")

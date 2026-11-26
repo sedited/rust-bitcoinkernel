@@ -136,7 +136,7 @@ static std::optional<CCoinsStats> ComputeUTXOStats(T hash_obj, const CCoinsViewD
             outputs[key.n] = std::move(coin);
             stats.coins_count++;
         } else {
-            LogError("%s: unable to read value\n", __func__);
+            LogDebug(BCLog::COINDB, "%s: unable to read value", __func__);
             return std::nullopt;
         }
         pcursor->Next();
@@ -168,7 +168,7 @@ std::optional<CCoinsStats> ComputeUTXOStats(CoinStatsHashType hash_type, const C
             return ComputeUTXOStats(nullptr, view, blockman, interruption_point);
         }
         } // no default case, so the compiler can warn about missing cases
-        assert(false);
+        AssertUnreachable();
     }();
 }
 

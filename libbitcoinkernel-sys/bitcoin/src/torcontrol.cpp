@@ -38,7 +38,6 @@
 #include <utility>
 #include <vector>
 
-using util::ReplaceAll;
 using util::SplitString;
 using util::ToString;
 
@@ -70,6 +69,17 @@ constexpr int MAX_LINE_LENGTH = 100000;
 constexpr int MAX_LINE_COUNT = 1000;
 /** Timeout for socket operations */
 constexpr auto SOCKET_SEND_TIMEOUT = 10s;
+constexpr std::string_view PRIVATE_KEY_NEW{"NEW:ED25519-V3"};
+constexpr std::string_view PRIVATE_KEY_PREFIX{"ED25519-V3:"};
+
+/** Whether the value requests a new Ed25519 v3 key or has the expected key format */
+static bool IsWellFormedPrivateKey(std::string_view key)
+{
+    if (key == PRIVATE_KEY_NEW) return true;
+    if (!key.starts_with(PRIVATE_KEY_PREFIX)) return false;
+    const auto decoded{DecodeBase64(key.substr(PRIVATE_KEY_PREFIX.size()))};
+    return decoded && decoded->size() == 64; // A 32-byte secret scalar followed by a 32-byte PRF secret
+}
 
 /****** Low-level TorControlConnection ********/
 
@@ -149,7 +159,7 @@ bool TorControlConnection::ReceiveAndProcess()
 {
     if (!m_sock) return false;
 
-    std::byte buf[4096];
+    char buf[4096];
     ssize_t nread = m_sock->Recv(buf, sizeof(buf), MSG_DONTWAIT);
 
     if (nread < 0) {
@@ -179,7 +189,6 @@ bool TorControlConnection::ReceiveAndProcess()
 bool TorControlConnection::ProcessBuffer()
 {
     util::LineReader reader(m_recv_buffer, MAX_LINE_LENGTH);
-    auto start = reader.it;
 
     while (auto line = reader.ReadLine()) {
         if (m_message.lines.size() == MAX_LINE_COUNT) {
@@ -210,7 +219,7 @@ bool TorControlConnection::ProcessBuffer()
         }
     }
 
-    m_recv_buffer.erase(m_recv_buffer.begin(), m_recv_buffer.begin() + std::distance(start, reader.it));
+    m_recv_buffer.erase(m_recv_buffer.begin(), m_recv_buffer.begin() + reader.Consumed());
     return true;
 }
 
@@ -283,7 +292,7 @@ std::map<std::string,std::string> ParseTorReplyMapping(const std::string &s)
             if (ptr == s.size()) // unexpected end of line
                 return std::map<std::string,std::string>();
             ++ptr; // skip closing '"'
-            /**
+            /*
              * Unescape value. Per https://spec.torproject.org/control-spec section 2.1.1:
              *
              *   For future-proofing, controller implementers MAY use the following
@@ -392,42 +401,21 @@ void TorController::ThreadControl()
     LogDebug(BCLog::TOR, "Entering Tor control thread");
 
     while (!m_interrupt) {
-        // Try to connect if not connected already
-        if (!m_conn.IsConnected()) {
-            LogDebug(BCLog::TOR, "Attempting to connect to Tor control port %s", m_tor_control_center);
-
-            if (!m_conn.Connect(m_tor_control_center)) {
-                LogWarning("tor: Initiating connection to Tor control port %s failed", m_tor_control_center);
-                if (!m_reconnect) {
-                    break;
-                }
-                // Wait before retrying with exponential backoff
-                LogDebug(BCLog::TOR, "Retrying in %.1f seconds", m_reconnect_timeout.count());
-                if (!m_interrupt.sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(m_reconnect_timeout))) {
-                    break;
-                }
-                m_reconnect_timeout = std::min(m_reconnect_timeout * RECONNECT_TIMEOUT_EXP, RECONNECT_TIMEOUT_MAX);
-                continue;
-            }
-            // Successfully connected, reset timeout and trigger connected callback
-            m_reconnect_timeout = RECONNECT_TIMEOUT_START;
+        LogDebug(BCLog::TOR, "Attempting to connect to Tor control port %s", m_tor_control_center);
+        if (m_conn.Connect(m_tor_control_center)) {
             connected_cb(m_conn);
-        }
-        // Wait for data with a timeout
-        if (!m_conn.WaitForData(std::chrono::seconds(1))) {
-            // Check if still connected
-            if (!m_conn.IsConnected()) {
-                LogDebug(BCLog::TOR, "Lost connection to Tor control port");
-                disconnected_cb(m_conn);
-                continue;
+            while (!m_interrupt) {
+                if (!m_conn.WaitForData(std::chrono::seconds(1))) {
+                    if (m_conn.IsConnected()) continue;
+                    LogDebug(BCLog::TOR, "Lost connection to Tor control port");
+                    break;
+                }
+                if (!m_conn.ReceiveAndProcess()) break;
             }
-            // Just a timeout, continue waiting
-            continue;
+        } else {
+            LogWarning("tor: Initiating connection to Tor control port %s failed", m_tor_control_center);
         }
-        // Process incoming data
-        if (!m_conn.ReceiveAndProcess()) {
-            disconnected_cb(m_conn);
-        }
+        disconnected_cb(m_conn);
     }
     LogDebug(BCLog::TOR, "Exited Tor control thread");
 }
@@ -517,23 +505,36 @@ void TorController::add_onion_cb(TorControlConnection& _conn, const TorControlRe
 {
     if (reply.code == TOR_REPLY_OK) {
         LogDebug(BCLog::TOR, "ADD_ONION successful (PoW defenses %s)", pow_was_enabled ? "enabled" : "disabled");
+        std::string service_id;
+        std::string private_key;
         for (const std::string &s : reply.lines) {
             std::map<std::string,std::string> m = ParseTorReplyMapping(s);
             std::map<std::string,std::string>::iterator i;
             if ((i = m.find("ServiceID")) != m.end())
-                m_service_id = i->second;
-            if ((i = m.find("PrivateKey")) != m.end())
-                m_private_key = i->second;
+                service_id = i->second;
+            if ((i = m.find("PrivateKey")) != m.end()) {
+                if (!IsWellFormedPrivateKey(i->second)) { // Never adopt or cache such a key
+                    LogWarning("tor: ADD_ONION returned a malformed private key");
+                    return;
+                }
+                private_key = i->second;
+            }
         }
-        if (m_service_id.empty()) {
+        if (service_id.empty()) {
             LogWarning("tor: Error parsing ADD_ONION parameters:");
             for (const std::string &s : reply.lines) {
                 LogWarning("    %s", SanitizeString(s));
             }
             return;
         }
-        m_service = LookupNumeric(std::string(m_service_id+".onion"), Params().GetDefaultPort());
-        LogInfo("Got tor service ID %s, advertising service %s", m_service_id, m_service.ToStringAddrPort());
+        const auto service{LookupNumeric(service_id + ".onion", Params().GetDefaultPort())};
+        if (!service.IsTor()) {
+            LogWarning("tor: ADD_ONION returned an invalid service ID");
+            return;
+        }
+        if (!private_key.empty()) m_private_key = std::move(private_key);
+        m_service = service;
+        LogInfo("Got tor service ID %s, advertising service %s", service_id, m_service.ToStringAddrPort());
         if (WriteBinaryFile(GetPrivateKeyFile(), m_private_key)) {
             LogDebug(BCLog::TOR, "Cached service private key to %s", fs::PathToString(GetPrivateKeyFile()));
         } else {
@@ -567,7 +568,11 @@ void TorController::auth_cb(TorControlConnection& _conn, const TorControlReply& 
 
         // Finally - now create the service
         if (m_private_key.empty()) { // No private key, generate one
-            m_private_key = "NEW:ED25519-V3"; // Explicitly request key type - see issue #9214
+            m_private_key = PRIVATE_KEY_NEW; // Explicitly request key type - see issue #9214
+        } else if (!IsWellFormedPrivateKey(m_private_key)) {
+            // add_onion_cb() never adopts such a key, so it can only come from the cache file
+            LogWarning("tor: Refusing to use cached private key %s because it is malformed; remove the file to generate a new key", fs::PathToString(GetPrivateKeyFile()));
+            return;
         }
         // Request onion service, redirect port.
         _conn.Command(MakeAddOnionCmd(m_private_key, m_target.ToStringAddrPort(), /*enable_pow=*/true),
@@ -680,14 +685,14 @@ void TorController::protocolinfo_cb(TorControlConnection& _conn, const TorContro
         // Prefer NULL, otherwise SAFECOOKIE. If a password is provided, use HASHEDPASSWORD
         /* Authentication:
          *   cookie:   hex-encoded ~/.tor/control_auth_cookie
-         *   password: "password"
+         *   password: hex-encoded password
          */
         std::string torpassword = gArgs.GetArg("-torpassword", "");
         if (!torpassword.empty()) {
             if (methods.contains("HASHEDPASSWORD")) {
                 LogDebug(BCLog::TOR, "Using HASHEDPASSWORD authentication");
-                ReplaceAll(torpassword, "\"", "\\\"");
-                _conn.Command("AUTHENTICATE \"" + torpassword + "\"", std::bind_front(&TorController::auth_cb, this));
+                // Send the password hex-encoded rather than as a QuotedString, so it never needs escaping.
+                _conn.Command("AUTHENTICATE " + HexStr(torpassword), std::bind_front(&TorController::auth_cb, this));
             } else {
                 LogWarning("tor: Password provided with -torpassword, but HASHEDPASSWORD authentication is not available");
             }
@@ -738,8 +743,12 @@ void TorController::disconnected_cb(TorControlConnection& _conn)
     if (!m_reconnect)
         return;
 
-    LogDebug(BCLog::TOR, "Not connected to Tor control port %s, will retry", m_tor_control_center);
+    LogDebug(BCLog::TOR, "Not connected to Tor control port %s, retrying in %.2f s",
+             m_tor_control_center, m_reconnect_timeout.count());
     _conn.Disconnect();
+
+    m_interrupt.sleep_for(std::chrono::duration_cast<std::chrono::milliseconds>(m_reconnect_timeout));
+    m_reconnect_timeout = std::min(m_reconnect_timeout * RECONNECT_TIMEOUT_EXP, RECONNECT_TIMEOUT_MAX);
 }
 
 fs::path TorController::GetPrivateKeyFile()

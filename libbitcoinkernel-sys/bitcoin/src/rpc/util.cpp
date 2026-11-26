@@ -2,32 +2,38 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <rpc/util.h>
+
+#include <arith_uint256.h>
 #include <chain.h>
 #include <common/args.h>
 #include <common/messages.h>
 #include <common/types.h>
 #include <consensus/amount.h>
 #include <core_io.h>
-#include <key_io.h>
+#include <crypto/hex_base.h>
 #include <node/types.h>
 #include <outputtype.h>
 #include <pow.h>
-#include <rpc/util.h>
 #include <script/descriptor.h>
-#include <script/interpreter.h>
 #include <script/signingprovider.h>
 #include <script/solver.h>
 #include <tinyformat.h>
 #include <uint256.h>
 #include <univalue.h>
+#include <util/bip32.h>
 #include <util/check.h>
+#include <util/expected.h>
 #include <util/result.h>
 #include <util/strencodings.h>
 #include <util/string.h>
 #include <util/translation.h>
 
 #include <algorithm>
-#include <iterator>
+#include <memory>
+#include <ranges>
+#include <set>
+#include <span>
 #include <string_view>
 #include <tuple>
 #include <utility>
@@ -194,7 +200,7 @@ std::string HelpExampleCliNamed(const std::string& methodname, const RPCArgList&
                 : argpair.second.write();
         result += " " + argpair.first + "=" + ShellQuoteIfNeeded(value);
     }
-    result += "\n";
+    result += '\n';
     return result;
 }
 
@@ -467,7 +473,7 @@ struct Sections {
             } else {
                 left += push_name ? arg.ToStringObj(/*oneline=*/false) : arg.ToString(/*oneline=*/false);
             }
-            left += ",";
+            left += ',';
             PushSection({left, arg.ToDescriptionString(/*is_named_arg=*/push_name)});
             break;
         }
@@ -487,7 +493,7 @@ struct Sections {
         case RPCArg::Type::ARR: {
             auto left = indent;
             left += push_name ? "\"" + arg.GetName() + "\": " : "";
-            left += "[";
+            left += '[';
             const auto right = is_top_level_arg ? "" : arg.ToDescriptionString(/*is_named_arg=*/push_name);
             PushSection({left, right});
             for (const auto& arg_inner : arg.m_inner) {
@@ -513,7 +519,7 @@ struct Sections {
             CHECK_NONFATAL(s.m_left.find('\n') == std::string::npos);
             if (s.m_right.empty()) {
                 ret += s.m_left;
-                ret += "\n";
+                ret += '\n';
                 continue;
             }
 
@@ -538,7 +544,7 @@ struct Sections {
                 new_line_pos = s.m_right.find_first_of('\n', begin + 1);
             }
             ret += right;
-            ret += "\n";
+            ret += '\n';
         }
         return ret;
     }
@@ -616,14 +622,16 @@ std::string RPCResults::ToDescriptionString() const
 {
     std::string result;
     for (const auto& r : m_results) {
-        if (r.m_type == RPCResult::Type::ANY) continue; // for testing only
+        Sections sections;
+        r.ToSections(sections);
+        // A result can be empty via HelpElisionSkip
+        if (sections.m_sections.empty()) continue;
+
         if (r.m_cond.empty()) {
             result += "\nResult:\n";
         } else {
             result += "\nResult (" + r.m_cond + "):\n";
         }
-        Sections sections;
-        r.ToSections(sections);
         result += sections.ToString();
     }
     return result;
@@ -727,7 +735,9 @@ TMPL_INST(nullptr, std::optional<std::string_view>, maybe_arg ? std::optional<st
 // Required arg or optional arg with default value.
 TMPL_INST(CheckRequiredOrDefault, const UniValue&, *CHECK_NONFATAL(maybe_arg););
 TMPL_INST(CheckRequiredOrDefault, bool, CHECK_NONFATAL(maybe_arg)->get_bool(););
+TMPL_INST(CheckRequiredOrDefault, double, CHECK_NONFATAL(maybe_arg)->get_real(););
 TMPL_INST(CheckRequiredOrDefault, int, CHECK_NONFATAL(maybe_arg)->getInt<int>(););
+TMPL_INST(CheckRequiredOrDefault, int64_t, CHECK_NONFATAL(maybe_arg)->getInt<int64_t>(););
 TMPL_INST(CheckRequiredOrDefault, uint64_t, CHECK_NONFATAL(maybe_arg)->getInt<uint64_t>(););
 TMPL_INST(CheckRequiredOrDefault, uint32_t, CHECK_NONFATAL(maybe_arg)->getInt<uint32_t>(););
 TMPL_INST(CheckRequiredOrDefault, std::string_view, CHECK_NONFATAL(maybe_arg)->get_str(););
@@ -761,9 +771,8 @@ std::vector<std::pair<std::string, bool>> RPCMethod::GetArgNames() const
 
 size_t RPCMethod::GetParamIndex(std::string_view key) const
 {
-    auto it{std::find_if(
-        m_args.begin(), m_args.end(), [&key](const auto& arg) { return arg.GetName() == key;}
-    )};
+    // Use only the first name, so that callers are uniform and legacy aliases can be removed.
+    auto it{std::ranges::find_if(m_args, [&key](const auto& arg) { return arg.GetFirstName() == key; })};
 
     CHECK_NONFATAL(it != m_args.end());  // TODO: ideally this is checked at compile time
     return std::distance(m_args.begin(), it);
@@ -779,7 +788,7 @@ std::string RPCMethod::ToString() const
     for (const auto& arg : m_args) {
         if (arg.m_opts.hidden) break; // Any arg that follows is also hidden
         const bool optional = arg.IsOptional();
-        ret += " ";
+        ret += ' ';
         if (optional) {
             if (!was_optional) ret += "( ";
             was_optional = true;
@@ -934,7 +943,7 @@ bool RPCArg::IsOptional() const
 std::string RPCArg::ToDescriptionString(bool is_named_arg) const
 {
     std::string ret;
-    ret += "(";
+    ret += '(';
     if (m_opts.type_str.size() != 0) {
         ret += m_opts.type_str.at(1);
     } else {
@@ -989,7 +998,7 @@ std::string RPCArg::ToDescriptionString(bool is_named_arg) const
         }
         } // no default case, so the compiler can warn about missing cases
     }
-    ret += ")";
+    ret += ')';
     if (m_type == Type::OBJ_NAMED_PARAMS) ret += " Options object that can be used to pass named arguments, listed below.";
     ret += m_description.empty() ? "" : " " + m_description;
     return ret;
@@ -1034,7 +1043,8 @@ void RPCResult::ToSections(Sections& sections, const OuterType outer_type, const
 
     switch (m_type) {
     case Type::ANY: {
-        NONFATAL_UNREACHABLE(); // Only for testing
+        sections.PushSection({indent + maybe_key + "xxx" + maybe_separator, Description("any")});
+        return;
     }
     case Type::NONE: {
         sections.PushSection({indent + "null" + maybe_separator, Description("json null")});
@@ -1222,7 +1232,7 @@ void RPCResult::CheckInnerDoc() const
 std::string RPCArg::ToStringObj(const bool oneline) const
 {
     std::string res;
-    res += "\"";
+    res += '\"';
     res += GetFirstName();
     if (oneline) {
         res += "\":";
@@ -1243,7 +1253,7 @@ std::string RPCArg::ToStringObj(const bool oneline) const
     case Type::BOOL:
         return res + "bool";
     case Type::ARR:
-        res += "[";
+        res += '[';
         for (const auto& i : m_inner) {
             res += i.ToString(oneline) + ",";
         }
@@ -1311,7 +1321,6 @@ static std::pair<int64_t, int64_t> ParseRange(const UniValue& value)
     if (value.isArray() && value.size() == 2 && value[0].isNum() && value[1].isNum()) {
         int64_t low = value[0].getInt<int64_t>();
         int64_t high = value[1].getInt<int64_t>();
-        if (low > high) throw JSONRPCError(RPC_INVALID_PARAMETER, "Range specified as [begin,end] must not have begin after end");
         return {low, high};
     }
     throw JSONRPCError(RPC_INVALID_PARAMETER, "Range must be specified as end or as [begin,end]");
@@ -1321,14 +1330,8 @@ std::pair<int64_t, int64_t> ParseDescriptorRange(const UniValue& value)
 {
     int64_t low, high;
     std::tie(low, high) = ParseRange(value);
-    if (low < 0) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, "Range should be greater or equal than 0");
-    }
-    if ((high >> 31) != 0) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, "End of range is too high");
-    }
-    if (high >= low + 1000000) {
-        throw JSONRPCError(RPC_INVALID_PARAMETER, "Range is too large");
+    if (auto res = CheckDescriptorRangeBounds(low, high); !res) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, res.error());
     }
     return {low, high};
 }
@@ -1361,7 +1364,7 @@ std::vector<CScript> EvalDescriptorStringOrObject(const UniValue& scanobject, Fl
         range.second = 0;
     }
     std::vector<CScript> ret;
-    for (int i = range.first; i <= range.second; ++i) {
+    for (int64_t i = range.first; i <= range.second; ++i) {
         for (const auto& desc : descs) {
             std::vector<CScript> scripts;
             if (!desc->Expand(i, provider, scripts, provider)) {
@@ -1374,6 +1377,15 @@ std::vector<CScript> EvalDescriptorStringOrObject(const UniValue& scanobject, Fl
         }
     }
     return ret;
+}
+
+std::vector<uint32_t> ParsePathBIP32(const std::string& path)
+{
+    std::vector<uint32_t> out;
+    if (!ParseHDKeypath(path, out)) {
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid BIP32 keypath");
+    }
+    return out;
 }
 
 /** Convert a vector of bilingual strings to a UniValue::VARR containing their original untranslated values. */

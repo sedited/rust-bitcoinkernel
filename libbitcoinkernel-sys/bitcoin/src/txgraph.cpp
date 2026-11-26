@@ -19,6 +19,7 @@
 #include <span>
 #include <unordered_set>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -712,8 +713,7 @@ public:
         if (tx_count >= GenericClusterImpl::MIN_INTENDED_TX_COUNT && tx_count <= GenericClusterImpl::MAX_TX_COUNT) {
             return CreateEmptyGenericCluster();
         }
-        assert(false);
-        return {};
+        AssertUnreachable();
     }
 
     // Functions for handling Refs.
@@ -1006,8 +1006,7 @@ int GenericClusterImpl::GetLevel(const TxGraphImpl& graph) const noexcept
     }
     // Given that we started with an Entry that occurs in this Cluster, one of its Locators must
     // point back to it.
-    assert(false);
-    return -1;
+    AssertUnreachable();
 }
 
 int SingletonClusterImpl::GetLevel(const TxGraphImpl& graph) const noexcept
@@ -1023,8 +1022,7 @@ int SingletonClusterImpl::GetLevel(const TxGraphImpl& graph) const noexcept
     }
     // Given that we started with an Entry that occurs in this Cluster, one of its Locators must
     // point back to it.
-    assert(false);
-    return -1;
+    AssertUnreachable();
 }
 
 void TxGraphImpl::ClearLocator(int level, GraphIndex idx, bool oversized_tx) noexcept
@@ -1288,9 +1286,7 @@ void GenericClusterImpl::ApplyRemovals(TxGraphImpl& graph, int level, std::span<
     m_mapping.resize(m_depgraph.PositionRange());
 
     // Filter removed transactions out of m_linearization.
-    m_linearization.erase(std::remove_if(m_linearization.begin(), m_linearization.end(),
-                                         [&](auto pos) { return todo[pos]; }),
-                          m_linearization.end());
+    std::erase_if(m_linearization, [&](auto pos) { return todo[pos]; });
 
     Compact();
     graph.GetClusterSet(level).m_cluster_usage += TotalMemoryUsage();
@@ -2200,8 +2196,7 @@ std::pair<uint64_t, bool> SingletonClusterImpl::Relinearize(TxGraphImpl& graph, 
 {
     // All singletons are optimal, oversized, or need splitting. Each of these precludes
     // Relinearize from being called.
-    assert(false);
-    return {0, false};
+    AssertUnreachable();
 }
 
 void TxGraphImpl::MakeAcceptable(Cluster& cluster, int level) noexcept
@@ -2710,9 +2705,9 @@ void TxGraphImpl::CommitStaging() noexcept
     m_main_clusterset.m_deps_to_add = std::move(m_staging_clusterset->m_deps_to_add);
     m_main_clusterset.m_to_remove = std::move(m_staging_clusterset->m_to_remove);
     m_main_clusterset.m_group_data = std::move(m_staging_clusterset->m_group_data);
-    m_main_clusterset.m_oversized = std::move(m_staging_clusterset->m_oversized);
-    m_main_clusterset.m_txcount = std::move(m_staging_clusterset->m_txcount);
-    m_main_clusterset.m_txcount_oversized = std::move(m_staging_clusterset->m_txcount_oversized);
+    m_main_clusterset.m_oversized = m_staging_clusterset->m_oversized;
+    m_main_clusterset.m_txcount = m_staging_clusterset->m_txcount;
+    m_main_clusterset.m_txcount_oversized = m_staging_clusterset->m_txcount_oversized;
     // Delete the old staging graph, after all its information was moved to main.
     m_staging_clusterset.reset();
     Compact();

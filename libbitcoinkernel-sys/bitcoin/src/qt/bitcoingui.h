@@ -5,7 +5,7 @@
 #ifndef BITCOIN_QT_BITCOINGUI_H
 #define BITCOIN_QT_BITCOINGUI_H
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
 
 #include <qt/bitcoinunits.h>
 #include <qt/clientmodel.h>
@@ -90,7 +90,6 @@ public:
     */
     void addWallet(WalletModel* walletModel);
     void removeWallet(WalletModel* walletModel);
-    void removeAllWallets();
 #endif // ENABLE_WALLET
     bool enableWallet = false;
 
@@ -114,7 +113,9 @@ protected:
 
 private:
     interfaces::Node& m_node;
+#ifdef ENABLE_WALLET
     WalletController* m_wallet_controller{nullptr};
+#endif // ENABLE_WALLET
     std::unique_ptr<interfaces::Handler> m_handler_message_box;
     std::unique_ptr<interfaces::Handler> m_handler_question;
     ClientModel* clientModel = nullptr;
@@ -158,15 +159,18 @@ private:
     QAction* m_restore_wallet_action{nullptr};
     QAction* m_close_wallet_action{nullptr};
     QAction* m_close_all_wallets_action{nullptr};
+#ifdef ENABLE_WALLET
     QAction* m_wallet_selector_label_action = nullptr;
     QAction* m_wallet_selector_action = nullptr;
+#endif // ENABLE_WALLET
     QAction* m_mask_values_action{nullptr};
     QAction* m_migrate_wallet_action{nullptr};
     QMenu* m_migrate_wallet_menu{nullptr};
-
+    QAction* m_export_watchonly_action{nullptr};
+#ifdef ENABLE_WALLET
     QLabel *m_wallet_selector_label = nullptr;
     QComboBox* m_wallet_selector = nullptr;
-
+#endif // ENABLE_WALLET
     QSystemTrayIcon* trayIcon = nullptr;
     const std::unique_ptr<QMenu> trayIconMenu;
     Notificator* notificator = nullptr;
@@ -236,7 +240,7 @@ public Q_SLOTS:
        @param[in] message           the displayed text
        @param[in] style             modality and style definitions (icon and used buttons - buttons only for message boxes)
                                     @see CClientUIInterface::MessageBoxFlags
-       @param[in] ret               pointer to a bool that will be modified to whether Ok was clicked (modal only)
+       @param[out] ret              pointer to a bool that will be modified to whether Ok was clicked (modal only)
        @param[in] detailed_message  the text to be displayed in the details area
     */
     void message(const QString& title, QString message, unsigned int style, bool* ret = nullptr, const QString& detailed_message = QString());

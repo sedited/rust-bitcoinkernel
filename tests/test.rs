@@ -8,11 +8,11 @@ mod tests {
     use bitcoinkernel::{
         prelude::*, verify, Block, BlockHash, BlockHeader, BlockSpentOutputs, BlockTreeEntry,
         BlockValidationStateRef, ChainParams, ChainType, ChainstateManager,
-        ChainstateManagerBuilder, Coin, Context, ContextBuilder, KernelError, Log, Logger,
-        PrecomputedTransactionData, ScriptPubkey, ScriptVerificationFlags, ScriptVerifyError,
-        Transaction, TransactionSpentOutputs, TxIn, TxOut, VERIFY_ALL, VERIFY_ALL_PRE_TAPROOT,
-        VERIFY_CHECKLOCKTIMEVERIFY, VERIFY_CHECKSEQUENCEVERIFY, VERIFY_DERSIG, VERIFY_NONE,
-        VERIFY_NULLDUMMY, VERIFY_P2SH, VERIFY_TAPROOT, VERIFY_WITNESS,
+        ChainstateManagerBuilder, Coin, Context, ContextBuilder, KernelError, Log, LogEntry,
+        LogLevel, Logger, PrecomputedTransactionData, ScriptPubkey, ScriptVerificationFlags,
+        ScriptVerifyError, Transaction, TransactionSpentOutputs, TxIn, TxOut, VERIFY_ALL,
+        VERIFY_ALL_PRE_TAPROOT, VERIFY_CHECKLOCKTIMEVERIFY, VERIFY_CHECKSEQUENCEVERIFY,
+        VERIFY_DERSIG, VERIFY_NONE, VERIFY_NULLDUMMY, VERIFY_P2SH, VERIFY_TAPROOT, VERIFY_WITNESS,
     };
     use std::fs::File;
     use std::io::{BufRead, BufReader};
@@ -21,10 +21,15 @@ mod tests {
     struct TestLog {}
 
     impl Log for TestLog {
-        fn log(&self, message: &str) {
-            log::info!(
-                target: "libbitcoinkernel",
-                "{}", message.strip_suffix("\r\n").or_else(|| message.strip_suffix('\n')).unwrap_or(message));
+        fn log(&mut self, entry: LogEntry<'_>) {
+            let level = match entry.level() {
+                LogLevel::Trace => log::Level::Trace,
+                LogLevel::Debug => log::Level::Debug,
+                LogLevel::Info => log::Level::Info,
+                LogLevel::Warning => log::Level::Warn,
+                LogLevel::Error => log::Level::Error,
+            };
+            log::log!(target: "libbitcoinkernel", level, "{}", entry.message());
         }
     }
 

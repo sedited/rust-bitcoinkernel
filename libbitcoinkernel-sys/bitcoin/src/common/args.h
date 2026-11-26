@@ -6,7 +6,6 @@
 #define BITCOIN_COMMON_ARGS_H
 
 #include <common/settings.h>
-#include <compat/compat.h>
 #include <sync.h>
 #include <util/chaintype.h>
 #include <util/fs.h>
@@ -92,16 +91,11 @@ struct SectionInfo {
     int m_line;
 };
 
-std::string SettingToString(const common::SettingsValue&, const std::string&);
 std::optional<std::string> SettingToString(const common::SettingsValue&);
-
-template <std::integral Int>
-Int SettingTo(const common::SettingsValue&, Int);
 
 template <std::integral Int>
 std::optional<Int> SettingTo(const common::SettingsValue&);
 
-bool SettingToBool(const common::SettingsValue&, bool);
 std::optional<bool> SettingToBool(const common::SettingsValue&);
 
 class ArgsManager

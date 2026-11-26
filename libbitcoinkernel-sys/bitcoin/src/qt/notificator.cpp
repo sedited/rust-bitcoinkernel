@@ -2,9 +2,11 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
 
 #include <qt/notificator.h>
+
+#include <attributes.h>
 
 #include <QApplication>
 #include <QByteArray>
@@ -82,8 +84,8 @@ private:
     int bitsPerSample;
     QByteArray image;
 
-    friend QDBusArgument &operator<<(QDBusArgument &a, const FreedesktopImage &i);
-    friend const QDBusArgument &operator>>(const QDBusArgument &a, FreedesktopImage &i);
+    friend QDBusArgument& operator<<(QDBusArgument& a, const FreedesktopImage& i);
+    friend const QDBusArgument& operator>>(const QDBusArgument& a LIFETIMEBOUND, FreedesktopImage& i);
 };
 
 Q_DECLARE_METATYPE(FreedesktopImage);

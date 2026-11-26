@@ -7,6 +7,7 @@
 Verify that a bitcoind node can maintain list of wallets loading on startup
 """
 import os
+import platform
 import shutil
 import stat
 import uuid
@@ -64,6 +65,60 @@ class WalletStartupTest(BitcoinTestFramework):
         # Reset directory permissions for cleanup
         dir_path.chmod(original_dir_perms)
 
+    def test_disabled_settings(self, node):
+        self.log.info("Test wallet startup preferences with dynamic settings disabled")
+        load_message = "Wallet load on startup setting could not be updated, so wallet may not be loaded next node startup."
+
+        settings_path = node.chain_path / "settings.json"
+        settings_before = settings_path.read_bytes()
+        self.restart_node(0, extra_args=["-nosettings"])
+        assert_equal(node.listwallets(), [''])
+
+        assert_equal(node.createwallet(wallet_name="no_settings", load_on_startup=True), {"name": "no_settings", "warnings": [load_message]})
+        assert_equal(set(node.listwallets()), {'', 'no_settings'})
+
+        # Leaving the startup preference unchanged does not warn, and the wallet remains usable.
+        assert_equal(node.unloadwallet(wallet_name="no_settings"), {})
+        assert_equal(node.loadwallet(filename="no_settings"), {"name": "no_settings"})
+        assert_equal(node.get_wallet_rpc("no_settings").getwalletinfo()["walletname"], "no_settings")
+
+        # Re-adding a wallet already in the startup list skips the write, so it does not warn either.
+        assert_equal(node.unloadwallet(wallet_name="no_settings"), {})
+        assert_equal(node.loadwallet(filename="no_settings", load_on_startup=True), {"name": "no_settings"})
+        assert_equal(node.get_wallet_rpc("no_settings").getwalletinfo()["walletname"], "no_settings")
+
+        assert_equal(node.loadwallet(filename="w2", load_on_startup=True), {"name": "w2", "warnings": [load_message]})
+        assert_equal(set(node.listwallets()), {'', 'no_settings', 'w2'})
+
+        assert_equal(node.unloadwallet(wallet_name="no_settings", load_on_startup=False), {"warnings": ["Wallet load on startup setting could not be updated, so wallet may still be loaded next node startup."]})
+        assert_equal(set(node.listwallets()), {'', 'w2'})
+        self.stop_node(0)
+        assert_equal(settings_path.read_bytes(), settings_before)
+
+        # Re-enabling settings restores the original startup preferences.
+        self.start_node(0)
+        assert_equal(set(node.listwallets()), {'w2', 'w3'})
+
+    def test_startup_warning_log_injection(self, node):
+        self.log.info("Test that a wallet name cannot forge log lines through startup warnings")
+        forged_log_line = "ERROR: ConnectTip: ConnectBlock 0000000000000000deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef failed, bad-txns-inputs-missingorspent"
+        wallet_name = f"w5\n{forged_log_line}"
+        if platform.system() == 'Windows':
+            # Windows disallows newlines in filenames
+            assert_raises_rpc_error(None, None, node.createwallet, wallet_name, load_on_startup=True)
+            return
+
+        with node.assert_debug_log([f"[{wallet_name}]".replace("\n", "\\x0a")]):
+            assert_equal(node.createwallet(wallet_name=wallet_name, load_on_startup=True)["name"], wallet_name)
+        self.stop_node(0)
+
+        wallet_path = node.wallets_path / wallet_name
+        self.cleanup_folder(wallet_path)
+        warning = f"Skipping -wallet path that doesn't exist. Failed to load database path '{wallet_path}'. Path does not exist."
+        with node.assert_debug_log([warning.replace("\n", "\\x0a")], unexpected_msgs=[f"[warning] {forged_log_line}"]):
+            self.start_node(0)
+        self.stop_node(0, expected_stderr=f"Warning: {warning}")
+
     def run_test(self):
         self.log.info('Should start without any wallets')
         assert_equal(self.nodes[0].listwallets(), [])
@@ -94,6 +149,8 @@ class WalletStartupTest(BitcoinTestFramework):
         assert_equal(set(self.nodes[0].listwallets()), set(('w2', 'w3')))
 
         self.test_load_unwritable_wallet(self.nodes[0])
+        self.test_disabled_settings(self.nodes[0])
+        self.test_startup_warning_log_injection(self.nodes[0])
 
 if __name__ == '__main__':
     WalletStartupTest(__file__).main()

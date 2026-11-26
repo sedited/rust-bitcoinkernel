@@ -26,7 +26,7 @@
  * Maximum amount of time that a block timestamp is allowed to exceed the
  * current time before the block will be accepted.
  */
-static constexpr int64_t MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60;
+inline constexpr int64_t MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60;
 
 /**
  * Timestamp window used as a grace period by code that compares external
@@ -34,10 +34,10 @@ static constexpr int64_t MAX_FUTURE_BLOCK_TIME = 2 * 60 * 60;
  * to block timestamps. This should be set at least as high as
  * MAX_FUTURE_BLOCK_TIME.
  */
-static constexpr int64_t TIMESTAMP_WINDOW = MAX_FUTURE_BLOCK_TIME;
+inline constexpr int64_t TIMESTAMP_WINDOW = MAX_FUTURE_BLOCK_TIME;
 //! Init values for CBlockIndex nSequenceId when loaded from disk
-static constexpr int32_t SEQ_ID_BEST_CHAIN_FROM_DISK = 0;
-static constexpr int32_t SEQ_ID_INIT_FROM_DISK = 1;
+inline constexpr int32_t SEQ_ID_BEST_CHAIN_FROM_DISK = 0;
+inline constexpr int32_t SEQ_ID_INIT_FROM_DISK = 1;
 
 enum BlockStatus : uint32_t {
     //! Unused.
@@ -109,24 +109,24 @@ public:
     int nFile GUARDED_BY(::cs_main){0};
 
     //! Byte offset within blk?????.dat where this block's data is stored
-    unsigned int nDataPos GUARDED_BY(::cs_main){0};
+    uint64_t nDataPos GUARDED_BY(::cs_main){0};
 
     //! Byte offset within rev?????.dat where this block's undo data is stored
-    unsigned int nUndoPos GUARDED_BY(::cs_main){0};
+    uint64_t nUndoPos GUARDED_BY(::cs_main){0};
 
     //! (memory only) Total amount of work (expected number of hashes) in the chain up to and including this block
     arith_uint256 nChainWork{};
-
-    //! Number of transactions in this block. This will be nonzero if the block
-    //! reached the VALID_TRANSACTIONS level, and zero otherwise.
-    //! Note: in a potential headers-first mode, this number cannot be relied upon
-    unsigned int nTx{0};
 
     //! (memory only) Number of transactions in the chain up to and including this block.
     //! This value will be non-zero if this block and all previous blocks back
     //! to the genesis block or an assumeutxo snapshot block have reached the
     //! VALID_TRANSACTIONS level.
     uint64_t m_chain_tx_count{0};
+
+    //! Number of transactions in this block. This will be nonzero if the block
+    //! reached the VALID_TRANSACTIONS level, and zero otherwise.
+    //! Note: in a potential headers-first mode, this number cannot be relied upon
+    unsigned int nTx{0};
 
     //! Verification status of this block. See enum BlockStatus
     //!

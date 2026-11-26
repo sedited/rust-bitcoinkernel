@@ -16,8 +16,8 @@
 #include <string>
 #include <type_traits>
 
-const std::string CURRENCY_UNIT = "BTC"; // One formatted unit
-const std::string CURRENCY_ATOM = "sat"; // One indivisible minimum value unit
+inline const std::string CURRENCY_UNIT = "BTC"; // One formatted unit
+inline const std::string CURRENCY_ATOM = "sat"; // One indivisible minimum value unit
 
 enum class FeeRateFormat {
     BTC_KVB, //!< Use BTC/kvB fee rate unit
@@ -38,7 +38,7 @@ public:
     /** Fee rate of 0 satoshis per 0 vB */
     CFeeRate() = default;
     template<std::integral I> // Disallow silent float -> int conversion
-    explicit CFeeRate(const I m_feerate_kvb) : m_feerate(FeePerVSize(m_feerate_kvb, 1000)) {}
+    explicit constexpr CFeeRate(const I m_feerate_kvb) : m_feerate(FeePerVSize(m_feerate_kvb, 1000)) {}
 
     /**
      * Construct a fee rate from a fee in satoshis and a vsize in vB.
@@ -48,18 +48,22 @@ public:
     CFeeRate(const CAmount& nFeePaid, int32_t virtual_bytes);
 
     /**
-     * Return the fee in satoshis for the given vsize in vbytes.
-     * If the calculated fee would have fractional satoshis, then the
-     * returned fee will always be rounded up to the nearest satoshi.
+     * Construct from a fee rate expressed as FeePerVSize.
+     *
+     * Lossless: CFeeRate is internally a FeePerVSize, so the exact
+     * fee/vsize fraction is preserved. A feerate whose size is less than
+     * or equal to 0 results in 0 fee rate per 0 size.
      */
+    explicit CFeeRate(const FeePerVSize& feerate) : m_feerate{feerate.size > 0 ? feerate : FeePerVSize{}} {}
+
+    /// Return the fee in satoshis for the given vsize in vbytes. (Rounds up)
     CAmount GetFee(int32_t virtual_bytes) const;
 
     FeePerVSize GetFeePerVSize() const { return m_feerate; }
 
-    /**
-     * Return the fee in satoshis for a vsize of 1000 vbytes
-     */
-    CAmount GetFeePerK() const { return CAmount(m_feerate.EvaluateFeeDown(1000)); }
+    /// Return the fee in satoshis for a vsize of 1000 vbytes. (Rounds down)
+    CAmount GetFeePerK() const;
+
     friend std::strong_ordering operator<=>(const CFeeRate& a, const CFeeRate& b) noexcept
     {
         return ByRatio{a.m_feerate} <=> ByRatio{b.m_feerate};

@@ -4,12 +4,10 @@
 
 #include <consensus/validation.h>
 #include <core_memusage.h>
-#include <policy/policy.h>
 #include <primitives/transaction.h>
 #include <streams.h>
 #include <test/fuzz/fuzz.h>
 
-#include <cassert>
 
 FUZZ_TARGET(tx_in)
 {
@@ -21,7 +19,6 @@ FUZZ_TARGET(tx_in)
     }
 
     (void)GetTransactionInputWeight(tx_in);
-    (void)GetVirtualTransactionInputSize(tx_in);
     (void)RecursiveDynamicUsage(tx_in);
 
     (void)tx_in.ToString();

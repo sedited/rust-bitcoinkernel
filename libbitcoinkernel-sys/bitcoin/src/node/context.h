@@ -5,21 +5,22 @@
 #ifndef BITCOIN_NODE_CONTEXT_H
 #define BITCOIN_NODE_CONTEXT_H
 
-#include <node/mining_types.h>
-
 #include <atomic>
 #include <cstdlib>
 #include <functional>
 #include <memory>
 #include <thread>
+#include <utility>
 #include <vector>
 
 class ArgsManager;
 class AddrMan;
 class BanMan;
 class BaseIndex;
-class CBlockPolicyEstimator;
+class BlockFilterIndex;
 class CConnman;
+class CoinStatsIndex;
+class FeeRateEstimatorManager;
 class ValidationSignals;
 class CScheduler;
 class CTxMemPool;
@@ -28,10 +29,11 @@ class ECC_Context;
 class NetGroupManager;
 class PeerManager;
 class TorController;
+class TxIndex;
+class TxoSpenderIndex;
 namespace interfaces {
 class Chain;
 class ChainClient;
-class Mining;
 class Init;
 class WalletLoader;
 } // namespace interfaces
@@ -43,8 +45,26 @@ class SignalInterrupt;
 }
 
 namespace node {
+class BlockTemplateManager;
 class KernelNotifications;
 class Warnings;
+
+// A custom deleter lets NodeContext own indexes without node/context.cpp
+// including index headers. Index code includes node/context.h, so including
+// index headers there would create a circular dependency.
+struct IndexDeleter {
+    void operator()(BlockFilterIndex* index) const noexcept;
+    void operator()(CoinStatsIndex* index) const noexcept;
+    void operator()(TxIndex* index) const noexcept;
+    void operator()(TxoSpenderIndex* index) const noexcept;
+};
+
+//! Construct an index with the out-of-line deleter used by NodeContext.
+template <typename Index, typename... Args>
+std::unique_ptr<Index, IndexDeleter> MakeIndex(Args&&... args)
+{
+    return std::unique_ptr<Index, IndexDeleter>{new Index(std::forward<Args>(args)...)};
+}
 
 //! NodeContext struct containing references to chain state and connection
 //! state.
@@ -70,34 +90,34 @@ struct NodeContext {
     std::unique_ptr<CConnman> connman;
     std::unique_ptr<CTxMemPool> mempool;
     std::unique_ptr<const NetGroupManager> netgroupman;
-    std::unique_ptr<CBlockPolicyEstimator> fee_estimator;
+    std::unique_ptr<FeeRateEstimatorManager> fee_estimator_man;
     std::unique_ptr<PeerManager> peerman;
     std::unique_ptr<TorController> tor_controller;
     std::unique_ptr<ChainstateManager> chainman;
     std::unique_ptr<BanMan> banman;
     ArgsManager* args{nullptr}; // Currently a raw pointer because the memory is not managed by this struct
-    std::vector<BaseIndex*> indexes; // raw pointers because memory is not managed by this struct
+    std::vector<BaseIndex*> indexes; // raw pointers because memory is managed by index owner members below
     std::unique_ptr<interfaces::Chain> chain;
     //! List of all chain clients (wallet processes or other client) connected to node.
     std::vector<std::unique_ptr<interfaces::ChainClient>> chain_clients;
-    //! Reference to chain client that should used to load or create wallets
-    //! opened by the gui.
-    std::unique_ptr<interfaces::Mining> mining;
-    //! Mining options used to create block templates. This value member is an
-    //! exception to the dependency guidance above because BlockCreateOptions is
-    //! a minimal dependency. It could be moved to the BlockTemplateCache
-    //! proposed in bitcoin/bitcoin#33421.
-    BlockCreateOptions mining_args;
     interfaces::WalletLoader* wallet_loader{nullptr};
     std::unique_ptr<CScheduler> scheduler;
     std::function<void()> rpc_interruption_point = [] {};
     //! Issues blocking calls about sync status, errors and warnings
     std::unique_ptr<KernelNotifications> notifications;
+    //! Must be destroyed before its dependencies (holds references to them).
+    std::unique_ptr<BlockTemplateManager> block_template_manager;
     //! Issues calls about blocks and transactions
     std::unique_ptr<ValidationSignals> validation_signals;
     std::atomic<int> exit_status{EXIT_SUCCESS};
     //! Manages all the node warnings
     std::unique_ptr<node::Warnings> warnings;
+    //! Destroy indexes while they can still unregister from validation_signals
+    //! and report fatal errors through exit_status and warnings.
+    std::vector<std::unique_ptr<BlockFilterIndex, IndexDeleter>> block_filter_indexes;
+    std::unique_ptr<TxIndex, IndexDeleter> txindex;
+    std::unique_ptr<TxoSpenderIndex, IndexDeleter> txospenderindex;
+    std::unique_ptr<CoinStatsIndex, IndexDeleter> coin_stats_index;
     std::thread background_init_thread;
 
     //! Declare default constructor and destructor that are not inline, so code

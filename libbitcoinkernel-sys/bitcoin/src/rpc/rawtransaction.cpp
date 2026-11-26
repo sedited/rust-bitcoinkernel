@@ -3,49 +3,76 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <addresstype.h>
 #include <base58.h>
 #include <chain.h>
 #include <coins.h>
+#include <common/types.h>
 #include <consensus/amount.h>
-#include <consensus/validation.h>
 #include <core_io.h>
+#include <crypto/common.h>
+#include <crypto/hex_base.h>
+#include <hash.h>
 #include <index/txindex.h>
+#include <kernel/chainparams.h>
+#include <key.h>
 #include <key_io.h>
 #include <node/blockstorage.h>
 #include <node/coin.h>
 #include <node/context.h>
 #include <node/psbt.h>
 #include <node/transaction.h>
-#include <node/types.h>
-#include <policy/packages.h>
-#include <policy/policy.h>
-#include <policy/rbf.h>
+#include <policy/feerate.h>
+#include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <psbt.h>
+#include <pubkey.h>
 #include <random.h>
 #include <rpc/blockchain.h>
+#include <rpc/protocol.h>
 #include <rpc/rawtransaction_util.h>
+#include <rpc/register.h> // IWYU pragma: associated
+#include <rpc/request.h>
 #include <rpc/server.h>
 #include <rpc/server_util.h>
 #include <rpc/util.h>
+#include <script/interpreter.h>
+#include <script/keyorigin.h>
 #include <script/script.h>
 #include <script/sign.h>
 #include <script/signingprovider.h>
 #include <script/solver.h>
+#include <serialize.h>
+#include <streams.h>
+#include <sync.h>
+#include <tinyformat.h>
+#include <txmempool.h>
 #include <uint256.h>
 #include <undo.h>
+#include <univalue.h>
 #include <util/bip32.h>
 #include <util/check.h>
+#include <util/expected.h>
+#include <util/result.h>
 #include <util/strencodings.h>
-#include <util/string.h>
+#include <util/translation.h>
 #include <util/vector.h>
 #include <validation.h>
-#include <validationinterface.h>
 
+#include <algorithm>
+#include <any>
+#include <bitset>
+#include <cstddef>
 #include <cstdint>
-#include <numeric>
-
-#include <univalue.h>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <span>
+#include <stdexcept>
+#include <tuple>
+#include <utility>
+#include <vector>
 
 using node::AnalyzePSBT;
 using node::FindCoins;
@@ -134,8 +161,8 @@ PartiallySignedTransaction ProcessPSBT(const std::string& psbt_string, const std
     }
     PartiallySignedTransaction psbtx = *psbt_res;
 
-    if (g_txindex) g_txindex->BlockUntilSyncedToCurrentChain();
     const NodeContext& node = EnsureAnyNodeContext(context);
+    if (node.txindex) node.txindex->BlockUntilSyncedToCurrentChain();
 
     // If we can't find the corresponding full transaction for all of our inputs,
     // this will be used to find just the utxos for the segwit inputs for which
@@ -148,17 +175,8 @@ PartiallySignedTransaction ProcessPSBT(const std::string& psbt_string, const std
         // The `non_witness_utxo` is the whole previous transaction
         if (psbt_input.non_witness_utxo) continue;
 
-        CTransactionRef tx;
-
-        // Look in the txindex
-        if (g_txindex) {
-            uint256 block_hash;
-            g_txindex->FindTx(psbt_input.prev_txid, block_hash, tx);
-        }
-        // If we still don't have it look in the mempool
-        if (!tx) {
-            tx = node.mempool->get(psbt_input.prev_txid);
-        }
+        uint256 block_hash;
+        CTransactionRef tx{GetTransaction(/*block_index=*/nullptr, node.mempool.get(), node.txindex.get(), psbt_input.prev_txid, node.chainman->m_blockman, block_hash)};
         if (tx) {
             psbt_input.non_witness_utxo = tx;
         } else {
@@ -196,7 +214,8 @@ PartiallySignedTransaction ProcessPSBT(const std::string& psbt_string, const std
         // We only actually care about those if our signing provider doesn't hide private
         // information, as is the case with `descriptorprocesspsbt`
         // Only error for mismatching sighash types as it is critical that the sighash to sign with matches the PSBT's
-        if (SignPSBTInput(provider, psbtx, /*index=*/i, &txdata, {.sighash_type = sighash_type, .finalize = finalize}, /*out_sigdata=*/nullptr) == common::PSBTError::SIGHASH_MISMATCH) {
+        const auto sign_result = SignPSBTInput(provider, psbtx, /*index=*/i, &txdata, {.sighash_type = sighash_type, .finalize = finalize}, /*out_sigdata=*/nullptr);
+        if (!sign_result.has_value() && sign_result.error() == common::PSBTError::SIGHASH_MISMATCH) {
             throw JSONRPCPSBTError(common::PSBTError::SIGHASH_MISMATCH);
         }
     }
@@ -216,6 +235,7 @@ static RPCMethod getrawtransaction()
     const std::vector<RPCResult> verbosity_1_block{
         {RPCResult::Type::BOOL, "in_active_chain", /*optional=*/true, "Whether specified block is in the active chain or not (only present with explicit \"blockhash\" argument)"},
         {RPCResult::Type::STR_HEX, "blockhash", /*optional=*/true, "the block hash"},
+        {RPCResult::Type::NUM, "vsize_adjusted", /*optional=*/true, "Sigop-adjusted virtual size in bytes, present for mempool transactions."},
         {RPCResult::Type::NUM, "confirmations", /*optional=*/true, "The confirmations"},
         {RPCResult::Type::NUM_TIME, "blocktime", /*optional=*/true, "The block time expressed in " + UNIX_EPOCH_TIME},
         {RPCResult::Type::NUM, "time", /*optional=*/true, "Same as \"blocktime\""},
@@ -295,21 +315,23 @@ static RPCMethod getrawtransaction()
     }
 
     bool f_txindex_ready = false;
-    if (g_txindex && !blockindex) {
-        f_txindex_ready = g_txindex->BlockUntilSyncedToCurrentChain();
+    if (node.txindex && !blockindex) {
+        f_txindex_ready = node.txindex->BlockUntilSyncedToCurrentChain();
     }
 
     uint256 hash_block;
-    const CTransactionRef tx = GetTransaction(blockindex, node.mempool.get(), txid, chainman.m_blockman, hash_block);
+    CTransactionRef tx;
+    try {
+        tx = GetTransaction(blockindex, node.mempool.get(), node.txindex.get(), txid, chainman.m_blockman, hash_block);
+    } catch (const std::runtime_error&) {
+        if (blockindex) WITH_LOCK(::cs_main, CheckBlockDataAvailability(chainman.m_blockman, *blockindex, /*check_for_undo=*/false));
+        throw;
+    }
     if (!tx) {
         std::string errmsg;
         if (blockindex) {
-            const bool block_has_data = WITH_LOCK(::cs_main, return blockindex->nStatus & BLOCK_HAVE_DATA);
-            if (!block_has_data) {
-                throw JSONRPCError(RPC_MISC_ERROR, "Block not available");
-            }
             errmsg = "No such transaction found in the provided block";
-        } else if (!g_txindex) {
+        } else if (!node.txindex) {
             errmsg = "No such mempool transaction. Use -txindex or provide a block hash to enable blockchain transaction queries";
         } else if (!f_txindex_ready) {
             errmsg = "No such mempool transaction. Blockchain transactions are still in the process of being indexed";
@@ -333,6 +355,15 @@ static RPCMethod getrawtransaction()
         LOCK(cs_main);
         blockindex = chainman.m_blockman.LookupBlockIndex(hash_block); // May be nullptr for mempool transactions
     }
+
+    // Add sigop-adjusted virtual size if the transaction exists in the mempool.
+    if (blockindex == nullptr && hash_block.IsNull() && node.mempool) {
+        auto info = node.mempool->info(tx->GetHash());
+        if (info.tx) {
+            result.pushKV("vsize_adjusted", info.vsize);
+        }
+    }
+
     if (verbosity == 1) {
         TxToJSON(*tx, hash_block, result, chainman.ActiveChainstate());
         return result;
@@ -353,7 +384,7 @@ static RPCMethod getrawtransaction()
     }
 
     CTxUndo* undoTX {nullptr};
-    auto it = std::find_if(block.vtx.begin(), block.vtx.end(), [tx](CTransactionRef t){ return *t == *tx; });
+    auto it = std::find_if(block.vtx.begin(), block.vtx.end(), [tx](CTransactionRef t){ return t->Equals(*tx); });
     if (it != block.vtx.end()) {
         // -1 as blockundo does not have coinbase tx
         undoTX = &blockUndo.vtxundo.at(it - block.vtx.begin() - 1);
@@ -690,7 +721,7 @@ static RPCMethod signrawtransactionwithkey()
                     {"hexstring", RPCArg::Type::STR, RPCArg::Optional::NO, "The transaction hex string"},
                     {"privkeys", RPCArg::Type::ARR, RPCArg::Optional::NO, "The base58-encoded private keys for signing",
                         {
-                            {"privatekey", RPCArg::Type::STR_HEX, RPCArg::Optional::OMITTED, "private key in base58-encoding"},
+                            {"privatekey", RPCArg::Type::STR, RPCArg::Optional::OMITTED, "private key in base58-encoding"},
                         },
                         },
                     {"prevtxs", RPCArg::Type::ARR, RPCArg::Optional::OMITTED, "The previous dependent transaction outputs",
@@ -707,7 +738,7 @@ static RPCMethod signrawtransactionwithkey()
                                 },
                         },
                         },
-                    {"sighashtype", RPCArg::Type::STR, RPCArg::Default{"DEFAULT for Taproot, ALL otherwise"}, "The signature hash type. Must be one of:\n"
+                    {"sighashtype", RPCArg::Type::STR, RPCArg::DefaultHint{"DEFAULT for Taproot, ALL otherwise"}, "The signature hash type. Must be one of:\n"
             "       \"DEFAULT\"\n"
             "       \"ALL\"\n"
             "       \"NONE\"\n"
@@ -1111,12 +1142,11 @@ static RPCMethod decodepsbt()
     for (std::pair<KeyOriginInfo, std::set<CExtPubKey>> xpub_pair : psbtx.m_xpubs) {
         for (auto& xpub : xpub_pair.second) {
             std::vector<unsigned char> ser_xpub;
-            ser_xpub.assign(BIP32_EXTKEY_WITH_VERSION_SIZE, 0);
-            xpub.EncodeWithVersion(ser_xpub.data());
+            VectorWriter{ser_xpub, 0, xpub.version, xpub};
 
             UniValue keypath(UniValue::VOBJ);
             keypath.pushKV("xpub", EncodeBase58Check(ser_xpub));
-            keypath.pushKV("master_fingerprint", HexStr(std::span<unsigned char>(xpub_pair.first.fingerprint, xpub_pair.first.fingerprint + 4)));
+            keypath.pushKV("master_fingerprint", HexStr(xpub_pair.first.fingerprint));
             keypath.pushKV("path", WriteHDKeypath(xpub_pair.first.path));
             global_xpubs.push_back(std::move(keypath));
         }
@@ -1155,8 +1185,8 @@ static RPCMethod decodepsbt()
 
     // Unknown data
     UniValue unknowns(UniValue::VOBJ);
-    for (auto entry : psbtx.unknown) {
-        unknowns.pushKV(HexStr(entry.first), HexStr(entry.second));
+    for (auto [key, value] : psbtx.unknown) {
+        unknowns.pushKVEnd(HexStr(key), HexStr(value));
     }
     result.pushKV("unknown", std::move(unknowns));
 
@@ -1215,7 +1245,7 @@ static RPCMethod decodepsbt()
 
         // Sighash
         if (input.sighash_type != std::nullopt) {
-            in.pushKV("sighash", SighashToStr((unsigned char)*input.sighash_type));
+            in.pushKV("sighash", SighashToStr(*input.sighash_type));
         }
 
         // Redeem script and witness script
@@ -1237,7 +1267,7 @@ static RPCMethod decodepsbt()
                 UniValue keypath(UniValue::VOBJ);
                 keypath.pushKV("pubkey", HexStr(entry.first));
 
-                keypath.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(entry.second.fingerprint)));
+                keypath.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(entry.second.fingerprint.data())));
                 keypath.pushKV("path", WriteHDKeypath(entry.second.path));
                 keypaths.push_back(std::move(keypath));
             }
@@ -1263,7 +1293,7 @@ static RPCMethod decodepsbt()
         if (!input.ripemd160_preimages.empty()) {
             UniValue ripemd160_preimages(UniValue::VOBJ);
             for (const auto& [hash, preimage] : input.ripemd160_preimages) {
-                ripemd160_preimages.pushKV(HexStr(hash), HexStr(preimage));
+                ripemd160_preimages.pushKVEnd(HexStr(hash), HexStr(preimage));
             }
             in.pushKV("ripemd160_preimages", std::move(ripemd160_preimages));
         }
@@ -1272,7 +1302,7 @@ static RPCMethod decodepsbt()
         if (!input.sha256_preimages.empty()) {
             UniValue sha256_preimages(UniValue::VOBJ);
             for (const auto& [hash, preimage] : input.sha256_preimages) {
-                sha256_preimages.pushKV(HexStr(hash), HexStr(preimage));
+                sha256_preimages.pushKVEnd(HexStr(hash), HexStr(preimage));
             }
             in.pushKV("sha256_preimages", std::move(sha256_preimages));
         }
@@ -1281,7 +1311,7 @@ static RPCMethod decodepsbt()
         if (!input.hash160_preimages.empty()) {
             UniValue hash160_preimages(UniValue::VOBJ);
             for (const auto& [hash, preimage] : input.hash160_preimages) {
-                hash160_preimages.pushKV(HexStr(hash), HexStr(preimage));
+                hash160_preimages.pushKVEnd(HexStr(hash), HexStr(preimage));
             }
             in.pushKV("hash160_preimages", std::move(hash160_preimages));
         }
@@ -1290,7 +1320,7 @@ static RPCMethod decodepsbt()
         if (!input.hash256_preimages.empty()) {
             UniValue hash256_preimages(UniValue::VOBJ);
             for (const auto& [hash, preimage] : input.hash256_preimages) {
-                hash256_preimages.pushKV(HexStr(hash), HexStr(preimage));
+                hash256_preimages.pushKVEnd(HexStr(hash), HexStr(preimage));
             }
             in.pushKV("hash256_preimages", std::move(hash256_preimages));
         }
@@ -1354,7 +1384,7 @@ static RPCMethod decodepsbt()
                 const auto& [leaf_hashes, origin] = leaf_origin;
                 UniValue path_obj(UniValue::VOBJ);
                 path_obj.pushKV("pubkey", HexStr(xonly));
-                path_obj.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(origin.fingerprint)));
+                path_obj.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(origin.fingerprint.data())));
                 path_obj.pushKV("path", WriteHDKeypath(origin.path));
                 UniValue leaf_hashes_arr(UniValue::VARR);
                 for (const auto& leaf_hash : leaf_hashes) {
@@ -1439,8 +1469,8 @@ static RPCMethod decodepsbt()
         // Unknown data
         if (input.unknown.size() > 0) {
             UniValue unknowns(UniValue::VOBJ);
-            for (auto entry : input.unknown) {
-                unknowns.pushKV(HexStr(entry.first), HexStr(entry.second));
+            for (auto [key, value] : input.unknown) {
+                unknowns.pushKVEnd(HexStr(key), HexStr(value));
             }
             in.pushKV("unknown", std::move(unknowns));
         }
@@ -1473,7 +1503,7 @@ static RPCMethod decodepsbt()
             for (auto entry : output.hd_keypaths) {
                 UniValue keypath(UniValue::VOBJ);
                 keypath.pushKV("pubkey", HexStr(entry.first));
-                keypath.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(entry.second.fingerprint)));
+                keypath.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(entry.second.fingerprint.data())));
                 keypath.pushKV("path", WriteHDKeypath(entry.second.path));
                 keypaths.push_back(std::move(keypath));
             }
@@ -1513,7 +1543,7 @@ static RPCMethod decodepsbt()
                 const auto& [leaf_hashes, origin] = leaf_origin;
                 UniValue path_obj(UniValue::VOBJ);
                 path_obj.pushKV("pubkey", HexStr(xonly));
-                path_obj.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(origin.fingerprint)));
+                path_obj.pushKV("master_fingerprint", strprintf("%08x", ReadBE32(origin.fingerprint.data())));
                 path_obj.pushKV("path", WriteHDKeypath(origin.path));
                 UniValue leaf_hashes_arr(UniValue::VARR);
                 for (const auto& leaf_hash : leaf_hashes) {
@@ -1558,8 +1588,8 @@ static RPCMethod decodepsbt()
         // Unknown data
         if (output.unknown.size() > 0) {
             UniValue unknowns(UniValue::VOBJ);
-            for (auto entry : output.unknown) {
-                unknowns.pushKV(HexStr(entry.first), HexStr(entry.second));
+            for (auto [key, value] : output.unknown) {
+                unknowns.pushKVEnd(HexStr(key), HexStr(value));
             }
             out.pushKV("unknown", std::move(unknowns));
         }
@@ -1663,7 +1693,7 @@ static RPCMethod finalizepsbt()
     }
     PartiallySignedTransaction psbtx = *psbt_res;
 
-    bool extract = request.params[1].isNull() || (!request.params[1].isNull() && request.params[1].get_bool());
+    const bool extract{self.Arg<bool>("extract")};
 
     CMutableTransaction mtx;
     bool complete = FinalizeAndExtractPSBT(psbtx, mtx);
@@ -1717,14 +1747,11 @@ static RPCMethod createpsbt()
     CMutableTransaction rawTx = ConstructTransaction(request.params[0], request.params[1], request.params[2], rbf, self.Arg<uint32_t>("version"));
 
     // Make a blank psbt
-    uint32_t psbt_version = 2;
-    if (!request.params[5].isNull()) {
-        psbt_version = request.params[5].getInt<uint32_t>();
-    }
+    const uint32_t psbt_version{self.Arg<uint32_t>("psbt_version")};
     if (psbt_version != 2 && psbt_version != 0) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "The PSBT version can only be 2 or 0");
     }
-    PartiallySignedTransaction psbtx(rawTx, psbt_version);
+    PartiallySignedTransaction psbtx{rawTx, psbt_version};
 
     // Serialize the PSBT
     DataStream ssTx{};
@@ -1767,7 +1794,7 @@ static RPCMethod converttopsbt()
 {
     // parse hex string from parameter
     CMutableTransaction tx;
-    bool permitsigdata = request.params[1].isNull() ? false : request.params[1].get_bool();
+    const bool permitsigdata{self.Arg<bool>("permitsigdata")};
     bool witness_specified = !request.params[2].isNull();
     bool iswitness = witness_specified ? request.params[2].get_bool() : false;
     const bool try_witness = witness_specified ? iswitness : true;
@@ -1786,14 +1813,11 @@ static RPCMethod converttopsbt()
     }
 
     // Make a blank psbt
-    uint32_t psbt_version = 2;
-    if (!request.params[3].isNull()) {
-        psbt_version = request.params[3].getInt<uint32_t>();
-    }
+    const uint32_t psbt_version{self.Arg<uint32_t>("psbt_version")};
     if (psbt_version != 2 && psbt_version != 0) {
         throw JSONRPCError(RPC_INVALID_PARAMETER, "The PSBT version can only be 2 or 0");
     }
-    PartiallySignedTransaction psbtx(tx, psbt_version);
+    PartiallySignedTransaction psbtx{tx, psbt_version};
 
     // Serialize the PSBT
     DataStream ssTx{};
@@ -1918,37 +1942,17 @@ static RPCMethod joinpsbts()
         for (const PSBTOutput& output : psbt.outputs) {
             merged_psbt.AddOutput(output);
         }
-        for (auto& xpub_pair : psbt.m_xpubs) {
-            if (!merged_psbt.m_xpubs.contains(xpub_pair.first)) {
-                merged_psbt.m_xpubs[xpub_pair.first] = xpub_pair.second;
-            } else {
-                merged_psbt.m_xpubs[xpub_pair.first].insert(xpub_pair.second.begin(), xpub_pair.second.end());
-            }
-        }
+        merged_psbt.MergeGlobalXPubs(psbt);
+        merged_psbt.m_proprietary.insert(psbt.m_proprietary.begin(), psbt.m_proprietary.end());
         merged_psbt.unknown.insert(psbt.unknown.begin(), psbt.unknown.end());
     }
 
-    // Generate list of shuffled indices for shuffling inputs and outputs of the merged PSBT
-    std::vector<int> input_indices(merged_psbt.inputs.size());
-    std::iota(input_indices.begin(), input_indices.end(), 0);
-    std::vector<int> output_indices(merged_psbt.outputs.size());
-    std::iota(output_indices.begin(), output_indices.end(), 0);
-
-    // Shuffle input and output indices lists
-    std::shuffle(input_indices.begin(), input_indices.end(), FastRandomContext());
-    std::shuffle(output_indices.begin(), output_indices.end(), FastRandomContext());
-
-    PartiallySignedTransaction shuffled_psbt(tx, merged_psbt.GetVersion());
-    for (int i : input_indices) {
-        shuffled_psbt.AddInput(merged_psbt.inputs[i]);
-    }
-    for (int i : output_indices) {
-        shuffled_psbt.AddOutput(merged_psbt.outputs[i]);
-    }
-    shuffled_psbt.unknown.insert(merged_psbt.unknown.begin(), merged_psbt.unknown.end());
+    // Shuffle the inputs and outputs for privacy
+    std::shuffle(merged_psbt.inputs.begin(), merged_psbt.inputs.end(), FastRandomContext());
+    std::shuffle(merged_psbt.outputs.begin(), merged_psbt.outputs.end(), FastRandomContext());
 
     DataStream ssTx{};
-    ssTx << shuffled_psbt;
+    ssTx << merged_psbt;
     return EncodeBase64(ssTx);
 },
     };
@@ -2079,7 +2083,7 @@ RPCMethod descriptorprocesspsbt()
                              {"range", RPCArg::Type::RANGE, RPCArg::Default{1000}, "Up to what index HD chains should be explored (either end or [begin,end])"},
                         }},
                     }},
-                    {"sighashtype", RPCArg::Type::STR, RPCArg::Default{"DEFAULT for Taproot, ALL otherwise"}, "The signature hash type to sign with if not specified by the PSBT. Must be one of\n"
+                    {"sighashtype", RPCArg::Type::STR, RPCArg::DefaultHint{"DEFAULT for Taproot, ALL otherwise"}, "The signature hash type to sign with if not specified by the PSBT. Must be one of\n"
             "       \"DEFAULT\"\n"
             "       \"ALL\"\n"
             "       \"NONE\"\n"
@@ -2113,8 +2117,8 @@ RPCMethod descriptorprocesspsbt()
     }
 
     std::optional<int> sighash_type = ParseSighashString(request.params[2]);
-    bool bip32derivs = request.params[3].isNull() ? true : request.params[3].get_bool();
-    bool finalize = request.params[4].isNull() ? true : request.params[4].get_bool();
+    const bool bip32derivs{self.Arg<bool>("bip32derivs")};
+    const bool finalize{self.Arg<bool>("finalize")};
 
     const PartiallySignedTransaction& psbtx = ProcessPSBT(
         request.params[0].get_str(),
@@ -2123,10 +2127,12 @@ RPCMethod descriptorprocesspsbt()
         sighash_type,
         finalize);
 
-    // Check whether or not all of the inputs are now signed
+    // Check whether or not all of the inputs are now correctly signed
     bool complete = true;
-    for (const auto& input : psbtx.inputs) {
-        complete &= PSBTInputSigned(input);
+    const std::optional<PrecomputedTransactionData> txdata_opt{PrecomputePSBTData(psbtx)};
+    const PrecomputedTransactionData txdata{*CHECK_NONFATAL(txdata_opt)};
+    for (unsigned int i = 0; i < psbtx.inputs.size(); ++i) {
+        complete = complete && PSBTInputSignedAndVerified(psbtx, i, &txdata);
     }
 
     DataStream ssTx{};

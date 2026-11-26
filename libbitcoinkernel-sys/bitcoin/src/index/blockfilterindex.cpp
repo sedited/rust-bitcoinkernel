@@ -19,6 +19,7 @@
 #include <sync.h>
 #include <uint256.h>
 #include <util/check.h>
+#include <util/byte_units.h>
 #include <util/fs.h>
 #include <util/hasher.h>
 #include <util/log.h>
@@ -26,11 +27,9 @@
 
 #include <cerrno>
 #include <exception>
-#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -49,9 +48,9 @@
  */
 constexpr uint8_t DB_FILTER_POS{'P'};
 
-constexpr unsigned int MAX_FLTR_FILE_SIZE{16_MiB};
+constexpr uint64_t MAX_FLTR_FILE_SIZE{16_MiB};
 /** The pre-allocation chunk size for fltr?????.dat files */
-constexpr unsigned int FLTR_FILE_CHUNK_SIZE{1_MiB};
+constexpr uint64_t FLTR_FILE_CHUNK_SIZE{1_MiB};
 /** Maximum size of the cfheaders cache
  *  We have a limit to prevent a bug in filling this cache
  *  potentially turning into an OOM. At 2000 entries, this cache
@@ -67,7 +66,7 @@ std::string BlockFilterThreadName(BlockFilterType filter_type)
     case BlockFilterType::BASIC: return "blkfltbscidx";
     case BlockFilterType::INVALID: return "";
     } // no default case, so the compiler can warn about missing cases
-    assert(false);
+    AssertUnreachable();
 }
 
 struct DBVal {
@@ -79,8 +78,6 @@ struct DBVal {
 };
 
 }; // namespace
-
-static std::map<BlockFilterType, BlockFilterIndex> g_filter_indexes;
 
 BlockFilterIndex::BlockFilterIndex(std::unique_ptr<interfaces::Chain> chain, BlockFilterType filter_type,
                                    size_t n_cache_size, bool f_memory, bool f_wipe)
@@ -183,7 +180,7 @@ bool BlockFilterIndex::ReadFilterFromDisk(const FlatFilePos& pos, const uint256&
     return true;
 }
 
-size_t BlockFilterIndex::WriteFilterToDisk(FlatFilePos& pos, const BlockFilter& filter)
+uint64_t BlockFilterIndex::WriteFilterToDisk(FlatFilePos& pos, const BlockFilter& filter)
 {
     assert(filter.GetFilterType() == GetFilterType());
 
@@ -267,7 +264,7 @@ bool BlockFilterIndex::CustomAppend(const interfaces::BlockInfo& block)
 
 bool BlockFilterIndex::Write(const BlockFilter& filter, uint32_t block_height, const uint256& filter_header)
 {
-    size_t bytes_written = WriteFilterToDisk(m_next_filter_pos, filter);
+    uint64_t bytes_written{WriteFilterToDisk(m_next_filter_pos, filter)};
     if (bytes_written == 0) return false;
 
     std::pair<uint256, DBVal> value;
@@ -439,35 +436,4 @@ bool BlockFilterIndex::LookupFilterHashRange(int start_height, const CBlockIndex
         hashes_out.push_back(entry.hash);
     }
     return true;
-}
-
-BlockFilterIndex* GetBlockFilterIndex(BlockFilterType filter_type)
-{
-    auto it = g_filter_indexes.find(filter_type);
-    return it != g_filter_indexes.end() ? &it->second : nullptr;
-}
-
-void ForEachBlockFilterIndex(std::function<void (BlockFilterIndex&)> fn)
-{
-    for (auto& entry : g_filter_indexes) fn(entry.second);
-}
-
-bool InitBlockFilterIndex(std::function<std::unique_ptr<interfaces::Chain>()> make_chain, BlockFilterType filter_type,
-                          size_t n_cache_size, bool f_memory, bool f_wipe)
-{
-    auto result = g_filter_indexes.emplace(std::piecewise_construct,
-                                           std::forward_as_tuple(filter_type),
-                                           std::forward_as_tuple(make_chain(), filter_type,
-                                                                 n_cache_size, f_memory, f_wipe));
-    return result.second;
-}
-
-bool DestroyBlockFilterIndex(BlockFilterType filter_type)
-{
-    return g_filter_indexes.erase(filter_type);
-}
-
-void DestroyAllBlockFilterIndexes()
-{
-    g_filter_indexes.clear();
 }

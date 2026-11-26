@@ -13,6 +13,7 @@
 #include <util/threadnames.h>
 #include <util/time.h>
 
+#include <atomic>
 #include <cstdint>
 #include <source_location>
 #include <string>
@@ -79,6 +80,16 @@ bool ShouldTraceLog(Category category);
 /** Send message to be logged. Applications using the logging library need to provide this. */
 void Log(Entry entry);
 
+/// A format string for a log entry. The logger appends the trailing newline,
+/// so reject one in the format.
+template <unsigned num_params>
+struct FormatString : util::ConstevalFormatString<num_params> {
+    consteval FormatString(const char* str) : util::ConstevalFormatString<num_params>{str}
+    {
+        if (std::string_view{str}.ends_with('\n')) throw "Format string must not end with a newline";
+    }
+};
+
 template <typename... Args>
 inline void LogPrintFormatInternal_(SourceLocation&& source_loc, BCLog::LogFlags flag, util::log::Level level, bool should_ratelimit, util::ConstevalFormatString<sizeof...(Args)> fmt, const Args&... args)
 {
@@ -142,5 +153,16 @@ using Level = util::log::Level;
 // Log conditionally, prefixing the output with the passed category name.
 #define LogDebug(category, ...) detail_LogIfCategoryAndLevelEnabled(category, util::log::ShouldDebugLog, util::log::Level::Debug, __VA_ARGS__)
 #define LogTrace(category, ...) detail_LogIfCategoryAndLevelEnabled(category, util::log::ShouldTraceLog, util::log::Level::Trace, __VA_ARGS__)
+
+// Log unconditionally the first time this statement is hit, then conditionally afterwards
+#define LogWarnThenDebug(category, ...) \
+    do { \
+        static std::atomic<bool> _warned{false}; \
+        if (!_warned.exchange(true)) { \
+            LogWarning(__VA_ARGS__); \
+        } else { \
+            LogDebug(category, __VA_ARGS__); \
+        } \
+    } while (0)
 
 #endif // BITCOIN_UTIL_LOG_H

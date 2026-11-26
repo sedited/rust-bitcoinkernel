@@ -8,6 +8,7 @@
 #include <blockencodings.h>
 #include <blockfilter.h>
 #include <chain.h>
+#include <chainparams.h>
 #include <coins.h>
 #include <common/args.h>
 #include <compressor.h>
@@ -29,6 +30,7 @@
 #include <test/fuzz/util.h>
 #include <test/util/setup_common.h>
 #include <undo.h>
+#include <util/check.h>
 
 #include <cstdint>
 #include <exception>
@@ -58,30 +60,11 @@ struct invalid_fuzzing_input_exception : public std::exception {
 };
 
 template <typename T, typename P>
-DataStream Serialize(const T& obj, const P& params)
-{
-    DataStream ds{};
-    ds << params(obj);
-    return ds;
-}
-
-template <typename T, typename P>
 T Deserialize(DataStream&& ds, const P& params)
 {
     T obj;
     ds >> params(obj);
     return obj;
-}
-
-template <typename T, typename P>
-void DeserializeFromFuzzingInput(FuzzBufferType buffer, T&& obj, const P& params)
-{
-    try {
-        SpanReader{buffer} >> params(obj);
-    } catch (const std::ios_base::failure&) {
-        throw invalid_fuzzing_input_exception();
-    }
-    assert(buffer.empty() || !Serialize(obj, params).empty());
 }
 
 template <typename T>
@@ -127,7 +110,7 @@ T DeserializeConstructFromFuzzingInput(FuzzBufferType buffer)
 template <typename T, typename P>
 void AssertEqualAfterSerializeDeserialize(const T& obj, const P& params)
 {
-    assert(Deserialize<T>(Serialize(obj, params), params) == obj);
+    assert(Deserialize<T>(Serialize(params(obj)), params) == obj);
 }
 template <typename T>
 void AssertEqualAfterSerializeDeserialize(const T& obj)

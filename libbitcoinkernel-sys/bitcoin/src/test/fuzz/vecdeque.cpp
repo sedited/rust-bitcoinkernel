@@ -2,10 +2,12 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <util/vecdeque.h>
+
 #include <random.h>
 #include <span.h>
 #include <test/fuzz/util.h>
-#include <util/vecdeque.h>
+#include <util/check.h>
 
 #include <cstdint>
 #include <deque>
@@ -456,12 +458,7 @@ public:
 
     friend std::strong_ordering operator<=>(const TrackedObj& a, const TrackedObj& b)
     {
-        // Libc++ 15 & 16 do not support std::optional<T>::operator<=> yet. See
-        // https://reviews.llvm.org/D146392.
-        if (!a.Deref().has_value() || !b.Deref().has_value()) {
-            return a.Deref().has_value() <=> b.Deref().has_value();
-        }
-        return *a.Deref() <=> *b.Deref();
+        return a.Deref() <=> b.Deref();
     }
 
     static void CheckNoneExist()

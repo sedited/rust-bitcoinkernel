@@ -245,6 +245,8 @@ class P2PConnection(asyncio.Protocol):
         if self.p2p_connected_to_node and not self.supports_v2_p2p:
             self.send_version()
         self.on_open()
+        with p2p_lock:
+            p2p_lock.notify_all()
 
     def connection_lost(self, exc):
         """asyncio callback when a connection is closed."""
@@ -256,6 +258,8 @@ class P2PConnection(asyncio.Protocol):
         self._transport = None
         self.recvbuf = b""
         self.on_close()
+        with p2p_lock:
+            p2p_lock.notify_all()
 
     # v2 handshake method
     def _on_data_v2_handshake(self):
@@ -528,6 +532,7 @@ class P2PInterface(P2PConnection):
             except Exception:
                 print("ERROR delivering %s (%s)" % (repr(message), sys.exc_info()[0]))
                 raise
+            p2p_lock.notify_all()
 
     # Callback methods. Can be overridden by subclasses in individual test
     # cases to provide custom message handling behaviour.
@@ -610,11 +615,15 @@ class P2PInterface(P2PConnection):
         wait_until_helper_internal(test_function, timeout=timeout, lock=p2p_lock, timeout_factor=self.timeout_factor, check_interval=check_interval)
 
     def wait_for_connect(self, *, timeout=60):
-        test_function = lambda: self.is_connected
+        def test_function():
+            return self.is_connected
+
         self.wait_until(test_function, timeout=timeout, check_connected=False)
 
     def wait_for_disconnect(self, *, timeout=60):
-        test_function = lambda: not self.is_connected
+        def test_function():
+            return not self.is_connected
+
         self.wait_until(test_function, timeout=timeout, check_connected=False)
 
     def wait_for_reconnect(self, *, timeout=60):
@@ -731,7 +740,9 @@ class P2PInterface(P2PConnection):
 # P2PConnection acquires this lock whenever delivering a message to a P2PInterface.
 # This lock should be acquired in the thread running the test logic to synchronize
 # access to any data shared with the P2PInterface or P2PConnection.
-p2p_lock = threading.Lock()
+# It is a Condition so that waiters can be woken up as soon as a message is
+# delivered or the connection state changes, instead of polling.
+p2p_lock = threading.Condition(threading.Lock())
 
 
 class NetworkThread(threading.Thread):
@@ -744,6 +755,7 @@ class NetworkThread(threading.Thread):
 
         NetworkThread.listeners = {}
         NetworkThread.protos = {}
+        NetworkThread.protos_accept_done = []
 
     def run(self):
         """Start the network thread."""
@@ -752,10 +764,25 @@ class NetworkThread(threading.Thread):
 
     def close(self, *, timeout):
         """Close the connections and network event loop."""
+        for p in NetworkThread.protos_accept_done:
+            p.peer_disconnect()
+        NetworkThread.protos_accept_done.clear()
+
+        listeners = list(NetworkThread.listeners.values())
+        NetworkThread.listeners.clear()
+
+        async def close_listeners():
+            for listener in listeners:
+                listener.close()
+            for listener in listeners:
+                await listener.wait_closed()
+        future = asyncio.run_coroutine_threadsafe(close_listeners(), self.network_event_loop)
+        future.result(timeout=timeout)
+
         self.network_event_loop.call_soon_threadsafe(self.network_event_loop.stop)
         wait_until_helper_internal(lambda: not self.network_event_loop.is_running(), timeout=timeout)
-        self.network_event_loop.close()
         self.join(timeout)
+        self.network_event_loop.close()
         # Safe to remove event loop.
         NetworkThread.network_event_loop = None
 
@@ -791,6 +818,7 @@ class NetworkThread(threading.Thread):
             response = cls.protos.get((addr, port))
             # remove protocol function from dict only when reconnection doesn't need to happen/already happened
             if not proto.reconnect:
+                cls.protos_accept_done.append(response)
                 cls.protos[(addr, port)] = None
             return response
 

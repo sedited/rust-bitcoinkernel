@@ -1,3 +1,5 @@
+target-version = "py310"
+
 [lint]
 select = [
     "B006", # mutable-argument-default
@@ -12,7 +14,5 @@ select = [
 ]
 ignore = [
     "E501", # line too long
-    "E712", # true-false comparison
-    "E731", # lambda assignment
     "E741", # ambiguous-variable-name
 ]

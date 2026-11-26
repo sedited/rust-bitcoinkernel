@@ -5,9 +5,7 @@
 #ifndef BITCOIN_UTIL_FS_H
 #define BITCOIN_UTIL_FS_H
 
-// IWYU incorrectly suggests removing this header.
-// See https://github.com/include-what-you-use/include-what-you-use/issues/1931.
-#include <tinyformat.h> // IWYU pragma: keep
+#include <tinyformat.h>
 
 #include <cstdio>
 // The `util/fs.h` header is designed to be a drop-in replacement for `filesystem`.
@@ -154,7 +152,7 @@ static inline bool copy_file(const path& from, const path& to, copy_options opti
  * appropriate to use in applications requiring UTF-8, where
  * fs::path::u8string() / fs::path::utf8string() and fs::u8path() methods should be used instead. Other
  * applications could require still different encodings. For example, JSON, XML,
- * or URI applications might prefer to use higher-level escapes (\uXXXX or
+ * or URI applications might prefer to use higher-level escapes (Unicode escapes or
  * &XXXX; or %XX) instead of multibyte encoding. Rust, Python, Java applications
  * may require encoding paths with their respective UTF-8 derivatives WTF-8,
  * PEP-383, and CESU-8 (see https://en.wikipedia.org/wiki/UTF-8#Derivatives).

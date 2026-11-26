@@ -15,9 +15,9 @@
 #include <consensus/validation.h>
 #include <crypto/hex_base.h>
 #include <dbwrapper.h>
+#include <index/blockfilterindex.h>
 #include <init.h>
 #include <interfaces/chain.h>
-#include <interfaces/mining.h>
 #include <kernel/caches.h>
 #include <kernel/context.h>
 #include <key.h>
@@ -26,9 +26,11 @@
 #include <net_processing.h>
 #include <netbase.h>
 #include <netgroup.h>
+#include <node/block_template_manager.h>
 #include <node/blockstorage.h>
 #include <node/chainstate.h>
 #include <node/context.h>
+#include <node/indexes.h>
 #include <node/kernel_notifications.h>
 #include <node/miner.h>
 #include <node/mining_args.h>
@@ -307,8 +309,10 @@ ChainTestingSetup::ChainTestingSetup(const ChainType chainType, TestOpts opts)
             .check_block_index = 1,
             .notifications = *m_node.notifications,
             .signals = m_node.validation_signals.get(),
-            // Use no worker threads while fuzzing to avoid non-determinism
+            // Use no worker threads while fuzzing to avoid racy non-determinism
+            // and dangling thread handles if AFL forks after initialization.
             .worker_threads_num = EnableFuzzDeterminism() ? 0 : 2,
+            .prevoutfetch_threads_num = EnableFuzzDeterminism() ? 0 : 2,
         };
         if (opts.min_validation_cache) {
             chainman_opts.script_execution_cache_bytes = 0;
@@ -328,19 +332,30 @@ ChainTestingSetup::ChainTestingSetup(const ChainType chainType, TestOpts opts)
         m_node.chainman = std::make_unique<ChainstateManager>(*Assert(m_node.shutdown_signal), chainman_opts, blockman_opts);
     };
     m_make_chainman();
+    CreateBlockTemplateManager();
+}
+
+void ChainTestingSetup::CreateBlockTemplateManager()
+{
+    auto mining_args{node::ReadMiningArgs(*Assert(m_node.args))};
+    Assert(mining_args);
+    Assert(!m_node.block_template_manager);
+    m_node.block_template_manager = std::make_unique<node::BlockTemplateManager>(*m_node.mempool, *m_node.chainman, *Assert(m_node.notifications), std::move(*mining_args));
 }
 
 ChainTestingSetup::~ChainTestingSetup()
 {
     if (m_node.scheduler) m_node.scheduler->stop();
     if (m_node.validation_signals) m_node.validation_signals->FlushBackgroundCallbacks();
+    m_node.block_filter_indexes.clear();
+    m_node.block_template_manager.reset();
     m_node.connman.reset();
     m_node.banman.reset();
     m_node.addrman.reset();
     m_node.netgroupman.reset();
     m_node.args = nullptr;
     m_node.mempool.reset();
-    Assert(!m_node.fee_estimator); // Each test must create a local object, if they wish to use the fee_estimator
+    Assert(!m_node.fee_estimator_man); // Each test must create a local object, if they wish to use the fee_estimator_man
     m_node.chainman.reset();
     m_node.validation_signals.reset();
     m_node.scheduler.reset();
@@ -392,12 +407,12 @@ TestingSetup::TestingSetup(
                                                m_node.args->GetIntArg("-checkaddrman", 0));
     m_node.banman = std::make_unique<BanMan>(m_args.GetDataDirBase() / "banlist", nullptr, DEFAULT_MISBEHAVING_BANTIME);
     m_node.connman = std::make_unique<ConnmanTestMsg>(0x1337, 0x1337, *m_node.addrman, *m_node.netgroupman, Params()); // Deterministic randomness for tests.
-    auto mining_args{node::ReadMiningArgs(*m_node.args)};
-    Assert(mining_args);
-    m_node.mining_args = std::move(*mining_args);
     PeerManager::Options peerman_opts;
     ApplyArgsManOptions(*m_node.args, peerman_opts);
     peerman_opts.deterministic_rng = true;
+    peerman_opts.get_block_filter_index = [this](BlockFilterType filter_type) {
+        return node::GetBlockFilterIndex(m_node, filter_type);
+    };
     m_node.peerman = PeerManager::make(*m_node.connman, *m_node.addrman,
                                        m_node.banman.get(), *m_node.chainman,
                                        *m_node.mempool, *m_node.warnings,
@@ -435,23 +450,23 @@ void TestChain100Setup::mineBlocks(int num_blocks)
     CScript scriptPubKey = CScript() << ToByteVector(coinbaseKey.GetPubKey()) << OP_CHECKSIG;
     for (int i = 0; i < num_blocks; i++) {
         std::vector<CMutableTransaction> noTxns;
-        CBlock b = CreateAndProcessBlock(noTxns, scriptPubKey);
+        CBlock b = CreateAndProcessBlock(noTxns, scriptPubKey, /*sync=*/false);
         m_clock += 1s;
         m_coinbase_txns.push_back(b.vtx[0]);
     }
+    if (m_node.validation_signals) m_node.validation_signals->SyncWithValidationInterfaceQueue();
 }
 
 CBlock TestChain100Setup::CreateBlock(
     const std::vector<CMutableTransaction>& txns,
     const CScript& scriptPubKey)
 {
-    auto mining{interfaces::MakeMining(m_node)};
-    auto block_template{mining->createNewBlock({
+    auto& block_template_manager{*Assert(m_node.block_template_manager)};
+    auto block_template{block_template_manager.CreateNewTemplate({
         .use_mempool = false,
         .coinbase_output_script = scriptPubKey,
-    }, /*cooldown=*/false)};
-    Assert(block_template);
-    CBlock block{block_template->getBlock()};
+    })};
+    CBlock block{block_template->block};
 
     Assert(block.vtx.size() == 1);
     for (const CMutableTransaction& tx : txns) {
@@ -466,11 +481,13 @@ CBlock TestChain100Setup::CreateBlock(
 
 CBlock TestChain100Setup::CreateAndProcessBlock(
     const std::vector<CMutableTransaction>& txns,
-    const CScript& scriptPubKey)
+    const CScript& scriptPubKey,
+    bool sync)
 {
     CBlock block = this->CreateBlock(txns, scriptPubKey);
     std::shared_ptr<const CBlock> shared_pblock = std::make_shared<const CBlock>(block);
     Assert(m_node.chainman)->ProcessNewBlock(shared_pblock, true, true, nullptr);
+    if (sync && m_node.validation_signals) m_node.validation_signals->SyncWithValidationInterfaceQueue();
 
     return block;
 }
@@ -640,6 +657,10 @@ std::vector<CTransactionRef> TestChain100Setup::PopulateMempool(FastRandomContex
 
 SocketTestingSetup::SocketTestingSetup()
 {
+    // HTTPServer is not integrated into NodeContext yet and still pulls global args.
+    // This is the IP address DynSock claims to be from when connecting.
+    gArgs.ForceSetArg("-rpcallowip", "5.5.5.5");
+
     // "back up" the current CreateSock() so we can restore it after the test
     m_create_sock_orig = CreateSock;
 

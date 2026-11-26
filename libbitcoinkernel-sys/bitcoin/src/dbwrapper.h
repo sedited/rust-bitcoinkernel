@@ -11,7 +11,9 @@
 #include <streams.h>
 #include <util/byte_units.h>
 #include <util/check.h>
+#include <util/expected.h>
 #include <util/fs.h>
+#include <util/not_null.h>
 #include <util/obfuscation.h>
 
 #include <cstddef>
@@ -27,9 +29,9 @@ namespace leveldb {
 class Env;
 } // namespace leveldb
 
-static const size_t DBWRAPPER_PREALLOC_KEY_SIZE = 64;
-static const size_t DBWRAPPER_PREALLOC_VALUE_SIZE = 1024;
-static const size_t DBWRAPPER_MAX_FILE_SIZE{32_MiB};
+inline constexpr size_t DBWRAPPER_PREALLOC_KEY_SIZE = 64;
+inline constexpr size_t DBWRAPPER_PREALLOC_VALUE_SIZE = 1024;
+inline constexpr size_t DBWRAPPER_MAX_FILE_SIZE{32_MiB};
 
 //! User-controlled performance and debug options.
 struct DBOptions {
@@ -92,7 +94,7 @@ private:
     const CDBWrapper &parent;
 
     struct WriteBatchImpl;
-    const std::unique_ptr<WriteBatchImpl> m_impl_batch;
+    const util::NotNullUniquePtr<WriteBatchImpl> m_impl_batch;
 
     DataStream m_key_scratch{};
     DataStream m_value_scratch{};
@@ -135,7 +137,7 @@ public:
 
 private:
     const CDBWrapper &parent;
-    const std::unique_ptr<IteratorImpl> m_impl_iter;
+    const util::NotNullUniquePtr<IteratorImpl> m_impl_iter;
     DataStream m_scratch{};
 
     void SeekImpl(std::span<const std::byte> key);
@@ -148,7 +150,7 @@ public:
      * @param[in] _parent          Parent CDBWrapper instance.
      * @param[in] _piter           The original leveldb iterator.
      */
-    CDBIterator(const CDBWrapper& _parent, std::unique_ptr<IteratorImpl> _piter);
+    CDBIterator(const CDBWrapper& _parent, util::NotNullUniquePtr<IteratorImpl> _piter);
     ~CDBIterator();
 
     bool Valid() const;
@@ -193,10 +195,10 @@ class CDBWrapper
     friend const Obfuscation& dbwrapper_private::GetObfuscation(const CDBWrapper&);
 private:
     //! holds all leveldb-specific fields of this class
-    std::unique_ptr<LevelDBContext> m_db_context;
+    util::NotNullUniquePtr<LevelDBContext> m_db_context;
 
-    //! the name of this database
-    std::string m_name;
+    //! the path of this database
+    fs::path m_path;
 
     //! optional XOR-obfuscation of the database
     Obfuscation m_obfuscation;
@@ -207,7 +209,7 @@ private:
     std::optional<std::string> ReadImpl(std::span<const std::byte> key) const;
     bool ExistsImpl(std::span<const std::byte> key) const;
     size_t EstimateSizeImpl(std::span<const std::byte> key1, std::span<const std::byte> key2) const;
-    auto& DBContext() const LIFETIMEBOUND { return *Assert(m_db_context); }
+    auto& DBContext() const LIFETIMEBOUND { return *m_db_context; }
 
 public:
     CDBWrapper(const DBParams& params);
@@ -216,24 +218,82 @@ public:
     CDBWrapper(const CDBWrapper&) = delete;
     CDBWrapper& operator=(const CDBWrapper&) = delete;
 
+    struct ReadFailure {
+        enum class Code {
+            DeserializationError,   //!< Key exists but value could not be deserialized.
+            DatabaseError,          //!< Unexpected internal DB error.
+        };
+
+        Code status;
+        std::string err_msg;
+    };
+
+    using ReadStatus = util::Expected<bool, ReadFailure>;
+
+    /**
+     * Read and deserialize a value from the database, with explicit error discrimination.
+     *
+     * Unlike Read(), this method distinguishes between a missing key, a deserialization
+     * failure (DeserializationError), and an internal DB error (DatabaseError),
+     * enabling callers to treat data corruption differently from an absent entry.
+     *
+     * @note Callers are expected to provide well-formed keys; key serialization
+     *       is the only operation that may throw.
+     *
+     * @param[in]  key    The key to look up.
+     * @param[out] value  Populated with the deserialized value when the returned
+     *                    Expected holds true; indeterminate otherwise.
+     * @return On success, true if the key was found (value populated) or false if
+     *         the key was absent. On failure, a ReadFailure describing the error.
+     */
     template <typename K, typename V>
-    bool Read(const K& key, V& value) const
+    [[nodiscard]] ReadStatus TryRead(const K& key, V& value) const
     {
         DataStream ssKey{};
         ssKey.reserve(DBWRAPPER_PREALLOC_KEY_SIZE);
+        // Key serialization is the only operation that may throw.
+        // Callers are expected to provide well-formed keys.
         ssKey << key;
-        std::optional<std::string> strValue{ReadImpl(ssKey)};
-        if (!strValue) {
-            return false;
+
+        std::optional<std::string> strValue;
+        try {
+            strValue = ReadImpl(ssKey);
+            if (!strValue) {
+                return false; // not found
+            }
+        } catch (const std::exception& e) {
+            return util::Unexpected(ReadFailure{ReadFailure::Code::DatabaseError, e.what()});
         }
+
         try {
             std::span ssValue{MakeWritableByteSpan(*strValue)};
             m_obfuscation(ssValue);
             SpanReader{ssValue} >> value;
-        } catch (const std::exception&) {
-            return false;
+        } catch (const std::exception& e) {
+            return util::Unexpected(ReadFailure{ReadFailure::Code::DeserializationError, e.what()});
         }
+
         return true;
+    }
+
+    /**
+     * Wrapper around TryRead() that preserves the original Read() semantics:
+     * returns true on success, false if the key is absent or deserialization
+     * fails, and throws dbwrapper_error on an internal DB error.
+     *
+     * Prefer TryRead() when the caller needs to distinguish between a missing
+     * key and a corrupt value.
+     */
+    template <typename K, typename V>
+    bool Read(const K& key, V& value) const
+    {
+        const ReadStatus res = TryRead(key,value);
+        if (res.has_value()) return res.value();
+        switch (const auto& [err_code, err_msg] = res.error(); err_code) {
+            case ReadFailure::Code::DeserializationError: return false;
+            case ReadFailure::Code::DatabaseError: throw dbwrapper_error(err_msg);
+        } // no default case, so the compiler can warn about missing cases
+        AssertUnreachable();
     }
 
     template <typename K, typename V>
@@ -278,6 +338,11 @@ public:
      * Return true if the database managed by this class contains no entries.
      */
     bool IsEmpty();
+
+    //! Probe an unopened database for a key prefix. Return true if a database at
+    //! path exists and contains at least 1 entry beginning with prefix; missing
+    //! or empty databases return false, and database errors throw dbwrapper_error.
+    static bool HasKeyStartingWith(const fs::path& path, uint8_t prefix);
 
     template<typename K>
     size_t EstimateSize(const K& key_begin, const K& key_end) const

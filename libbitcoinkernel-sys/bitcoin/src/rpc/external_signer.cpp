@@ -2,17 +2,21 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#include <bitcoin-build-config.h> // IWYU pragma: keep
+#include <bitcoin-build-config.h>
+
+#include <external_signer.h>
+#include <rpc/register.h> // IWYU pragma: associated
 
 #include <common/args.h>
-#include <common/system.h>
-#include <external_signer.h>
 #include <rpc/protocol.h>
+#include <rpc/request.h>
 #include <rpc/server.h>
 #include <rpc/util.h>
-#include <util/strencodings.h>
+#include <univalue.h>
 
+#include <exception>
 #include <string>
+#include <utility>
 #include <vector>
 
 #ifdef ENABLE_EXTERNAL_SIGNER
