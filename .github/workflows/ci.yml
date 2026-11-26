@@ -157,6 +157,31 @@ jobs:
       run: |
         find target/debug/deps -type f -executable -name "test-*" -not -name "*.so" -not -name "*.d" | xargs -I {} valgrind --leak-check=full --show-leak-kinds=all  --errors-for-leak-kinds=definite --suppressions=valgrind.supp --error-exitcode=1 {}
 
+  conformance:
+    name: Conformance Tests
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        persist-credentials: false
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache dependencies
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: conformance-handler
+
+    - name: Install Boost library
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libboost-all-dev
+
+    - name: Run conformance tests
+      run: contrib/run_conformance_tests.sh -v
+
   windows-build:
     name: Build and Test on Windows
     runs-on: windows-2025-vs2026

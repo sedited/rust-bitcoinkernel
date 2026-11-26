@@ -85,6 +85,21 @@ Examples for the usage of the library can be found in the `examples/` directory
 and the `tests`. For now, the example binary implements a bare-bones silent
 payments scanner.
 
+## Conformance tests
+
+The `conformance-handler/` crate implements the handler for the
+[kernel-bindings-tests](https://github.com/stringintech/kernel-bindings-tests)
+conformance suite, which checks that all Bitcoin Kernel bindings behave the
+same. To run the suite:
+
+```
+contrib/run_conformance_tests.sh
+```
+
+The script downloads the test runner pinned in the script (currently v0.0.4),
+verifies its checksum, builds the handler and runs all test suites. Extra
+arguments are passed to the runner, e.g. `-v` to show failed request chains.
+
 ## Fuzzing
 
 Fuzzing is done with [cargo fuzz](https://github.com/rust-fuzz/cargo-fuzz).
