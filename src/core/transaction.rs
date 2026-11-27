@@ -1409,15 +1409,13 @@ impl<'a> Copy for WitnessStackRef<'a> {}
 /// # Lifetime
 /// The iterator is tied to the lifetime of the transaction input it was created from.
 pub struct WitnessStackIter<'a> {
-    stack: WitnessStackRef<'a>,
-    current_index: usize,
+    inner: IndexedIter<WitnessStackRef<'a>, Vec<u8>>,
 }
 
 impl<'a> WitnessStackIter<'a> {
     fn new(stack: WitnessStackRef<'a>) -> Self {
         Self {
-            stack,
-            current_index: 0,
+            inner: IndexedIter::new(stack, stack.len(), |stack, index| stack.item(index).ok()),
         }
     }
 }
@@ -1426,27 +1424,15 @@ impl<'a> Iterator for WitnessStackIter<'a> {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_index >= self.stack.len() {
-            return None;
-        }
-
-        let index = self.current_index;
-        self.current_index += 1;
-
-        self.stack.item(index).ok()
+        self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.stack.len().saturating_sub(self.current_index);
-        (remaining, Some(remaining))
+        self.inner.size_hint()
     }
 }
 
-impl<'a> ExactSizeIterator for WitnessStackIter<'a> {
-    fn len(&self) -> usize {
-        self.stack.len().saturating_sub(self.current_index)
-    }
-}
+impl<'a> ExactSizeIterator for WitnessStackIter<'a> {}
 
 /// Common operations for transaction outpoints, implemented by both owned and borrowed types.
 ///
