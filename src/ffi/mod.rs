@@ -1,4 +1,5 @@
 pub mod c_helpers;
+pub(crate) mod iter;
 #[cfg(test)]
 pub mod test_utils;
 
