@@ -1398,15 +1398,30 @@ impl<'a> Copy for BlockSpentOutputsRef<'a> {}
 /// # }
 /// ```
 pub struct BlockSpentOutputsIter<'a> {
-    block_spent_outputs: BlockSpentOutputsRef<'a>,
-    current_index: usize,
+    inner: IndexedIter<BlockSpentOutputsRef<'a>, TransactionSpentOutputsRef<'a>>,
 }
 
 impl<'a> BlockSpentOutputsIter<'a> {
     fn new(block_spent_outputs: BlockSpentOutputsRef<'a>) -> Self {
         Self {
-            block_spent_outputs,
-            current_index: 0,
+            inner: IndexedIter::new(
+                block_spent_outputs,
+                block_spent_outputs.count(),
+                |block_spent_outputs, index| {
+                    let tx_out_ptr = unsafe {
+                        btck_block_spent_outputs_get_transaction_spent_outputs_at(
+                            block_spent_outputs.as_ptr(),
+                            index,
+                        )
+                    };
+
+                    if tx_out_ptr.is_null() {
+                        None
+                    } else {
+                        Some(unsafe { TransactionSpentOutputsRef::from_ptr(tx_out_ptr) })
+                    }
+                },
+            ),
         }
     }
 }
@@ -1415,43 +1430,15 @@ impl<'a> Iterator for BlockSpentOutputsIter<'a> {
     type Item = TransactionSpentOutputsRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_index >= self.block_spent_outputs.count() {
-            return None;
-        }
-
-        let index = self.current_index;
-        self.current_index += 1;
-
-        let tx_out_ptr = unsafe {
-            btck_block_spent_outputs_get_transaction_spent_outputs_at(
-                self.block_spent_outputs.as_ptr(),
-                index,
-            )
-        };
-
-        if tx_out_ptr.is_null() {
-            None
-        } else {
-            Some(unsafe { TransactionSpentOutputsRef::from_ptr(tx_out_ptr) })
-        }
+        self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self
-            .block_spent_outputs
-            .count()
-            .saturating_sub(self.current_index);
-        (remaining, Some(remaining))
+        self.inner.size_hint()
     }
 }
 
-impl<'a> ExactSizeIterator for BlockSpentOutputsIter<'a> {
-    fn len(&self) -> usize {
-        self.block_spent_outputs
-            .count()
-            .saturating_sub(self.current_index)
-    }
-}
+impl<'a> ExactSizeIterator for BlockSpentOutputsIter<'a> {}
 
 /// Common operations for transaction spent outputs, implemented by both owned and borrowed types.
 ///
