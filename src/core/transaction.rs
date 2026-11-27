@@ -144,6 +144,7 @@
 use std::{
     ffi::c_void,
     fmt::{self, Debug, Display, Formatter},
+    iter::FusedIterator,
     marker::PhantomData,
 };
 
@@ -177,6 +178,7 @@ use crate::{
     c_serialize,
     ffi::{
         c_helpers::present,
+        iter::IndexedIter,
         sealed::{AsPtr, FromMutPtr, FromPtr},
     },
     KernelError, ScriptPubkeyExt, ValidationMode,
@@ -700,15 +702,21 @@ impl<'a> Copy for TransactionRef<'a> {}
 /// # }
 /// ```
 pub struct TxInIter<'a> {
-    transaction: TransactionRef<'a>,
-    current_index: usize,
+    inner: IndexedIter<TransactionRef<'a>, TxInRef<'a>>,
 }
 
 impl<'a> TxInIter<'a> {
     fn new(transaction: TransactionRef<'a>) -> Self {
         Self {
-            transaction,
-            current_index: 0,
+            inner: IndexedIter::new(transaction, transaction.input_count(), |tx, index| {
+                let tx_in_ptr = unsafe { btck_transaction_get_input_at(tx.as_ptr(), index) };
+
+                if tx_in_ptr.is_null() {
+                    None
+                } else {
+                    Some(unsafe { TxInRef::from_ptr(tx_in_ptr) })
+                }
+            }),
         }
     }
 }
@@ -717,38 +725,17 @@ impl<'a> Iterator for TxInIter<'a> {
     type Item = TxInRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_index >= self.transaction.input_count() {
-            return None;
-        }
-
-        let index = self.current_index;
-        self.current_index += 1;
-
-        let tx_in_ptr = unsafe { btck_transaction_get_input_at(self.transaction.as_ptr(), index) };
-
-        if tx_in_ptr.is_null() {
-            None
-        } else {
-            Some(unsafe { TxInRef::from_ptr(tx_in_ptr) })
-        }
+        self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self
-            .transaction
-            .input_count()
-            .saturating_sub(self.current_index);
-        (remaining, Some(remaining))
+        self.inner.size_hint()
     }
 }
 
-impl<'a> ExactSizeIterator for TxInIter<'a> {
-    fn len(&self) -> usize {
-        self.transaction
-            .input_count()
-            .saturating_sub(self.current_index)
-    }
-}
+impl<'a> ExactSizeIterator for TxInIter<'a> {}
+
+impl<'a> FusedIterator for TxInIter<'a> {}
 
 /// Iterator over transaction outputs.
 ///
@@ -784,15 +771,21 @@ impl<'a> ExactSizeIterator for TxInIter<'a> {
 /// # }
 /// ```
 pub struct TxOutIter<'a> {
-    transaction: TransactionRef<'a>,
-    current_index: usize,
+    inner: IndexedIter<TransactionRef<'a>, TxOutRef<'a>>,
 }
 
 impl<'a> TxOutIter<'a> {
     fn new(transaction: TransactionRef<'a>) -> Self {
         Self {
-            transaction,
-            current_index: 0,
+            inner: IndexedIter::new(transaction, transaction.output_count(), |tx, index| {
+                let tx_out_ptr = unsafe { btck_transaction_get_output_at(tx.as_ptr(), index) };
+
+                if tx_out_ptr.is_null() {
+                    None
+                } else {
+                    Some(unsafe { TxOutRef::from_ptr(tx_out_ptr) })
+                }
+            }),
         }
     }
 }
@@ -801,39 +794,17 @@ impl<'a> Iterator for TxOutIter<'a> {
     type Item = TxOutRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_index >= self.transaction.output_count() {
-            return None;
-        }
-
-        let index = self.current_index;
-        self.current_index += 1;
-
-        let tx_out_ptr =
-            unsafe { btck_transaction_get_output_at(self.transaction.as_ptr(), index) };
-
-        if tx_out_ptr.is_null() {
-            None
-        } else {
-            Some(unsafe { TxOutRef::from_ptr(tx_out_ptr) })
-        }
+        self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self
-            .transaction
-            .output_count()
-            .saturating_sub(self.current_index);
-        (remaining, Some(remaining))
+        self.inner.size_hint()
     }
 }
 
-impl<'a> ExactSizeIterator for TxOutIter<'a> {
-    fn len(&self) -> usize {
-        self.transaction
-            .output_count()
-            .saturating_sub(self.current_index)
-    }
-}
+impl<'a> ExactSizeIterator for TxOutIter<'a> {}
+
+impl<'a> FusedIterator for TxOutIter<'a> {}
 
 /// Common operations for transaction outputs, implemented by both owned and borrowed types.
 ///
@@ -1443,15 +1414,13 @@ impl<'a> Copy for WitnessStackRef<'a> {}
 /// # Lifetime
 /// The iterator is tied to the lifetime of the transaction input it was created from.
 pub struct WitnessStackIter<'a> {
-    stack: WitnessStackRef<'a>,
-    current_index: usize,
+    inner: IndexedIter<WitnessStackRef<'a>, Vec<u8>>,
 }
 
 impl<'a> WitnessStackIter<'a> {
     fn new(stack: WitnessStackRef<'a>) -> Self {
         Self {
-            stack,
-            current_index: 0,
+            inner: IndexedIter::new(stack, stack.len(), |stack, index| stack.item(index).ok()),
         }
     }
 }
@@ -1460,27 +1429,17 @@ impl<'a> Iterator for WitnessStackIter<'a> {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_index >= self.stack.len() {
-            return None;
-        }
-
-        let index = self.current_index;
-        self.current_index += 1;
-
-        self.stack.item(index).ok()
+        self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.stack.len().saturating_sub(self.current_index);
-        (remaining, Some(remaining))
+        self.inner.size_hint()
     }
 }
 
-impl<'a> ExactSizeIterator for WitnessStackIter<'a> {
-    fn len(&self) -> usize {
-        self.stack.len().saturating_sub(self.current_index)
-    }
-}
+impl<'a> ExactSizeIterator for WitnessStackIter<'a> {}
+
+impl<'a> FusedIterator for WitnessStackIter<'a> {}
 
 /// Common operations for transaction outpoints, implemented by both owned and borrowed types.
 ///

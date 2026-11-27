@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Implemented `FusedIterator` for `TxInIter`, `TxOutIter`, `WitnessStackIter`, `BlockTransactionIter`, `BlockSpentOutputsIter` and `TransactionSpentOutputsIter`. If fetching an item fails mid-iteration, these iterators now stay exhausted and report a remaining length of zero.
+
 ## [0.3.2] 2026-10-06
 
 ### Dependencies
