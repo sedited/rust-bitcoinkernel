@@ -177,6 +177,7 @@ use crate::{
     c_serialize,
     ffi::{
         c_helpers::present,
+        iter::IndexedIter,
         sealed::{AsPtr, FromMutPtr, FromPtr},
     },
     KernelError, ScriptPubkeyExt, ValidationMode,
@@ -700,15 +701,21 @@ impl<'a> Copy for TransactionRef<'a> {}
 /// # }
 /// ```
 pub struct TxInIter<'a> {
-    transaction: TransactionRef<'a>,
-    current_index: usize,
+    inner: IndexedIter<TransactionRef<'a>, TxInRef<'a>>,
 }
 
 impl<'a> TxInIter<'a> {
     fn new(transaction: TransactionRef<'a>) -> Self {
         Self {
-            transaction,
-            current_index: 0,
+            inner: IndexedIter::new(transaction, transaction.input_count(), |tx, index| {
+                let tx_in_ptr = unsafe { btck_transaction_get_input_at(tx.as_ptr(), index) };
+
+                if tx_in_ptr.is_null() {
+                    None
+                } else {
+                    Some(unsafe { TxInRef::from_ptr(tx_in_ptr) })
+                }
+            }),
         }
     }
 }
@@ -717,38 +724,15 @@ impl<'a> Iterator for TxInIter<'a> {
     type Item = TxInRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_index >= self.transaction.input_count() {
-            return None;
-        }
-
-        let index = self.current_index;
-        self.current_index += 1;
-
-        let tx_in_ptr = unsafe { btck_transaction_get_input_at(self.transaction.as_ptr(), index) };
-
-        if tx_in_ptr.is_null() {
-            None
-        } else {
-            Some(unsafe { TxInRef::from_ptr(tx_in_ptr) })
-        }
+        self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self
-            .transaction
-            .input_count()
-            .saturating_sub(self.current_index);
-        (remaining, Some(remaining))
+        self.inner.size_hint()
     }
 }
 
-impl<'a> ExactSizeIterator for TxInIter<'a> {
-    fn len(&self) -> usize {
-        self.transaction
-            .input_count()
-            .saturating_sub(self.current_index)
-    }
-}
+impl<'a> ExactSizeIterator for TxInIter<'a> {}
 
 /// Iterator over transaction outputs.
 ///
