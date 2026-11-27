@@ -7,10 +7,13 @@
 
 #include <blockfilter.h>
 #include <common/settings.h>
+#include <consensus/amount.h>
 #include <kernel/chain.h> // IWYU pragma: export
-#include <node/types.h>
 #include <primitives/transaction.h>
+#include <util/expected.h>
+#include <util/fees.h>
 #include <util/result.h>
+#include <util/time.h>
 
 #include <cstddef>
 #include <cstdint>
@@ -21,9 +24,7 @@
 #include <string>
 #include <vector>
 
-class ArgsManager;
 class CBlock;
-class CBlockUndo;
 class CFeeRate;
 class CRPCCommand;
 class CScheduler;
@@ -33,18 +34,16 @@ enum class MemPoolRemovalReason;
 enum class RBFTransactionState;
 struct bilingual_str;
 struct CBlockLocator;
-struct FeeCalculation;
 namespace kernel {
 struct ChainstateRole;
 } // namespace kernel
 namespace node {
 struct NodeContext;
+enum class TxBroadcast : uint8_t;
 } // namespace node
 
 namespace interfaces {
-
 class Handler;
-class Wallet;
 
 //! Helper for findBlock to selectively return pieces of block data. If block is
 //! found, data will be returned by setting specified output variables. If block
@@ -256,11 +255,11 @@ public:
     //! Check if transaction will pass the mempool's chain limits.
     virtual util::Result<void> checkChainLimits(const CTransactionRef& tx) = 0;
 
-    //! Estimate smart fee.
-    virtual CFeeRate estimateSmartFee(int num_blocks, bool conservative, FeeCalculation* calc = nullptr) = 0;
+    //! Estimate a fee rate.
+    virtual util::Expected<FeeRateEstimation, FeeRateEstimationError> getFeeRateEstimate(int num_blocks, bool conservative) const = 0;
 
     //! Fee estimator max target.
-    virtual unsigned int estimateMaxBlocks() = 0;
+    virtual unsigned int maximumFeeEstimationTargetBlocks() const = 0;
 
     //! Mempool minimum fee.
     virtual CFeeRate mempoolMinFee() = 0;

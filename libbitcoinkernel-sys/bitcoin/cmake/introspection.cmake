@@ -24,8 +24,7 @@ endif()
 # Even though ::system is part of the standard library, we still check
 # for it, to support building targets that don't have it, such as iOS.
 check_cxx_symbol_exists(std::system "cstdlib" HAVE_STD_SYSTEM)
-check_cxx_symbol_exists(::_wsystem "stdlib.h" HAVE__WSYSTEM)
-if(HAVE_STD_SYSTEM OR HAVE__WSYSTEM)
+if(HAVE_STD_SYSTEM)
   set(HAVE_SYSTEM 1)
 endif()
 
@@ -76,6 +75,10 @@ check_cxx_source_compiles("
   }
   " HAVE_STRONG_GETAUXVAL
 )
+
+# Check for SetThreadDescription(), which is missing from mingw-w64 headers
+# before 12.0.0.
+check_cxx_symbol_exists(SetThreadDescription "windows.h" HAVE_SETTHREADDESCRIPTION)
 
 # Check for UNIX sockets.
 check_cxx_source_compiles("

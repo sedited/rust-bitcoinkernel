@@ -265,6 +265,10 @@ impl Cmake {
     fn configure(&self, extra_args: &[String]) {
         let mut flags = vec![format!("-DCMAKE_BUILD_TYPE={BUILD_CONFIG}")];
         flags.extend(BASE_CMAKE_FLAGS.iter().map(|s| s.to_string()));
+        flags.push(format!(
+            "-DENABLE_SCRIPT_TRACE={}",
+            if script_trace_enabled() { "ON" } else { "OFF" }
+        ));
         flags.extend_from_slice(extra_args);
         flags.push(format!(
             "-DCMAKE_INSTALL_PREFIX={}",
@@ -323,6 +327,10 @@ impl Cmake {
             self.install_dir.join("lib")
         }
     }
+}
+
+fn script_trace_enabled() -> bool {
+    cfg!(feature = "script-trace")
 }
 
 fn run(cmd: &mut Command, what: &str) {

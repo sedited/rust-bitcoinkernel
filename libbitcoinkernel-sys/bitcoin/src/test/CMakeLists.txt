@@ -24,6 +24,7 @@ add_executable(test_bitcoin
   blockfilter_index_tests.cpp
   blockfilter_tests.cpp
   blockmanager_tests.cpp
+  blockpolicyestimator_tests.cpp
   bloom_tests.cpp
   bswap_tests.cpp
   btcsignals_tests.cpp
@@ -44,6 +45,7 @@ add_executable(test_bitcoin
   denialofservice_tests.cpp
   descriptor_tests.cpp
   disconnected_transactions.cpp
+  fees_util_tests.cpp
   feefrac_tests.cpp
   feerounder_tests.cpp
   flatfile_tests.cpp
@@ -58,6 +60,7 @@ add_executable(test_bitcoin
   key_tests.cpp
   logging_tests.cpp
   mempool_tests.cpp
+  mempool_fee_estimator_tests.cpp
   merkle_tests.cpp
   merkleblock_tests.cpp
   miner_tests.cpp
@@ -76,7 +79,6 @@ add_executable(test_bitcoin
   pcp_tests.cpp
   peerman_tests.cpp
   pmt_tests.cpp
-  policyestimator_tests.cpp
   pool_tests.cpp
   pow_tests.cpp
   prevector_tests.cpp
@@ -149,6 +151,7 @@ target_json_data_sources(test_bitcoin
   data/key_io_valid.json
   data/script_tests.json
   data/sighash.json
+  data/siphash.json
   data/tx_invalid.json
   data/tx_valid.json
 )
@@ -169,14 +172,6 @@ target_link_libraries(test_bitcoin
   Boost::headers
   $<TARGET_NAME_IF_EXISTS:USDT::headers>
 )
-
-if(ENABLE_WALLET)
-  add_subdirectory(${PROJECT_SOURCE_DIR}/src/wallet/test wallet)
-endif()
-
-if(ENABLE_IPC)
-  add_subdirectory(${PROJECT_SOURCE_DIR}/src/ipc/test ipc)
-endif()
 
 function(add_boost_test source_file)
   if(NOT EXISTS ${source_file})
@@ -199,7 +194,6 @@ function(add_boost_test source_file)
       SKIP_REGULAR_EXPRESSION
         "no test cases matching filter"
         "skipping script_assets_test"
-        "skipping total_ram"
     )
   endforeach()
 endfunction()
@@ -215,6 +209,14 @@ function(add_all_test_targets)
     add_boost_test(${test_source})
   endforeach()
 endfunction()
+
+if(ENABLE_WALLET)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/wallet/test wallet)
+endif()
+
+if(ENABLE_IPC)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/ipc/test ipc)
+endif()
 
 add_all_test_targets()
 

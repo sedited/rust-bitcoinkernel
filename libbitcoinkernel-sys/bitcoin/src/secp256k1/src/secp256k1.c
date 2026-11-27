@@ -74,7 +74,6 @@ static const secp256k1_context secp256k1_context_static_ = {
     0
 };
 const secp256k1_context * const secp256k1_context_static = &secp256k1_context_static_;
-const secp256k1_context * const secp256k1_context_no_precomp = &secp256k1_context_static_;
 
 /* Helper function that determines if a context is proper, i.e., is not the static context or a copy thereof.
  *
@@ -521,8 +520,9 @@ static int nonce_function_rfc6979_impl(const secp256k1_hash_ctx *hash_ctx, unsig
        buffer_append(keydata, &offset, algo16, 16);
    }
    secp256k1_rfc6979_hmac_sha256_initialize(hash_ctx, &rng, keydata, offset);
-   for (i = 0; i <= counter; i++) {
+   for (i = 0; ; i++) {
        secp256k1_rfc6979_hmac_sha256_generate(hash_ctx, &rng, nonce32, 32);
+       if (i == counter) break;
    }
    secp256k1_rfc6979_hmac_sha256_finalize(&rng);
 
@@ -558,7 +558,7 @@ static int secp256k1_ecdsa_sign_inner(const secp256k1_context* ctx, secp256k1_sc
     while (1) {
         int is_nonce_valid;
 
-        if (noncefp == NULL) {
+        if (noncefp == NULL || noncefp == secp256k1_nonce_function_rfc6979) {
             /* Use ctx-aware function by default */
             ret = nonce_function_rfc6979_impl(secp256k1_get_hash_context(ctx), nonce32, msg32, seckey, NULL, (void*)noncedata, count);
         } else {
@@ -848,4 +848,8 @@ int secp256k1_tagged_sha256(const secp256k1_context* ctx, unsigned char *hash32,
 
 #ifdef ENABLE_MODULE_ELLSWIFT
 # include "modules/ellswift/main_impl.h"
+#endif
+
+#ifdef ENABLE_MODULE_SILENTPAYMENTS
+# include "modules/silentpayments/main_impl.h"
 #endif

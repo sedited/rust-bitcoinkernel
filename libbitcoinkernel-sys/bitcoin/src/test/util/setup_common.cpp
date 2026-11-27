@@ -307,8 +307,10 @@ ChainTestingSetup::ChainTestingSetup(const ChainType chainType, TestOpts opts)
             .check_block_index = 1,
             .notifications = *m_node.notifications,
             .signals = m_node.validation_signals.get(),
-            // Use no worker threads while fuzzing to avoid non-determinism
+            // Use no worker threads while fuzzing to avoid racy non-determinism
+            // and dangling thread handles if AFL forks after initialization.
             .worker_threads_num = EnableFuzzDeterminism() ? 0 : 2,
+            .prevoutfetch_threads_num = EnableFuzzDeterminism() ? 0 : 2,
         };
         if (opts.min_validation_cache) {
             chainman_opts.script_execution_cache_bytes = 0;
@@ -340,7 +342,7 @@ ChainTestingSetup::~ChainTestingSetup()
     m_node.netgroupman.reset();
     m_node.args = nullptr;
     m_node.mempool.reset();
-    Assert(!m_node.fee_estimator); // Each test must create a local object, if they wish to use the fee_estimator
+    Assert(!m_node.fee_estimator_man); // Each test must create a local object, if they wish to use the fee_estimator_man
     m_node.chainman.reset();
     m_node.validation_signals.reset();
     m_node.scheduler.reset();
@@ -640,6 +642,10 @@ std::vector<CTransactionRef> TestChain100Setup::PopulateMempool(FastRandomContex
 
 SocketTestingSetup::SocketTestingSetup()
 {
+    // HTTPServer is not integrated into NodeContext yet and still pulls global args.
+    // This is the IP address DynSock claims to be from when connecting.
+    gArgs.ForceSetArg("-rpcallowip", "5.5.5.5");
+
     // "back up" the current CreateSock() so we can restore it after the test
     m_create_sock_orig = CreateSock;
 

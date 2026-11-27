@@ -108,7 +108,7 @@ private:
 
     // helper functions for addChunks()
     /** Test if a new chunk would "fit" in the block */
-    bool TestChunkBlockLimits(FeePerWeight chunk_feerate, int64_t chunk_sigops_cost) const;
+    bool TestChunkBlockLimits(int64_t chunk_weight, int64_t chunk_sigops_cost) const;
     /** Perform locktime checks on each transaction in a chunk:
       * This check should always succeed, and is here
       * only as an extra check in case of a bug */
@@ -131,8 +131,8 @@ void RegenerateCommitments(CBlock& block, ChainstateManager& chainman);
 void AddMerkleRootAndCoinbase(CBlock& block, CTransactionRef coinbase, uint32_t version, uint32_t timestamp, uint32_t nonce);
 
 //! Submit a block and capture the validation state via the BlockChecked callback.
-//! Returns whether ProcessNewBlock accepted the block.
-bool SubmitBlock(ChainstateManager& chainman, const std::shared_ptr<const CBlock>& block, bool* new_block, std::string& reason, std::string& debug);
+//! Returns whether the block was accepted as a new valid block.
+bool SubmitBlock(ChainstateManager& chainman, const std::shared_ptr<const CBlock>& block, std::string& reason, std::string& debug);
 
 /* Interrupt a blocking call. */
 void InterruptWait(KernelNotifications& kernel_notifications, bool& interrupt_wait);
