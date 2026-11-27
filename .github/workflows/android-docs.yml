@@ -1,0 +1,115 @@
+name: Android docs
+
+# Checks that the manual instructions in ANDROID.md still work. The steps
+# below mirror that document; if you change one, change the other.
+#
+# Kept out of cross.yml because the trigger differs: path filters apply per
+# workflow, not per job, and this build is only worth running when the
+# instructions or the build script change.
+
+on:
+  pull_request:
+    paths:
+      - 'ANDROID.md'
+      - 'README.md'
+      - '.github/workflows/android-docs.yml'
+      - '**/build.rs'
+  schedule:
+    - cron: '0 0 * * 1' # weekly on Monday at midnight UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  android-docs-build:
+    name: Build following ANDROID.md (aarch64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      # ANDROID.md: Prerequisites
+      - name: Install Boost headers
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libboost-dev
+
+      # ANDROID.md: Environment
+      - name: Set up NDK toolchain
+        run: |
+          set -euo pipefail
+
+          # The runner ships several NDKs; ANDROID_NDK_HOME is the default one
+          # (r27.3 on ubuntu-24.04), not ANDROID_NDK_LATEST_HOME. Deriving both
+          # PATH and the sysroot from the same variable is what keeps cmake and
+          # the linker on one toolchain, as ANDROID.md describes.
+          ndk_host=linux-x86_64
+          ndk="$ANDROID_NDK_HOME"
+          sysroot="$ndk/toolchains/llvm/prebuilt/$ndk_host/sysroot"
+
+          echo "Using NDK: $ndk"
+
+          # The hardcoded path is the one ANDROID.md tells readers to export,
+          # so fail loudly here rather than letting cmake report a missing
+          # Boost package if the Ubuntu layout ever moves.
+          boost_cmake=/usr/lib/x86_64-linux-gnu/cmake
+          ls -d "$boost_cmake"/Boost-*/ \
+            || { echo "no Boost cmake package under $boost_cmake"; exit 1; }
+
+          sudo ln -sfn /usr/include/boost "$sysroot/usr/include/boost"
+
+          echo "NDK_SYSROOT=$sysroot" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$boost_cmake" >> "$GITHUB_ENV"
+          echo "$ndk/toolchains/llvm/prebuilt/$ndk_host/bin" >> "$GITHUB_PATH"
+
+      # Fails in seconds if the Boost setup is wrong, instead of after a full
+      # kernel build. -v prints clang's include search list.
+      - name: Verify Boost is reachable by the NDK compiler
+        run: |
+          set -euo pipefail
+          ls -ld "$NDK_SYSROOT/usr/include/boost" \
+            || { echo "symlink missing"; exit 1; }
+          test -f "$NDK_SYSROOT/usr/include/boost/multi_index/hashed_index.hpp" \
+            || { echo "symlink exists but does not resolve to the headers"; exit 1; }
+          printf '#include <boost/multi_index/hashed_index.hpp>\nint main(){}\n' > "$RUNNER_TEMP/boost-probe.cpp"
+          aarch64-linux-android24-clang++ -std=c++20 -fsyntax-only -v "$RUNNER_TEMP/boost-probe.cpp"
+
+      # ANDROID.md: Building, step 1
+      - name: Build the -sys crate
+        run: cargo build -p libbitcoinkernel-sys --target aarch64-linux-android --release
+
+      # ANDROID.md: Building, step 2
+      - name: Build the bitcoinkernel crate
+        env:
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: aarch64-linux-android24-clang
+        run: cargo build --target aarch64-linux-android --release
+
+      - name: Verify the artifact is ARM64
+        run: |
+          set -euo pipefail
+          # -print -quit rather than a pipe into head, which can leave the
+          # pipeline at 141 under pipefail.
+          archive=$(find target/aarch64-linux-android -name libbitcoinkernel.a -print -quit)
+          test -n "$archive" || { echo "no static lib produced"; exit 1; }
+          llvm-readelf --file-header "$archive" | grep -i aarch64
+
+      - name: Show how cmake resolved Boost
+        if: failure()
+        run: |
+          set -uo pipefail
+          find target -name CMakeCache.txt -path '*libbitcoinkernel-sys*' \
+            -exec grep -i boost {} + || echo "no cmake cache"
