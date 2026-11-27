@@ -150,6 +150,7 @@ use crate::{
     c_helpers, c_serialize,
     ffi::{
         c_helpers::present,
+        iter::IndexedIter,
         sealed::{AsMutPtr, AsPtr, FromMutPtr, FromPtr},
     },
     notifications::types::BlockValidationState,
@@ -1114,15 +1115,15 @@ impl TryFrom<&Block> for Vec<u8> {
 /// # }
 /// ```
 pub struct BlockTransactionIter<'a> {
-    block: &'a Block,
-    current_index: usize,
+    inner: IndexedIter<&'a Block, TransactionRef<'a>>,
 }
 
 impl<'a> BlockTransactionIter<'a> {
     fn new(block: &'a Block) -> Self {
         Self {
-            block,
-            current_index: 0,
+            inner: IndexedIter::new(block, block.transaction_count(), |block, index| {
+                block.transaction(index).ok()
+            }),
         }
     }
 }
@@ -1131,27 +1132,15 @@ impl<'a> Iterator for BlockTransactionIter<'a> {
     type Item = TransactionRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let index = self.current_index;
-        self.current_index += 1;
-        self.block.transaction(index).ok()
+        self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self
-            .block
-            .transaction_count()
-            .saturating_sub(self.current_index);
-        (remaining, Some(remaining))
+        self.inner.size_hint()
     }
 }
 
-impl<'a> ExactSizeIterator for BlockTransactionIter<'a> {
-    fn len(&self) -> usize {
-        self.block
-            .transaction_count()
-            .saturating_sub(self.current_index)
-    }
-}
+impl<'a> ExactSizeIterator for BlockTransactionIter<'a> {}
 
 /// Common operations for block spent outputs, implemented by both owned and borrowed types.
 ///
