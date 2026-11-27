@@ -1677,15 +1677,23 @@ impl<'a> Copy for TransactionSpentOutputsRef<'a> {}
 /// # }
 /// ```
 pub struct TransactionSpentOutputsIter<'a> {
-    tx_spent_outputs: TransactionSpentOutputsRef<'a>,
-    current_index: usize,
+    inner: IndexedIter<TransactionSpentOutputsRef<'a>, CoinRef<'a>>,
 }
 
 impl<'a> TransactionSpentOutputsIter<'a> {
     fn new(tx_spent_outputs: TransactionSpentOutputsRef<'a>) -> Self {
         Self {
-            tx_spent_outputs,
-            current_index: 0,
+            inner: IndexedIter::new(
+                tx_spent_outputs,
+                tx_spent_outputs.count(),
+                |tx_spent_outputs, index| {
+                    let coin_ptr = unsafe {
+                        btck_transaction_spent_outputs_get_coin_at(tx_spent_outputs.as_ptr(), index)
+                    };
+
+                    Some(unsafe { CoinRef::from_ptr(coin_ptr) })
+                },
+            ),
         }
     }
 }
@@ -1694,36 +1702,15 @@ impl<'a> Iterator for TransactionSpentOutputsIter<'a> {
     type Item = CoinRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.current_index >= self.tx_spent_outputs.count() {
-            return None;
-        }
-
-        let index = self.current_index;
-        self.current_index += 1;
-
-        let coin_ptr = unsafe {
-            btck_transaction_spent_outputs_get_coin_at(self.tx_spent_outputs.as_ptr(), index)
-        };
-
-        Some(unsafe { CoinRef::from_ptr(coin_ptr) })
+        self.inner.next()
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self
-            .tx_spent_outputs
-            .count()
-            .saturating_sub(self.current_index);
-        (remaining, Some(remaining))
+        self.inner.size_hint()
     }
 }
 
-impl<'a> ExactSizeIterator for TransactionSpentOutputsIter<'a> {
-    fn len(&self) -> usize {
-        self.tx_spent_outputs
-            .count()
-            .saturating_sub(self.current_index)
-    }
-}
+impl<'a> ExactSizeIterator for TransactionSpentOutputsIter<'a> {}
 
 /// Common operations for coins, implemented by both owned and borrowed types.
 ///
