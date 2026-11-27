@@ -275,7 +275,7 @@ void ClearLocal()
 }
 
 // learn a new local address
-bool AddLocal(const CService& addr_, int nScore, bool add_even_if_unreachable)
+bool AddLocal(const CService& addr_, int nScore)
 {
     CService addr{MaybeFlipIPv6toCJDNS(addr_)};
 
@@ -285,7 +285,7 @@ bool AddLocal(const CService& addr_, int nScore, bool add_even_if_unreachable)
     if (!fDiscover && nScore < LOCAL_MANUAL)
         return false;
 
-    if (!g_reachable_nets.Contains(addr) && !add_even_if_unreachable)
+    if (!g_reachable_nets.Contains(addr))
         return false;
 
     if (fLogIPs) {
@@ -305,9 +305,9 @@ bool AddLocal(const CService& addr_, int nScore, bool add_even_if_unreachable)
     return true;
 }
 
-bool AddLocal(const CNetAddr& addr, int nScore, bool add_even_if_unreachable)
+bool AddLocal(const CNetAddr &addr, int nScore)
 {
-    return AddLocal(CService(addr, GetListenPort()), nScore, add_even_if_unreachable);
+    return AddLocal(CService(addr, GetListenPort()), nScore);
 }
 
 void RemoveLocal(const CService& addr)

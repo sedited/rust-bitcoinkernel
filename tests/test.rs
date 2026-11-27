@@ -2,112 +2,20 @@ mod common;
 
 #[cfg(test)]
 mod tests {
-    use crate::common::TempDir;
+    use std::sync::Arc;
+
     use bitcoinkernel::notifications::types::BlockValidationState;
     use bitcoinkernel::state::chainstate::ProcessBlockHeaderResult;
     use bitcoinkernel::{
         prelude::*, verify, Block, BlockHash, BlockHeader, BlockSpentOutputs, BlockTreeEntry,
-        BlockValidationStateRef, ChainParams, ChainType, ChainstateManager,
-        ChainstateManagerBuilder, Coin, Context, ContextBuilder, KernelError, Log, Logger,
-        PrecomputedTransactionData, ScriptPubkey, ScriptVerificationFlags, ScriptVerifyError,
-        Transaction, TransactionSpentOutputs, TxIn, TxOut, VERIFY_ALL, VERIFY_ALL_PRE_TAPROOT,
-        VERIFY_CHECKLOCKTIMEVERIFY, VERIFY_CHECKSEQUENCEVERIFY, VERIFY_DERSIG, VERIFY_NONE,
-        VERIFY_NULLDUMMY, VERIFY_P2SH, VERIFY_TAPROOT, VERIFY_WITNESS,
+        ChainParams, ChainstateManager, ChainstateManagerBuilder, Coin, Context, KernelError,
+        Logger, PrecomputedTransactionData, ScriptPubkey, ScriptVerificationFlags,
+        ScriptVerifyError, Transaction, TransactionSpentOutputs, TxIn, TxOut, VERIFY_ALL,
+        VERIFY_ALL_PRE_TAPROOT, VERIFY_CHECKLOCKTIMEVERIFY, VERIFY_CHECKSEQUENCEVERIFY,
+        VERIFY_DERSIG, VERIFY_NONE, VERIFY_NULLDUMMY, VERIFY_P2SH, VERIFY_TAPROOT, VERIFY_WITNESS,
     };
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
-    use std::sync::{Arc, Once};
 
-    struct TestLog {}
-
-    impl Log for TestLog {
-        fn log(&self, message: &str) {
-            log::info!(
-                target: "libbitcoinkernel",
-                "{}", message.strip_suffix("\r\n").or_else(|| message.strip_suffix('\n')).unwrap_or(message));
-        }
-    }
-
-    static START: Once = Once::new();
-    static mut GLOBAL_LOG_CALLBACK_HOLDER: Option<Logger> = None;
-
-    fn setup_logging() {
-        let _ = env_logger::Builder::from_default_env()
-            .is_test(true)
-            .try_init();
-        unsafe { GLOBAL_LOG_CALLBACK_HOLDER = Some(Logger::new(TestLog {}).unwrap()) };
-    }
-
-    fn create_context() -> Context {
-        fn pow_handler(_entry: BlockTreeEntry, _block: Block) {
-            log::info!("New PoW valid block!");
-        }
-
-        fn connected_handler(_block: Block, _entry: BlockTreeEntry) {
-            log::info!("Block connected!");
-        }
-
-        fn disconnected_handler(_block: Block, _entry: BlockTreeEntry) {
-            log::info!("Block disconnected!");
-        }
-
-        let builder = ContextBuilder::new()
-            .chain_type(ChainType::Regtest)
-            .with_block_tip_notification(|_state, _block_tip, _verification_progress| {
-                log::info!("Received block tip.");
-            })
-            .with_header_tip_notification(|_state, height, timestamp, _presync| {
-                assert!(timestamp > 0);
-                log::info!(
-                    "Received header tip at height {} and time {}",
-                    height,
-                    timestamp
-                );
-            })
-            .with_progress_notification(|_state, progress, _resume_possible| {
-                log::info!("Made progress: {}", progress);
-            })
-            .with_warning_set_notification(|_warning, message| {
-                log::info!("Received warning: {}", message);
-            })
-            .with_warning_unset_notification(|_warning| {
-                log::info!("Unsetting warning.");
-            })
-            .with_flush_error_notification(|message| {
-                log::info!("Flush error! {}", message);
-            })
-            .with_fatal_error_notification(|message| {
-                log::info!("Fatal error! {}", message);
-            })
-            .with_block_checked_validation(|_block, _state: BlockValidationStateRef<'_>| {
-                log::info!("Block checked!");
-            })
-            .with_new_pow_valid_block_validation(pow_handler)
-            .with_block_connected_validation(connected_handler)
-            .with_block_disconnected_validation(disconnected_handler);
-
-        builder.build().unwrap()
-    }
-
-    fn testing_setup() -> (Arc<Context>, TempDir) {
-        START.call_once(|| {
-            setup_logging();
-        });
-        let context = Arc::new(create_context());
-
-        let temp_dir = TempDir::new("test_chainman_regtest");
-        (context, temp_dir)
-    }
-
-    fn read_block_data() -> Vec<Vec<u8>> {
-        let file = File::open("tests/block_data.txt").unwrap();
-        let reader = BufReader::new(file);
-        let mut lines = vec![];
-        for line in reader.lines() {
-            lines.push(hex::decode(line.unwrap()).unwrap().to_vec());
-        }
-        lines
-    }
+    use crate::common::{read_block_data, testing_setup, TempDir, TestLog};
 
     fn setup_chainman_with_blocks(
         context: &Arc<Context>,
@@ -130,7 +38,7 @@ mod tests {
 
     #[test]
     fn test_reindex() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         {
             let block_data = read_block_data();
@@ -162,7 +70,7 @@ mod tests {
 
     #[test]
     fn test_invalid_block() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         for _ in 0..10 {
             let chainman =
@@ -195,7 +103,7 @@ mod tests {
 
     #[test]
     fn test_process_data() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         let block_data = read_block_data();
         let chainman =
@@ -215,7 +123,7 @@ mod tests {
 
     #[test]
     fn test_validate_any() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         let block_data = read_block_data();
         let chainman =
@@ -234,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_logger() {
-        let (_, _) = testing_setup();
+        let (_, _) = testing_setup("test_chainman_regtest");
 
         let logger_1 = Some(Logger::new(TestLog {}).unwrap());
         let logger_2 = Some(Logger::new(TestLog {}).unwrap());
@@ -646,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_header_validation() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         let block_data = read_block_data();
         let chainman =
@@ -661,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_chain_operations() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         let chainman = setup_chainman_with_blocks(&context, &temp_dir).unwrap();
 
@@ -714,7 +622,7 @@ mod tests {
 
     #[test]
     fn test_get_block_tree_entry() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         let chainman = setup_chainman_with_blocks(&context, &temp_dir).unwrap();
 
@@ -740,7 +648,7 @@ mod tests {
 
     #[test]
     fn test_get_block_tree_entry_resolves_every_block() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         let chainman = setup_chainman_with_blocks(&context, &temp_dir).unwrap();
 
@@ -795,7 +703,7 @@ mod tests {
 
     #[test]
     fn test_block_spent_outputs_iterator() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         let chainman = setup_chainman_with_blocks(&context, &temp_dir).unwrap();
 
@@ -826,7 +734,7 @@ mod tests {
 
     #[test]
     fn test_transaction_spent_outputs_iterator() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         let chainman = setup_chainman_with_blocks(&context, &temp_dir).unwrap();
 
@@ -869,7 +777,7 @@ mod tests {
 
     #[test]
     fn test_nested_iteration() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         let chainman = setup_chainman_with_blocks(&context, &temp_dir).unwrap();
 
@@ -891,7 +799,7 @@ mod tests {
 
     #[test]
     fn test_iterator_with_block_transactions() {
-        let (context, temp_dir) = testing_setup();
+        let (context, temp_dir) = testing_setup("test_chainman_regtest");
 
         let chainman = setup_chainman_with_blocks(&context, &temp_dir).unwrap();
 

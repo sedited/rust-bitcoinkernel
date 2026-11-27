@@ -235,6 +235,11 @@ pub struct btck_WitnessStack {
 
 pub type btck_DestroyCallback = Option<unsafe extern "C" fn(user_data: *mut c_void)>;
 
+pub type btck_FetchCoin = unsafe extern "C" fn(
+    user_data: *mut c_void,
+    out_point: *const btck_TransactionOutPoint,
+) -> *mut btck_Coin;
+
 pub type btck_LogCallback =
     unsafe extern "C" fn(user_data: *mut c_void, message: *const c_char, message_len: usize);
 
@@ -434,6 +439,8 @@ extern "C" {
     pub fn btck_transaction_get_locktime(transaction: *const btck_Transaction) -> u32;
 
     pub fn btck_transaction_get_txid(transaction: *const btck_Transaction) -> *const btck_Txid;
+
+    pub fn btck_transaction_is_coinbase(transaction: *const btck_Transaction) -> c_int;
 
     pub fn btck_transaction_check(
         tx: *const btck_Transaction,
@@ -676,6 +683,16 @@ extern "C" {
     ) -> *mut btck_BlockValidationState;
 
     #[must_use]
+    pub fn btck_chainstate_manager_validate_block(
+        chainstate_manager: *mut btck_ChainstateManager,
+        block: *const btck_Block,
+        block_tree_entry: *const btck_BlockTreeEntry,
+        coin_fetcher: btck_FetchCoin,
+        user_data: *mut c_void,
+        block_validation_state: *mut btck_BlockValidationState,
+    ) -> c_int;
+
+    #[must_use]
     pub fn btck_chainstate_manager_import_blocks(
         chainstate_manager: *mut btck_ChainstateManager,
         block_file_paths_data: *mut *const c_char,
@@ -874,6 +891,11 @@ extern "C" {
     // --- TransactionOutPoint ------------------------------------------------
 
     #[must_use]
+    pub fn btck_transaction_out_point_create(
+        txid: *const btck_Txid,
+        index: u32,
+    ) -> *mut btck_TransactionOutPoint;
+
     pub fn btck_transaction_out_point_copy(
         transaction_out_point: *const btck_TransactionOutPoint,
     ) -> *mut btck_TransactionOutPoint;
@@ -900,6 +922,13 @@ extern "C" {
     pub fn btck_txid_destroy(txid: *mut btck_Txid);
 
     // --- Coin ---------------------------------------------------------------
+
+    #[must_use]
+    pub fn btck_coin_create(
+        output: *const btck_TransactionOutput,
+        height: u32,
+        is_coinbase: c_int,
+    ) -> *mut btck_Coin;
 
     #[must_use]
     pub fn btck_coin_copy(coin: *const btck_Coin) -> *mut btck_Coin;
