@@ -15,9 +15,12 @@ pub type btck_BlockValidationResult = u32;
 pub type btck_ChainType = u8;
 pub type btck_LogCategory = u8;
 pub type btck_LogLevel = u8;
+pub type btck_ScriptTraceFrameKind = u8;
 pub type btck_ScriptVerificationFlags = u32;
 pub type btck_ScriptVerifyStatus = u8;
+pub type btck_SigVersion = u8;
 pub type btck_SynchronizationState = u8;
+pub type btck_TapscriptV2EvalStatus = u8;
 pub type btck_TxValidationResult = u32;
 pub type btck_ValidationMode = u8;
 pub type btck_Warning = u8;
@@ -78,6 +81,12 @@ pub const btck_LogLevel_TRACE: btck_LogLevel = 0;
 pub const btck_LogLevel_DEBUG: btck_LogLevel = 1;
 pub const btck_LogLevel_INFO: btck_LogLevel = 2;
 
+// btck_ScriptTraceFrameKind
+
+pub const btck_ScriptTraceFrameKind_BEGIN: btck_ScriptTraceFrameKind = 0;
+pub const btck_ScriptTraceFrameKind_STEP: btck_ScriptTraceFrameKind = 1;
+pub const btck_ScriptTraceFrameKind_END: btck_ScriptTraceFrameKind = 2;
+
 // btck_ScriptVerificationFlags
 
 pub const btck_ScriptVerificationFlags_NONE: btck_ScriptVerificationFlags = 0;
@@ -88,6 +97,7 @@ pub const btck_ScriptVerificationFlags_CHECKLOCKTIMEVERIFY: btck_ScriptVerificat
 pub const btck_ScriptVerificationFlags_CHECKSEQUENCEVERIFY: btck_ScriptVerificationFlags = 1 << 10;
 pub const btck_ScriptVerificationFlags_WITNESS: btck_ScriptVerificationFlags = 1 << 11;
 pub const btck_ScriptVerificationFlags_TAPROOT: btck_ScriptVerificationFlags = 1 << 17;
+pub const btck_ScriptVerificationFlags_SCRIPT_RESTORATION: btck_ScriptVerificationFlags = 1 << 21;
 pub const btck_ScriptVerificationFlags_ALL: btck_ScriptVerificationFlags =
     btck_ScriptVerificationFlags_P2SH
         | btck_ScriptVerificationFlags_DERSIG
@@ -95,7 +105,8 @@ pub const btck_ScriptVerificationFlags_ALL: btck_ScriptVerificationFlags =
         | btck_ScriptVerificationFlags_CHECKLOCKTIMEVERIFY
         | btck_ScriptVerificationFlags_CHECKSEQUENCEVERIFY
         | btck_ScriptVerificationFlags_WITNESS
-        | btck_ScriptVerificationFlags_TAPROOT;
+        | btck_ScriptVerificationFlags_TAPROOT
+        | btck_ScriptVerificationFlags_SCRIPT_RESTORATION;
 
 // btck_BlockCheckFlags
 
@@ -110,6 +121,29 @@ pub const btck_BlockCheckFlags_ALL: btck_BlockCheckFlags =
 pub const btck_ScriptVerifyStatus_OK: btck_ScriptVerifyStatus = 0;
 pub const btck_ScriptVerifyStatus_ERROR_INVALID_FLAGS_COMBINATION: btck_ScriptVerifyStatus = 1;
 pub const btck_ScriptVerifyStatus_ERROR_SPENT_OUTPUTS_REQUIRED: btck_ScriptVerifyStatus = 2;
+
+// btck_TapscriptV2EvalStatus
+
+pub const btck_TapscriptV2EvalStatus_OK: btck_TapscriptV2EvalStatus = 0;
+pub const btck_TapscriptV2EvalStatus_ERROR_INVALID_FLAGS_COMBINATION: btck_TapscriptV2EvalStatus =
+    1;
+pub const btck_TapscriptV2EvalStatus_ERROR_SCRIPT_RESTORATION_REQUIRED: btck_TapscriptV2EvalStatus =
+    2;
+pub const btck_TapscriptV2EvalStatus_ERROR_SPENT_OUTPUTS_REQUIRED: btck_TapscriptV2EvalStatus = 3;
+pub const btck_TapscriptV2EvalStatus_ERROR_TAPLEAF_HASH_REQUIRED: btck_TapscriptV2EvalStatus = 4;
+pub const btck_TapscriptV2EvalStatus_ERROR_INVALID_INPUT_INDEX: btck_TapscriptV2EvalStatus = 5;
+
+// Varops budget
+
+pub const btck_VaropsBudget_UNMETERED: u64 = u64::MAX;
+
+// btck_SigVersion
+
+pub const btck_SigVersion_BASE: btck_SigVersion = 0;
+pub const btck_SigVersion_WITNESS_V0: btck_SigVersion = 1;
+pub const btck_SigVersion_TAPROOT: btck_SigVersion = 2;
+pub const btck_SigVersion_TAPSCRIPT: btck_SigVersion = 3;
+pub const btck_SigVersion_TAPSCRIPT_V2: btck_SigVersion = 4;
 
 // btck_SynchronizationState
 
@@ -195,7 +229,23 @@ pub struct btck_PrecomputedTransactionData {
     _unused: [u8; 0],
 }
 #[repr(C)]
+pub struct btck_ScriptEvalStack {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+pub struct btck_ScriptEvalStackItem {
+    _unused: [u8; 0],
+}
+#[repr(C)]
 pub struct btck_ScriptPubkey {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+pub struct btck_ScriptStack {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+pub struct btck_ScriptTraceFrame {
     _unused: [u8; 0],
 }
 #[repr(C)]
@@ -287,6 +337,9 @@ pub type btck_NotifyWarningSet = Option<
 pub type btck_NotifyWarningUnset =
     Option<unsafe extern "C" fn(user_data: *mut c_void, warning: btck_Warning)>;
 
+pub type btck_ScriptTraceCallback =
+    unsafe extern "C" fn(user_data: *mut c_void, frame: *const btck_ScriptTraceFrame);
+
 pub type btck_ValidationInterfaceBlockChecked = Option<
     unsafe extern "C" fn(
         user_data: *mut c_void,
@@ -345,6 +398,17 @@ pub struct btck_NotificationInterfaceCallbacks {
     pub warning_unset: btck_NotifyWarningUnset,
     pub flush_error: btck_NotifyFlushError,
     pub fatal_error: btck_NotifyFatalError,
+}
+
+#[repr(C)]
+pub struct btck_TapscriptV2SpendContext {
+    pub tx_to: *const btck_Transaction,
+    pub precomputed_txdata: *const btck_PrecomputedTransactionData,
+    pub amount: i64,
+    pub input_index: c_uint,
+    pub annex: *const c_void,
+    pub annex_len: usize,
+    pub tapleaf_hash: *const c_uchar,
 }
 
 #[repr(C)]
@@ -482,6 +546,41 @@ extern "C" {
         input_index: c_uint,
         flags: btck_ScriptVerificationFlags,
         status: *mut btck_ScriptVerifyStatus,
+    ) -> c_int;
+
+    pub fn btck_script_stack_create() -> *mut btck_ScriptStack;
+
+    #[must_use]
+    pub fn btck_script_stack_copy(stack: *const btck_ScriptStack) -> *mut btck_ScriptStack;
+
+    pub fn btck_script_stack_push(
+        stack: *mut btck_ScriptStack,
+        element: *const c_void,
+        element_len: usize,
+    );
+
+    pub fn btck_script_stack_count_items(stack: *const btck_ScriptStack) -> usize;
+
+    #[must_use]
+    pub fn btck_script_stack_item_to_bytes(
+        stack: *const btck_ScriptStack,
+        index: usize,
+        writer: btck_WriteBytes,
+        user_data: *mut c_void,
+    ) -> c_int;
+
+    pub fn btck_script_stack_destroy(stack: *mut btck_ScriptStack);
+
+    #[must_use]
+    pub fn btck_tapscript_v2_eval(
+        script: *const btck_ScriptPubkey,
+        stack: *const btck_ScriptStack,
+        flags: btck_ScriptVerificationFlags,
+        spend_context: *const btck_TapscriptV2SpendContext,
+        varops_budget: u64,
+        varops_remaining: *mut u64,
+        script_error: *mut i32,
+        status: *mut btck_TapscriptV2EvalStatus,
     ) -> c_int;
 
     #[must_use]
@@ -963,4 +1062,70 @@ extern "C" {
 
     pub fn btck_block_header_destroy(header: *mut btck_BlockHeader);
 
+    // --- ScriptTrace --------------------------------------------------------
+
+    #[must_use]
+    pub fn btck_script_trace_register_callback(
+        callback: btck_ScriptTraceCallback,
+        user_data: *mut c_void,
+        user_data_destroy_callback: btck_DestroyCallback,
+    ) -> c_int;
+
+    pub fn btck_script_trace_frame_get_kind(
+        frame: *const btck_ScriptTraceFrame,
+    ) -> btck_ScriptTraceFrameKind;
+
+    pub fn btck_script_trace_frame_get_stack(
+        frame: *const btck_ScriptTraceFrame,
+    ) -> *const btck_ScriptEvalStack;
+
+    pub fn btck_script_trace_frame_get_altstack(
+        frame: *const btck_ScriptTraceFrame,
+    ) -> *const btck_ScriptEvalStack;
+
+    pub fn btck_script_trace_frame_get_script(
+        frame: *const btck_ScriptTraceFrame,
+        writer: btck_WriteBytes,
+        user_data: *mut c_void,
+    ) -> c_int;
+
+    pub fn btck_script_trace_frame_get_opcode_pos(frame: *const btck_ScriptTraceFrame) -> u32;
+
+    pub fn btck_script_trace_frame_get_exec(frame: *const btck_ScriptTraceFrame) -> c_int;
+
+    pub fn btck_script_trace_frame_get_opcode(frame: *const btck_ScriptTraceFrame) -> u8;
+
+    pub fn btck_script_trace_frame_get_op_count(frame: *const btck_ScriptTraceFrame) -> c_int;
+
+    pub fn btck_script_trace_frame_get_varops(frame: *const btck_ScriptTraceFrame) -> u64;
+
+    pub fn btck_script_trace_frame_get_sig_version(
+        frame: *const btck_ScriptTraceFrame,
+    ) -> btck_SigVersion;
+
+    pub fn btck_script_trace_frame_get_tapleaf_hash(
+        frame: *const btck_ScriptTraceFrame,
+        output: *mut c_uchar,
+    ) -> c_int;
+
+    pub fn btck_script_trace_frame_get_codeseparator_pos(
+        frame: *const btck_ScriptTraceFrame,
+    ) -> u32;
+
+    pub fn btck_script_trace_frame_get_script_error(frame: *const btck_ScriptTraceFrame) -> i32;
+
+    pub fn btck_script_eval_stack_count_items(stack: *const btck_ScriptEvalStack) -> usize;
+
+    pub fn btck_script_eval_stack_get_item_at(
+        stack: *const btck_ScriptEvalStack,
+        index: usize,
+    ) -> *const btck_ScriptEvalStackItem;
+
+    pub fn btck_script_eval_stack_item_to_bytes(
+        item: *const btck_ScriptEvalStackItem,
+        writer: btck_WriteBytes,
+        user_data: *mut c_void,
+    ) -> c_int;
+
+    pub fn btck_script_trace_unregister_callback();
 } // extern "C"

@@ -6,6 +6,7 @@
 #include <test/data/tx_valid.json.h>
 #include <test/util/setup_common.h>
 
+#include <chain.h>
 #include <checkqueue.h>
 #include <clientversion.h>
 #include <consensus/amount.h>
@@ -25,11 +26,13 @@
 #include <script/sign.h>
 #include <script/signingprovider.h>
 #include <script/solver.h>
+#include <script/varops.h>
 #include <streams.h>
 #include <test/util/common.h>
 #include <test/util/json.h>
 #include <test/util/random.h>
 #include <test/util/script.h>
+#include <test/util/tapscript_v2_test_utils.h>
 #include <test/util/transaction_utils.h>
 #include <util/strencodings.h>
 #include <util/string.h>
@@ -37,6 +40,7 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 
 #include <boost/test/unit_test.hpp>
@@ -53,6 +57,14 @@ static CFeeRate g_dust{DUST_RELAY_TX_FEE};
 static bool g_bare_multi{DEFAULT_PERMIT_BAREMULTISIG};
 
 static const std::map<std::string, script_verify_flag_name>& mapFlagNames = ScriptFlagNamesToEnum();
+
+static varops::Budget TestVaropsBudget(script_verify_flags flags, const CTransaction& tx)
+{
+    if (flags & SCRIPT_VERIFY_SCRIPT_RESTORATION) {
+        return varops::Budget{varops::TxBudget(GetTransactionWeight(tx))};
+    }
+    return varops::Budget::Unmetered();
+}
 
 script_verify_flags ParseScriptFlags(std::string strFlags)
 {
@@ -90,12 +102,13 @@ bool CheckTxScripts(const CTransaction& tx, const std::map<COutPoint, CScript>& 
 {
     bool tx_valid = true;
     ScriptError err = expect_valid ? SCRIPT_ERR_UNKNOWN_ERROR : SCRIPT_ERR_OK;
+    auto varops_budget{TestVaropsBudget(flags, tx)};
     for (unsigned int i = 0; i < tx.vin.size() && tx_valid; ++i) {
         const CTxIn input = tx.vin[i];
         const CAmount amount = map_prevout_values.contains(input.prevout) ? map_prevout_values.at(input.prevout) : 0;
         try {
             tx_valid = VerifyScript(input.scriptSig, map_prevout_scriptPubKeys.at(input.prevout),
-                &input.scriptWitness, flags, TransactionSignatureChecker(&tx, i, amount, txdata, MissingDataBehavior::ASSERT_FAIL), &err);
+                                    &input.scriptWitness, flags, TransactionSignatureChecker(&tx, i, amount, txdata, MissingDataBehavior::ASSERT_FAIL), &err, varops_budget);
         } catch (...) {
             BOOST_ERROR("Bad test: " << strTest);
             return true; // The test format is bad and an error is thrown. Return true to silence further error.
@@ -158,6 +171,48 @@ std::set<script_verify_flags> ExcludeIndividualFlags(script_verify_flags flags)
 }
 
 BOOST_FIXTURE_TEST_SUITE(transaction_tests, BasicTestingSetup)
+
+BOOST_AUTO_TEST_CASE(tapscript_v2_budget_is_shared_across_inputs)
+{
+    constexpr size_t operand_size{7'000};
+    const valtype operand(operand_size, 0xff);
+
+    CScript leaf_script;
+    leaf_script << OP_MUL << OP_DROP << OP_1;
+
+    CScript script_pub_key;
+    const CScriptWitness witness{test::tapscript_v2::BuildTapscriptV2Witness(leaf_script, {operand, operand}, script_pub_key)};
+
+    CMutableTransaction mutable_tx;
+    mutable_tx.version = 2;
+    mutable_tx.vin.emplace_back(COutPoint{Txid::FromUint256(uint256::ONE), 0});
+    mutable_tx.vin.emplace_back(COutPoint{Txid::FromUint256(uint256::ONE), 1});
+    mutable_tx.vin[0].scriptWitness = witness;
+    mutable_tx.vin[1].scriptWitness = witness;
+    mutable_tx.vout.emplace_back(50'000, CScript{} << OP_TRUE);
+
+    const CTransaction tx{mutable_tx};
+    const uint64_t per_input_cost{varops::MulCost(operand_size, operand_size)};
+    const uint64_t tx_budget{varops::TxBudget(GetTransactionWeight(tx))};
+    BOOST_REQUIRE_LT(per_input_cost, tx_budget);
+    BOOST_REQUIRE_LT(tx_budget, 2 * per_input_cost);
+
+    std::map<COutPoint, CScript> prevout_scripts;
+    std::map<COutPoint, int64_t> prevout_values;
+    for (const CTxIn& input : tx.vin) {
+        prevout_scripts.emplace(input.prevout, script_pub_key);
+        prevout_values.emplace(input.prevout, 100'000'000);
+    }
+
+    const script_verify_flags flags{
+        SCRIPT_VERIFY_P2SH |
+        SCRIPT_VERIFY_WITNESS |
+        SCRIPT_VERIFY_TAPROOT |
+        SCRIPT_VERIFY_SCRIPT_RESTORATION};
+    const PrecomputedTransactionData txdata{tx};
+    BOOST_CHECK(CheckTxScripts(tx, prevout_scripts, prevout_values, flags, txdata,
+                               "Tapscript v2 transaction-wide varops budget", /*expect_valid=*/false));
+}
 
 BOOST_AUTO_TEST_CASE(tx_valid)
 {
@@ -382,7 +437,8 @@ BOOST_AUTO_TEST_CASE(basic_transaction_tests)
     CMutableTransaction tx;
     SpanReader{vch} >> TX_WITH_WITNESS(tx);
     TxValidationState state;
-    BOOST_CHECK_MESSAGE(CheckTransaction(CTransaction(tx), state) && state.IsValid(), "Simple deserialized transaction should be valid.");
+    BOOST_CHECK_MESSAGE(CheckTransaction(CTransaction(tx), state), "Simple deserialized transaction should be valid.");
+    BOOST_CHECK_MESSAGE(state.IsValid(), "Simple deserialized transaction should be valid.");
 
     // Check that duplicate txins fail
     tx.vin.push_back(tx.vin[0]);
@@ -547,10 +603,12 @@ BOOST_AUTO_TEST_CASE(test_big_witness_transaction)
     }
 
     SignatureCache signature_cache{DEFAULT_SIGNATURE_CACHE_BYTES};
+    auto varops_budget{std::make_shared<varops::Budget>(varops::TxBudget(GetTransactionWeight(tx)))};
 
     for(uint32_t i = 0; i < mtx.vin.size(); i++) {
         std::vector<CScriptCheck> vChecks;
-        vChecks.emplace_back(coins[tx.vin[i].prevout.n].out, tx, signature_cache, i, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS, false, &txdata);
+        vChecks.emplace_back(coins[tx.vin[i].prevout.n].out, tx, signature_cache, i,
+                             SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS, false, &txdata, varops_budget);
         control.Add(std::move(vChecks));
     }
 
@@ -704,7 +762,7 @@ BOOST_AUTO_TEST_CASE(test_witness)
     CheckWithFlag(output1, input1, SCRIPT_VERIFY_NONE, false);
     CreateCreditAndSpend(keystore2, scriptMulti, output2, input2, false);
     CheckWithFlag(output2, input2, SCRIPT_VERIFY_NONE, false);
-    BOOST_CHECK(*output1 == *output2);
+    BOOST_CHECK(output1->Equals(*output2));
     UpdateInput(input1.vin[0], CombineSignatures(input1, input2, output1));
     CheckWithFlag(output1, input1, STANDARD_SCRIPT_VERIFY_FLAGS, true);
 
@@ -715,7 +773,7 @@ BOOST_AUTO_TEST_CASE(test_witness)
     CreateCreditAndSpend(keystore2, GetScriptForDestination(ScriptHash(scriptMulti)), output2, input2, false);
     CheckWithFlag(output2, input2, SCRIPT_VERIFY_NONE, true);
     CheckWithFlag(output2, input2, SCRIPT_VERIFY_P2SH, false);
-    BOOST_CHECK(*output1 == *output2);
+    BOOST_CHECK(output1->Equals(*output2));
     UpdateInput(input1.vin[0], CombineSignatures(input1, input2, output1));
     CheckWithFlag(output1, input1, SCRIPT_VERIFY_P2SH, true);
     CheckWithFlag(output1, input1, STANDARD_SCRIPT_VERIFY_FLAGS, true);
@@ -727,7 +785,7 @@ BOOST_AUTO_TEST_CASE(test_witness)
     CreateCreditAndSpend(keystore2, destination_script_multi, output2, input2, false);
     CheckWithFlag(output2, input2, SCRIPT_VERIFY_NONE, true);
     CheckWithFlag(output2, input2, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS, false);
-    BOOST_CHECK(*output1 == *output2);
+    BOOST_CHECK(output1->Equals(*output2));
     UpdateInput(input1.vin[0], CombineSignatures(input1, input2, output1));
     CheckWithFlag(output1, input1, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS, true);
     CheckWithFlag(output1, input1, STANDARD_SCRIPT_VERIFY_FLAGS, true);
@@ -739,7 +797,7 @@ BOOST_AUTO_TEST_CASE(test_witness)
     CreateCreditAndSpend(keystore2, GetScriptForDestination(ScriptHash(destination_script_multi)), output2, input2, false);
     CheckWithFlag(output2, input2, SCRIPT_VERIFY_P2SH, true);
     CheckWithFlag(output2, input2, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS, false);
-    BOOST_CHECK(*output1 == *output2);
+    BOOST_CHECK(output1->Equals(*output2));
     UpdateInput(input1.vin[0], CombineSignatures(input1, input2, output1));
     CheckWithFlag(output1, input1, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_WITNESS, true);
     CheckWithFlag(output1, input1, STANDARD_SCRIPT_VERIFY_FLAGS, true);
@@ -1127,6 +1185,22 @@ BOOST_AUTO_TEST_CASE(max_standard_legacy_sigops)
     }
 }
 
+BOOST_AUTO_TEST_CASE(getlegacysigopcount_inaccurate_test)
+{
+    // Legacy sigops are counted inaccurately in both the scriptSig and the
+    // scriptPubKey: a CHECKMULTISIG counts as MAX_PUBKEYS_PER_MULTISIG even when the
+    // preceding OP_N says it takes fewer keys. Counting it accurately would
+    // undercount, letting a block over the sigop limit through.
+    const CScript multisig{CScript() << OP_1 << OP_CHECKMULTISIG};
+
+    CMutableTransaction mtx;
+    mtx.vin.emplace_back(COutPoint{}, multisig);
+    BOOST_CHECK_EQUAL(GetLegacySigOpCount(CTransaction{mtx}), MAX_PUBKEYS_PER_MULTISIG);
+
+    mtx.vout.emplace_back(0, multisig);
+    BOOST_CHECK_EQUAL(GetLegacySigOpCount(CTransaction{mtx}), 2 * MAX_PUBKEYS_PER_MULTISIG);
+}
+
 BOOST_AUTO_TEST_CASE(checktxinputs_invalid_transactions_test)
 {
     auto check_invalid{[](CAmount input_value, CAmount output_value, bool coinbase, int spend_height, TxValidationResult expected_result, std::string_view expected_reason) {
@@ -1164,6 +1238,53 @@ BOOST_AUTO_TEST_CASE(checktxinputs_invalid_transactions_test)
                   /*coinbase=*/true,
                   /*spend_height=*/COINBASE_MATURITY,
                   TxValidationResult::TX_PREMATURE_SPEND, /*expected_reason=*/"bad-txns-premature-spend-of-coinbase");
+}
+
+BOOST_AUTO_TEST_CASE(isfinaltx_sequences_test)
+{
+    constexpr int height{100};
+
+    // Every transaction here has the same unsatisfied nLockTime, so only the
+    // sequences decide the outcome.
+    auto check_final{[](const std::vector<uint32_t>& sequences, bool expected_final) {
+        CMutableTransaction mtx;
+        mtx.nLockTime = height;
+        for (const uint32_t sequence : sequences) {
+            mtx.vin.emplace_back(COutPoint{}, CScript{}, sequence);
+        }
+
+        BOOST_CHECK_EQUAL(IsFinalTx(CTransaction{mtx}, /*nBlockHeight=*/height, /*nBlockTime=*/0), expected_final);
+    }};
+
+    check_final(/*sequences=*/{CTxIn::SEQUENCE_FINAL, CTxIn::SEQUENCE_FINAL}, /*expected_final=*/true);
+
+    // nLockTime is only ignored when every input is SEQUENCE_FINAL
+    check_final(/*sequences=*/{CTxIn::SEQUENCE_FINAL, CTxIn::MAX_SEQUENCE_NONFINAL}, /*expected_final=*/false);
+    check_final(/*sequences=*/{CTxIn::MAX_SEQUENCE_NONFINAL, CTxIn::SEQUENCE_FINAL}, /*expected_final=*/false);
+}
+
+BOOST_AUTO_TEST_CASE(calculatesequencelocks_tx_version_test)
+{
+    constexpr int coin_height{100};
+
+    // A single input with a height-based relative locktime of one block. Only the
+    // height branch is taken, so the block index is never dereferenced.
+    auto check_min_height{[](uint32_t version, int expected_min_height) {
+        CMutableTransaction mtx;
+        mtx.version = version;
+        mtx.vin.emplace_back(COutPoint{}, CScript{}, /*nSequenceIn=*/1);
+
+        std::vector<int> prev_heights{coin_height};
+        const CBlockIndex block{};
+        const auto lock_pair{CalculateSequenceLocks(CTransaction{mtx}, LOCKTIME_VERIFY_SEQUENCE, prev_heights, block)};
+        BOOST_CHECK_EQUAL(lock_pair.first, expected_min_height);
+    }};
+
+    // BIP68 only applies to versions 2 and up
+    check_min_height(/*version=*/0, /*expected_min_height=*/-1);
+    check_min_height(/*version=*/1, /*expected_min_height=*/-1);
+    check_min_height(/*version=*/2, /*expected_min_height=*/coin_height);
+    check_min_height(/*version=*/std::numeric_limits<uint32_t>::max(), /*expected_min_height=*/coin_height);
 }
 
 BOOST_AUTO_TEST_CASE(getvalueout_out_of_range_throws)

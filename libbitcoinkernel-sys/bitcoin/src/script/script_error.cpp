@@ -119,6 +119,20 @@ std::string ScriptErrorString(const ScriptError serror)
             return "Signature is found in scriptCode";
         case SCRIPT_ERR_SCRIPTNUM:
             return "Script number overflowed or is non-minimally encoded";
+        case SCRIPT_ERR_DISCOURAGE_SCRIPT_RESTORATION:
+            return "Reserved for SCRIPT_RESTORATION soft-fork upgrade";
+        case SCRIPT_ERR_DIVIDE_BY_ZERO:
+            return "OP_DIV or OP_MOD by zero";
+        case SCRIPT_ERR_SUB_UNDERFLOW:
+            return "OP_SUB or OP_1SUB result would be negative";
+        case SCRIPT_ERR_VAROP_COUNT:
+            return "Varops budget exceeded";
+        case SCRIPT_ERR_TOTAL_STACK_SIZE:
+            return "Total stack size limit exceeded";
+        case SCRIPT_ERR_STACK_ELEMENT_SIZE:
+            return "Stack element size limit exceeded";
+        case SCRIPT_ERR_HASH_OPERAND_SIZE:
+            return "OP_RIPEMD160 or OP_SHA1 operand exceeds maximum permitted size";
         case SCRIPT_ERR_UNKNOWN_ERROR:
         case SCRIPT_ERR_ERROR_COUNT:
             break;

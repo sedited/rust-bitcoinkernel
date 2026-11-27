@@ -7,43 +7,64 @@
 
 #include <blockfilter.h>
 #include <chain.h>
-#include <chainparams.h>
+#include <coins.h>
+#include <consensus/params.h>
 #include <core_io.h>
+#include <crypto/hex_base.h>
 #include <flatfile.h>
 #include <httpserver.h>
 #include <index/blockfilterindex.h>
 #include <index/txindex.h>
 #include <node/blockstorage.h>
 #include <node/context.h>
+#include <node/transaction.h>
 #include <primitives/block.h>
 #include <primitives/transaction.h>
 #include <rpc/blockchain.h>
 #include <rpc/mempool.h>
 #include <rpc/protocol.h>
+#include <rpc/request.h>
 #include <rpc/server.h>
-#include <rpc/server_util.h>
+#include <rpc/util.h>
+#include <serialize.h>
 #include <streams.h>
 #include <sync.h>
+#include <tinyformat.h>
 #include <txmempool.h>
+#include <uint256.h>
 #include <undo.h>
+#include <univalue.h>
 #include <util/any.h>
 #include <util/check.h>
 #include <util/overflow.h>
 #include <util/strencodings.h>
+#include <util/string.h>
 #include <validation.h>
 
 #include <any>
+#include <cstdint>
+#include <cstring>
+#include <ios>
+#include <memory>
+#include <optional>
+#include <span>
+#include <stdexcept>
+#include <string_view>
+#include <utility>
 #include <vector>
 
-#include <univalue.h>
-
-using http_bitcoin::HTTPRequest;
 using node::GetTransaction;
 using node::NodeContext;
 using util::SplitString;
 
 static const size_t MAX_GETUTXOS_OUTPOINTS = 15; //allow a max of 15 outpoints to be queried at once
 static constexpr unsigned int MAX_REST_HEADERS_RESULTS = 2000;
+
+// Cache-Control values for REST responses.
+/** Response bytes never change. One-day TTL limits staleness across software upgrades. */
+static constexpr const char* REST_CACHE_IMMUTABLE = "public, immutable, max-age=86400";
+/** Mutable, node-local, or error response; must not be cached. */
+static constexpr const char* REST_CACHE_NO_STORE = "no-store";
 
 static const struct {
     RESTResponseFormat rf;
@@ -71,6 +92,7 @@ struct CCoin {
 
 static bool RESTERR(HTTPRequest* req, enum HTTPStatusCode status, std::string message)
 {
+    req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
     req->WriteHeader("Content-Type", "text/plain");
     req->WriteReply(status, message + "\r\n");
     return false;
@@ -242,6 +264,8 @@ static bool rest_headers(const std::any& context,
             ssHeader << pindex->GetBlockHeader();
         }
 
+        // Do not cache because chain extensions and reorgs can affect the response.
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/octet-stream");
         req->WriteReply(HTTP_OK, ssHeader);
         return true;
@@ -254,6 +278,7 @@ static bool rest_headers(const std::any& context,
         }
 
         std::string strHex = HexStr(ssHeader) + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "text/plain");
         req->WriteReply(HTTP_OK, strHex);
         return true;
@@ -264,6 +289,7 @@ static bool rest_headers(const std::any& context,
             jsonHeaders.push_back(blockheaderToJSON(*tip, *pindex, chainman.GetConsensus().powLimit));
         }
         std::string strJSON = jsonHeaders.write() + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, strJSON);
         return true;
@@ -299,6 +325,8 @@ static void BlockUndoToJSON(const CBlockUndo& block_undo, UniValue& result)
         UniValue tx_prevouts(UniValue::VARR);
         for (const Coin& coin : tx_undo.vprevout) {
             UniValue prevout(UniValue::VOBJ);
+            prevout.pushKV("generated", coin.IsCoinBase());
+            prevout.pushKV("height", coin.nHeight);
             prevout.pushKV("value", ValueFromAmount(coin.out.nValue));
 
             UniValue script_pub_key(UniValue::VOBJ);
@@ -352,6 +380,7 @@ static bool rest_spent_txouts(const std::any& context, HTTPRequest* req, const s
     case RESTResponseFormat::BINARY: {
         DataStream ssSpentResponse{};
         SerializeBlockUndo(ssSpentResponse, block_undo);
+        req->WriteHeader("Cache-Control", REST_CACHE_IMMUTABLE);
         req->WriteHeader("Content-Type", "application/octet-stream");
         req->WriteReply(HTTP_OK, ssSpentResponse);
         return true;
@@ -361,6 +390,7 @@ static bool rest_spent_txouts(const std::any& context, HTTPRequest* req, const s
         DataStream ssSpentResponse{};
         SerializeBlockUndo(ssSpentResponse, block_undo);
         const std::string strHex{HexStr(ssSpentResponse) + "\n"};
+        req->WriteHeader("Cache-Control", REST_CACHE_IMMUTABLE);
         req->WriteHeader("Content-Type", "text/plain");
         req->WriteReply(HTTP_OK, strHex);
         return true;
@@ -370,6 +400,7 @@ static bool rest_spent_txouts(const std::any& context, HTTPRequest* req, const s
         UniValue result(UniValue::VARR);
         BlockUndoToJSON(block_undo, result);
         std::string strJSON = result.write() + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_IMMUTABLE);
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, strJSON);
         return true;
@@ -438,6 +469,7 @@ static bool rest_block(const std::any& context,
 
     switch (rf) {
     case RESTResponseFormat::BINARY: {
+        req->WriteHeader("Cache-Control", REST_CACHE_IMMUTABLE);
         req->WriteHeader("Content-Type", "application/octet-stream");
         req->WriteReply(HTTP_OK, *block_data);
         return true;
@@ -445,6 +477,7 @@ static bool rest_block(const std::any& context,
 
     case RESTResponseFormat::HEX: {
         const std::string strHex{HexStr(*block_data) + "\n"};
+        req->WriteHeader("Cache-Control", REST_CACHE_IMMUTABLE);
         req->WriteHeader("Content-Type", "text/plain");
         req->WriteReply(HTTP_OK, strHex);
         return true;
@@ -456,6 +489,7 @@ static bool rest_block(const std::any& context,
             SpanReader{*block_data} >> TX_WITH_WITNESS(block);
             UniValue objBlock = blockToJSON(chainman.m_blockman, block, *tip, *pblockindex, *tx_verbosity, chainman.GetConsensus().powLimit);
             std::string strJSON = objBlock.write() + "\n";
+            req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
             req->WriteHeader("Content-Type", "application/json");
             req->WriteReply(HTTP_OK, strJSON);
             return true;
@@ -588,6 +622,8 @@ static bool rest_filter_header(const std::any& context, HTTPRequest* req, const 
             ssHeader << header;
         }
 
+        // Do not cache because chain extensions and reorgs can affect the response.
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/octet-stream");
         req->WriteReply(HTTP_OK, ssHeader);
         return true;
@@ -599,6 +635,7 @@ static bool rest_filter_header(const std::any& context, HTTPRequest* req, const 
         }
 
         std::string strHex = HexStr(ssHeader) + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "text/plain");
         req->WriteReply(HTTP_OK, strHex);
         return true;
@@ -610,6 +647,7 @@ static bool rest_filter_header(const std::any& context, HTTPRequest* req, const 
         }
 
         std::string strJSON = jsonHeaders.write() + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, strJSON);
         return true;
@@ -684,6 +722,7 @@ static bool rest_block_filter(const std::any& context, HTTPRequest* req, const s
         DataStream ssResp{};
         ssResp << filter;
 
+        req->WriteHeader("Cache-Control", REST_CACHE_IMMUTABLE);
         req->WriteHeader("Content-Type", "application/octet-stream");
         req->WriteReply(HTTP_OK, ssResp);
         return true;
@@ -693,6 +732,7 @@ static bool rest_block_filter(const std::any& context, HTTPRequest* req, const s
         ssResp << filter;
 
         std::string strHex = HexStr(ssResp) + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_IMMUTABLE);
         req->WriteHeader("Content-Type", "text/plain");
         req->WriteReply(HTTP_OK, strHex);
         return true;
@@ -701,6 +741,7 @@ static bool rest_block_filter(const std::any& context, HTTPRequest* req, const s
         UniValue ret(UniValue::VOBJ);
         ret.pushKV("filter", HexStr(filter.GetEncodedFilter()));
         std::string strJSON = ret.write() + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_IMMUTABLE);
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, strJSON);
         return true;
@@ -728,6 +769,7 @@ static bool rest_chaininfo(const std::any& context, HTTPRequest* req, const std:
         jsonRequest.params = UniValue(UniValue::VARR);
         UniValue chainInfoObject = getblockchaininfo().HandleRequest(jsonRequest);
         std::string strJSON = chainInfoObject.write() + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, strJSON);
         return true;
@@ -747,6 +789,7 @@ static bool rest_deploymentinfo(const std::any& context, HTTPRequest* req, const
 
     std::string hash_str;
     const RESTResponseFormat rf = ParseDataFormat(hash_str, str_uri_part);
+    const bool current_tip{hash_str.empty()};
 
     switch (rf) {
     case RESTResponseFormat::JSON: {
@@ -754,7 +797,7 @@ static bool rest_deploymentinfo(const std::any& context, HTTPRequest* req, const
         jsonRequest.context = context;
         jsonRequest.params = UniValue(UniValue::VARR);
 
-        if (!hash_str.empty()) {
+        if (!current_tip) {
             auto hash{uint256::FromHex(hash_str)};
             if (!hash) {
                 return RESTERR(req, HTTP_BAD_REQUEST, "Invalid hash: " + hash_str);
@@ -769,6 +812,7 @@ static bool rest_deploymentinfo(const std::any& context, HTTPRequest* req, const
             jsonRequest.params.push_back(hash_str);
         }
 
+        req->WriteHeader("Cache-Control", current_tip ? REST_CACHE_NO_STORE : REST_CACHE_IMMUTABLE);
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, getdeploymentinfo().HandleRequest(jsonRequest).write() + "\n");
         return true;
@@ -826,6 +870,7 @@ static bool rest_mempool(const std::any& context, HTTPRequest* req, const std::s
             str_json = MempoolInfoToJSON(*mempool).write() + "\n";
         }
 
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, str_json);
         return true;
@@ -859,12 +904,12 @@ static bool rest_tx(const std::any& context, HTTPRequest* req, const std::string
     if (!tx) {
         return RESTERR(req, HTTP_NOT_FOUND, hashStr + " not found");
     }
-
     switch (rf) {
     case RESTResponseFormat::BINARY: {
         DataStream ssTx;
         ssTx << TX_WITH_WITNESS(tx);
 
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/octet-stream");
         req->WriteReply(HTTP_OK, ssTx);
         return true;
@@ -875,6 +920,7 @@ static bool rest_tx(const std::any& context, HTTPRequest* req, const std::string
         ssTx << TX_WITH_WITNESS(tx);
 
         std::string strHex = HexStr(ssTx) + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "text/plain");
         req->WriteReply(HTTP_OK, strHex);
         return true;
@@ -884,6 +930,7 @@ static bool rest_tx(const std::any& context, HTTPRequest* req, const std::string
         UniValue objTx(UniValue::VOBJ);
         TxToUniv(*tx, /*block_hash=*/hashBlock, /*entry=*/ objTx);
         std::string strJSON = objTx.write() + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, strJSON);
         return true;
@@ -1039,6 +1086,7 @@ static bool rest_getutxos(const std::any& context, HTTPRequest* req, const std::
         DataStream ssGetUTXOResponse{};
         ssGetUTXOResponse << active_height << active_hash << bitmap << outs;
 
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/octet-stream");
         req->WriteReply(HTTP_OK, ssGetUTXOResponse);
         return true;
@@ -1049,6 +1097,7 @@ static bool rest_getutxos(const std::any& context, HTTPRequest* req, const std::
         ssGetUTXOResponse << active_height << active_hash << bitmap << outs;
         std::string strHex = HexStr(ssGetUTXOResponse) + "\n";
 
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "text/plain");
         req->WriteReply(HTTP_OK, strHex);
         return true;
@@ -1079,6 +1128,7 @@ static bool rest_getutxos(const std::any& context, HTTPRequest* req, const std::
 
         // return json string
         std::string strJSON = objGetUTXOResponse.write() + "\n";
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/json");
         req->WriteReply(HTTP_OK, strJSON);
         return true;
@@ -1117,16 +1167,20 @@ static bool rest_blockhash_by_height(const std::any& context, HTTPRequest* req,
     case RESTResponseFormat::BINARY: {
         DataStream ss_blockhash{};
         ss_blockhash << pblockindex->GetBlockHash();
+        // Do not cache because reorgs can change the response.
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/octet-stream");
         req->WriteReply(HTTP_OK, ss_blockhash);
         return true;
     }
     case RESTResponseFormat::HEX: {
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "text/plain");
         req->WriteReply(HTTP_OK, pblockindex->GetBlockHash().GetHex() + "\n");
         return true;
     }
     case RESTResponseFormat::JSON: {
+        req->WriteHeader("Cache-Control", REST_CACHE_NO_STORE);
         req->WriteHeader("Content-Type", "application/json");
         UniValue resp = UniValue(UniValue::VOBJ);
         resp.pushKV("blockhash", pblockindex->GetBlockHash().GetHex());

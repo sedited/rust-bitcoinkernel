@@ -42,6 +42,7 @@ from .util import (
     p2p_port,
     tor_port,
 )
+from .signet import SIGNET_DEFAULT_CHALLENGE, message_start
 
 BITCOIND_PROC_WAIT_TIMEOUT = 60
 # The size of the blocks xor key
@@ -112,6 +113,7 @@ class TestNode():
         v2transport=False,
         uses_wallet=False,
         ipcbind=False,
+        use_gui=False,
     ):
         self.index = i
         self.datadir_path = datadir_path
@@ -125,6 +127,7 @@ class TestNode():
         self.binaries = binaries
         self.coverage_dir = coverage_dir
         self.cwd = cwd
+        self.use_gui = use_gui
         self.has_explicit_bind = False
         if extra_conf is not None:
             append_config(self.datadir_path, extra_conf)
@@ -138,7 +141,7 @@ class TestNode():
         # Configuration for logging is set as command-line args rather than in the bitcoin.conf file.
         # This means that starting a bitcoind using the temp dir to debug a failed test won't
         # spam debug.log.
-        self.args = self.binaries.node_argv(need_ipc=ipcbind) + [
+        self.args = self.binaries.node_argv(need_ipc=ipcbind, use_gui=use_gui) + [
             f"-datadir={self.datadir_path}",
             "-logtimemicros",
             "-debug",
@@ -274,10 +277,40 @@ class TestNode():
         # Delete any existing cookie file -- if such a file exists (eg due to
         # unclean shutdown), it will get overwritten anyway by bitcoind, and
         # potentially interfere with our attempt to authenticate
-        delete_cookie_file(self.datadir_path, self.chain)
+        delete_cookie_file(self.datadir_path, self.chain_dir)
 
         # add environment variable LIBC_FATAL_STDERR_=1 so that libc errors are written to stderr and not the terminal
         subp_env = dict(os.environ, LIBC_FATAL_STDERR_="1")
+        if self.use_gui:
+            subp_env.setdefault("QT_QPA_PLATFORM", "minimal")
+            if platform.system() == "Darwin":
+                # QMacStyle assumes a Cocoa platform window, which the minimal platform
+                # does not provide. In particular, painting a QGroupBox can make Qt call
+                # addSubview: on an invalid native object (QTBUG-49686).
+                subp_env.setdefault("QT_STYLE_OVERRIDE", "fusion")
+            if platform.system() == "OpenBSD":
+                # The system Qt packages are built with GLib support, so Qt uses
+                # QEventDispatcherGlib, which pushes/pops the GLib thread-default
+                # main context in each thread. On OpenBSD the pop can run during
+                # thread exit after GLib's per-thread context stack has already
+                # been torn down, so shutdown emits messages like
+                #   (process:NNN): GLib-CRITICAL **: g_main_context_pop_thread_default:
+                #   assertion 'stack != NULL' failed
+                # on stderr, which the test framework treats as a failure.
+                # Fall back to Qt's poll-based event dispatcher instead.
+                subp_env.setdefault("QT_NO_GLIB", "1")
+            subp_env.setdefault("LC_ALL", "nl_NL.UTF-8") # Set language to try to trigger translation bugs
+            if sys.platform.startswith("linux") and "XDG_RUNTIME_DIR" not in subp_env:
+                # Qt prints warnings to stderr when XDG_RUNTIME_DIR is unset or has wrong
+                # permissions (e.g. in CI environments without a desktop session), which
+                # would cause tests to fail due to unexpected stderr output. The two
+                # warnings are:
+                #   "QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-root'"
+                #   "QStandardPaths: wrong permissions on runtime directory /path, 0755 instead of 0700"
+                # Use a dedicated subdirectory with the required 0700 permissions.
+                xdg_runtime_dir = self.datadir_path / "xdg_runtime"
+                xdg_runtime_dir.mkdir(mode=0o700, exist_ok=True)
+                subp_env["XDG_RUNTIME_DIR"] = str(xdg_runtime_dir)
         if env is not None:
             subp_env.update(env)
 
@@ -301,7 +334,7 @@ class TestNode():
             else:
                 host = self.rpchost
         if mode == RPCConnectionType.AUTHPROXY:
-            rpc_u, rpc_p = get_auth_cookie(self.datadir_path, self.chain)
+            rpc_u, rpc_p = get_auth_cookie(self.datadir_path, self.chain_dir)
             url = f"http://{rpc_u}:{rpc_p}@{host}:{port}"
             proxy = AuthServiceProxy(url, timeout=int(client_timeout))
             coverage_logfile = coverage.get_filename(self.coverage_dir, self.index) if self.coverage_dir else None
@@ -309,11 +342,13 @@ class TestNode():
             rpc.auth_service_proxy_instance.reuse_http_connections = self.reuse_http_connections
             return rpc
         else:  # mode==CLI
+            extra_args = [arg for arg in self.extra_args if arg.startswith("-signetchallenge")]
             return TestNodeCLI(self.binaries)(
                 f"-datadir={self.datadir_path}",
                 f"-rpcclienttimeout={client_timeout}",
                 f"-rpcconnect={host}",
                 f"-rpcport={port}",
+                *extra_args
             )
 
     def wait_for_rpc_connection(self, *, wait_for_import=True):
@@ -417,7 +452,7 @@ class TestNode():
         poll_per_s = 4
         for _ in range(poll_per_s * self.rpc_timeout):
             try:
-                get_auth_cookie(self.datadir_path, self.chain)
+                get_auth_cookie(self.datadir_path, self.chain_dir)
                 self.log.debug("Cookie credentials successfully retrieved")
                 return
             except ValueError:  # cookie file not found and no rpcuser or rpcpassword; bitcoind is still starting
@@ -549,7 +584,21 @@ class TestNode():
 
     @property
     def chain_path(self) -> Path:
-        return self.datadir_path / self.chain
+        return self.datadir_path / self.chain_dir
+
+    @property
+    def chain_dir(self) -> str:
+        if self.chain != "signet":
+            return self.chain
+        for arg in self.extra_args:
+            if not arg.startswith("-signetchallenge"):
+                continue
+            signetchallenge = arg.split('=')[1]
+            if signetchallenge.lower() == SIGNET_DEFAULT_CHALLENGE:
+                return self.chain
+            suffix = message_start(signetchallenge)
+            return f"signet_{suffix}"
+        return self.chain
 
     @property
     def debug_log_path(self) -> Path:
@@ -771,7 +820,7 @@ class TestNode():
 
     def add_outbound_p2p_connection(self, p2p_conn, *, wait_for_verack=True, wait_for_disconnect=False, p2p_idx, connection_type="outbound-full-relay", supports_v2_p2p=None, advertise_v2_p2p=None, **kwargs):
         """Add an outbound p2p connection from node. Must be an
-        "outbound-full-relay", "block-relay-only", "addr-fetch" or "feeler" connection.
+        "outbound-full-relay", "block-relay-only", "addr-fetch", "feeler" or "manual" connection.
 
         This method adds the p2p connection to the self.p2ps list and returns
         the connection to the caller.
@@ -946,6 +995,13 @@ class TestNodeCLI():
             if match:
                 code, message = match.groups()
                 raise JSONRPCException(dict(code=int(code), message=message))
+            match = re.match(r'error: Server response: (.*)\n?$', cli_stderr)
+            if match:
+                message = match.group(1)
+                raise JSONRPCException(dict(
+                    code=-342,
+                    message=f"non-JSON HTTP response with '503 Service Unavailable' from server: {message}",
+                ), http_status=503)
             # Ignore cli_stdout, raise with cli_stderr
             raise subprocess.CalledProcessError(returncode, p_args, output=cli_stderr)
         try:

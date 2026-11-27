@@ -9,8 +9,8 @@
 #include <interfaces/chain.h>
 #include <interfaces/handler.h>
 #include <node/types.h>
-#include <policy/fees/block_policy_estimator.h>
 #include <primitives/transaction.h>
+#include <pubkey.h>
 #include <rpc/server.h>
 #include <scheduler.h>
 #include <support/allocators/secure.h>
@@ -21,15 +21,19 @@
 #include <util/ui_change_type.h>
 #include <wallet/coincontrol.h>
 #include <wallet/context.h>
+#include <wallet/export.h>
 #include <wallet/feebumper.h>
 #include <wallet/fees.h>
+#include <wallet/imports.h>
 #include <wallet/load.h>
 #include <wallet/receive.h>
 #include <wallet/rpc/wallet.h>
 #include <wallet/spend.h>
+#include <wallet/scan.h>
 #include <wallet/wallet.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -57,15 +61,15 @@ WalletTx MakeWalletTx(CWallet& wallet, const CWalletTx& wtx)
 {
     LOCK(wallet.cs_wallet);
     WalletTx result;
-    result.tx = wtx.tx;
-    result.txin_is_mine.reserve(wtx.tx->vin.size());
-    for (const auto& txin : wtx.tx->vin) {
+    result.tx = wtx.GetTx();
+    result.txin_is_mine.reserve(result.tx->vin.size());
+    for (const auto& txin : result.tx->vin) {
         result.txin_is_mine.emplace_back(InputIsMine(wallet, txin));
     }
-    result.txout_is_mine.reserve(wtx.tx->vout.size());
-    result.txout_address.reserve(wtx.tx->vout.size());
-    result.txout_address_is_mine.reserve(wtx.tx->vout.size());
-    for (const auto& txout : wtx.tx->vout) {
+    result.txout_is_mine.reserve(result.tx->vout.size());
+    result.txout_address.reserve(result.tx->vout.size());
+    result.txout_address_is_mine.reserve(result.tx->vout.size());
+    for (const auto& txout : result.tx->vout) {
         result.txout_is_mine.emplace_back(wallet.IsMine(txout));
         result.txout_is_change.push_back(OutputIsChange(wallet, txout));
         result.txout_address.emplace_back();
@@ -99,7 +103,7 @@ WalletTxStatus MakeWalletTxStatus(const CWallet& wallet, const CWalletTx& wtx)
     result.blocks_to_maturity = wallet.GetTxBlocksToMaturity(wtx);
     result.depth_in_main_chain = wallet.GetTxDepthInMainChain(wtx);
     result.time_received = wtx.nTimeReceived;
-    result.lock_time = wtx.tx->nLockTime;
+    result.lock_time = wtx.GetTx()->nLockTime;
     result.is_trusted = CachedTxIsTrusted(wallet, wtx);
     result.is_abandoned = wtx.isAbandoned();
     result.is_coinbase = wtx.IsCoinBase();
@@ -114,7 +118,7 @@ WalletTxOut MakeWalletTxOut(const CWallet& wallet,
     int depth) EXCLUSIVE_LOCKS_REQUIRED(wallet.cs_wallet)
 {
     WalletTxOut result;
-    result.txout = wtx.tx->vout[n];
+    result.txout = wtx.GetTx()->vout[n];
     result.time = wtx.GetTxTime();
     result.depth_in_main_chain = depth;
     result.is_spent = wallet.IsSpent(COutPoint(wtx.GetHash(), n));
@@ -143,14 +147,14 @@ public:
     }
     bool isCrypted() override { return m_wallet->HasEncryptionKeys(); }
     bool lock() override { return m_wallet->Lock(); }
-    bool unlock(const SecureString& wallet_passphrase) override { return m_wallet->Unlock(wallet_passphrase); }
+    util::Expected<void, WalletError> unlock(const SecureString& wallet_passphrase) override { return m_wallet->Unlock(wallet_passphrase); }
     bool isLocked() override { return m_wallet->IsLocked(); }
-    bool changeWalletPassphrase(const SecureString& old_wallet_passphrase,
-        const SecureString& new_wallet_passphrase) override
+    util::Expected<void, WalletError> changeWalletPassphrase(const SecureString& old_wallet_passphrase,
+                                                             const SecureString& new_wallet_passphrase) override
     {
         return m_wallet->ChangeWalletPassphrase(old_wallet_passphrase, new_wallet_passphrase);
     }
-    void abortRescan() override { m_wallet->AbortRescan(); }
+    void abortRescan() override { m_wallet->Scanner().Abort(); }
     bool backupWallet(const std::string& filename) override { return m_wallet->BackupWallet(filename); }
     std::string getWalletName() override { return m_wallet->GetName(); }
     util::Result<CTxDestination> getNewDestination(const OutputType type, const std::string& label) override
@@ -166,6 +170,11 @@ public:
         }
         return false;
     }
+    util::Expected<CExtPubKey, wallet::WalletError> addHDKey(const std::optional<CExtKey>& key) override
+    {
+        return m_wallet->AddHDKey(key);
+    }
+
     SigningResult signMessage(const std::string& message, const PKHash& pkhash, std::string& str_sig) override
     {
         return m_wallet->SignMessage(message, pkhash, str_sig);
@@ -305,7 +314,7 @@ public:
         LOCK(m_wallet->cs_wallet);
         auto mi = m_wallet->mapWallet.find(txid);
         if (mi != m_wallet->mapWallet.end()) {
-            return mi->second.tx;
+            return mi->second.GetTx();
         }
         return {};
     }
@@ -371,6 +380,10 @@ public:
         bool& complete) override
     {
         return m_wallet->FillPSBT(psbtx, options, complete, n_signed);
+    }
+    std::vector<wallet::ImportResult> importDescriptors(std::vector<wallet::ImportDescriptorRequest>& requests) override
+    {
+        return wallet::ProcessDescriptorsImport(*m_wallet, requests);
     }
     WalletBalances getBalances() override
     {
@@ -468,14 +481,13 @@ public:
     CAmount getRequiredFee(unsigned int tx_bytes) override { return GetRequiredFee(*m_wallet, tx_bytes); }
     CAmount getMinimumFee(unsigned int tx_bytes,
         const CCoinControl& coin_control,
-        int* returned_target,
+        std::optional<int>* returned_target,
         FeeReason* reason) override
     {
-        FeeCalculation fee_calc;
-        CAmount result;
-        result = GetMinimumFee(*m_wallet, tx_bytes, coin_control, &fee_calc);
-        if (returned_target) *returned_target = fee_calc.returnedTarget;
-        if (reason) *reason = fee_calc.reason;
+        auto min_fee_rate{GetMinimumFeeRate(*m_wallet, coin_control)};
+        auto result = GetMinimumFee(min_fee_rate, tx_bytes);
+        if (returned_target) *returned_target = min_fee_rate.returned_target;
+        if (reason) *reason = min_fee_rate.fee_reason;
         return result;
     }
     unsigned int getConfirmTarget() override { return m_wallet->m_confirm_target; }
@@ -488,7 +500,7 @@ public:
         return spk_man != nullptr;
     }
     OutputType getDefaultAddressType() override { return m_wallet->m_default_address_type; }
-    CAmount getDefaultMaxTxFee() override { return m_wallet->m_default_max_tx_fee; }
+    CAmount getMaxTxFee() override { return m_wallet->m_max_tx_fee; }
     void remove() override
     {
         RemoveWallet(m_context, m_wallet, /*load_on_start=*/false);
@@ -522,6 +534,12 @@ public:
     }
     CWallet* wallet() override { return m_wallet.get(); }
 
+    util::Result<std::string> exportWatchOnlyWallet(const fs::path& destination) override {
+        LOCK(m_wallet->cs_wallet);
+        m_wallet->TopUpKeyPool();
+        return ExportWatchOnlyWallet(*m_wallet, destination, m_context);
+    }
+
     WalletContext& m_context;
     std::shared_ptr<CWallet> m_wallet;
 };
@@ -545,6 +563,7 @@ public:
                 wallet_request.context = &m_context;
                 return command.actor(wallet_request, result, last_handler);
             }, command.argNames, command.unique_id);
+            m_rpc_commands.back().metadata_fn = command.metadata_fn;
             m_rpc_handlers.emplace_back(m_context.chain->handleRpc(m_rpc_commands.back()));
         }
     }
@@ -556,7 +575,7 @@ public:
         return StartWallets(m_context);
     }
     void stop() override { return UnloadWallets(m_context); }
-    void setMockTime(int64_t time) override { return SetMockTime(time); }
+    void setMockTime(int64_t time) override { return SetMockTime(std::chrono::seconds{time}); }
     void schedulerMockForward(std::chrono::seconds delta) override { Assert(m_context.scheduler)->MockForward(delta); }
 
     //! WalletLoader methods
@@ -600,9 +619,9 @@ public:
         }
         return wallet;
     }
-    util::Result<WalletMigrationResult> migrateWallet(const std::string& name, const SecureString& passphrase) override
+    util::Result<WalletMigrationResult> migrateWallet(const std::string& name, const SecureString& passphrase, bool load_wallet) override
     {
-        auto res = wallet::MigrateLegacyToDescriptor(name, passphrase, m_context);
+        auto res = wallet::MigrateLegacyToDescriptor(name, passphrase, m_context, load_wallet);
         if (!res) return util::Error{util::ErrorString(res)};
         WalletMigrationResult out{
             .wallet = MakeWallet(m_context, res->wallet),

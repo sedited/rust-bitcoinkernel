@@ -24,6 +24,7 @@
 #include <test/util/setup_common.h>
 #include <test/util/transaction_utils.h>
 #include <univalue.h>
+#include <util/check.h>
 #include <util/fs.h>
 #include <util/strencodings.h>
 #include <util/string.h>
@@ -93,7 +94,14 @@ static ScriptErrorDesc script_errors[]={
     {SCRIPT_ERR_TAPSCRIPT_EMPTY_PUBKEY, "TAPSCRIPT_EMPTY_PUBKEY"},
     {SCRIPT_ERR_OP_CODESEPARATOR, "OP_CODESEPARATOR"},
     {SCRIPT_ERR_SIG_FINDANDDELETE, "SIG_FINDANDDELETE"},
-    {SCRIPT_ERR_SCRIPTNUM, "SCRIPTNUM"}
+    {SCRIPT_ERR_SCRIPTNUM, "SCRIPTNUM"},
+    {SCRIPT_ERR_DISCOURAGE_SCRIPT_RESTORATION, "DISCOURAGE_SCRIPT_RESTORATION"},
+    {SCRIPT_ERR_DIVIDE_BY_ZERO, "DIVIDE_BY_ZERO"},
+    {SCRIPT_ERR_SUB_UNDERFLOW, "SUB_UNDERFLOW"},
+    {SCRIPT_ERR_VAROP_COUNT, "VAROP_COUNT"},
+    {SCRIPT_ERR_TOTAL_STACK_SIZE, "TOTAL_STACK_SIZE"},
+    {SCRIPT_ERR_STACK_ELEMENT_SIZE, "STACK_ELEMENT_SIZE"},
+    {SCRIPT_ERR_HASH_OPERAND_SIZE, "HASH_OPERAND_SIZE"},
 };
 
 static std::string FormatScriptFlags(script_verify_flags flags)
@@ -1632,7 +1640,7 @@ BOOST_AUTO_TEST_CASE(script_HasValidOps)
 BOOST_AUTO_TEST_CASE(bip341_keypath_test_vectors)
 {
     UniValue tests;
-    tests.read(json_tests::bip341_wallet_vectors);
+    Assert(tests.read(json_tests::bip341_wallet_vectors));
 
     const auto& vectors = tests["keyPathSpending"];
 

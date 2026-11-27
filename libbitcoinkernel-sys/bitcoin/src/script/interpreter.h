@@ -25,6 +25,10 @@
 
 class CPubKey;
 class XOnlyPubKey;
+class ValtypeStack;
+namespace varops {
+class Budget;
+} // namespace varops
 
 /** Signature hash types/flags */
 enum
@@ -45,7 +49,7 @@ enum
  *  flags (A | B) is a subset of the acceptable scripts under flag (A).
  */
 
-static constexpr script_verify_flags SCRIPT_VERIFY_NONE{0};
+inline constexpr script_verify_flags SCRIPT_VERIFY_NONE{0};
 
 enum class script_verify_flag_name : uint8_t {
     // Evaluate P2SH subscripts (BIP16).
@@ -146,18 +150,24 @@ enum class script_verify_flag_name : uint8_t {
     // Making unknown public key versions (in BIP 342 scripts) non-standard
     SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_PUBKEYTYPE,
 
+    // Enable BIP 440/441 script restoration and Tapscript v2.
+    SCRIPT_VERIFY_SCRIPT_RESTORATION,
+
+    // Reject Tapscript v2 before the deployment is active.
+    SCRIPT_VERIFY_DISCOURAGE_SCRIPT_RESTORATION,
+
     // Constants to point to the highest flag in use. Add new flags above this line.
     //
     SCRIPT_VERIFY_END_MARKER
 };
 using enum script_verify_flag_name;
 
-static constexpr int MAX_SCRIPT_VERIFY_FLAGS_BITS = static_cast<int>(SCRIPT_VERIFY_END_MARKER);
+inline constexpr int MAX_SCRIPT_VERIFY_FLAGS_BITS = static_cast<int>(SCRIPT_VERIFY_END_MARKER);
 
 // assert there is still a spare bit
 static_assert(0 < MAX_SCRIPT_VERIFY_FLAGS_BITS && MAX_SCRIPT_VERIFY_FLAGS_BITS <= 63);
 
-static constexpr script_verify_flags::value_type MAX_SCRIPT_VERIFY_FLAGS = ((script_verify_flags::value_type{1} << MAX_SCRIPT_VERIFY_FLAGS_BITS) - 1);
+inline constexpr script_verify_flags::value_type MAX_SCRIPT_VERIFY_FLAGS = ((script_verify_flags::value_type{1} << MAX_SCRIPT_VERIFY_FLAGS_BITS) - 1);
 
 bool CheckSignatureEncoding(const std::vector<unsigned char> &vchSig, script_verify_flags flags, ScriptError* serror);
 
@@ -198,14 +208,6 @@ struct PrecomputedTransactionData
     explicit PrecomputedTransactionData(const T& tx);
 };
 
-enum class SigVersion
-{
-    BASE = 0,        //!< Bare scripts and BIP16 P2SH-wrapped redeemscripts
-    WITNESS_V0 = 1,  //!< Witness v0 (P2WPKH and P2WSH); see BIP 141
-    TAPROOT = 2,     //!< Witness v1 with 32-byte program, not BIP16 P2SH-wrapped, key path spending; see BIP 341
-    TAPSCRIPT = 3,   //!< Witness v1 with 32-byte program, not BIP16 P2SH-wrapped, script path spending, leaf version 0xc0; see BIP 342
-};
-
 struct ScriptExecutionData
 {
     //! Whether m_tapleaf_hash is initialized.
@@ -235,16 +237,17 @@ struct ScriptExecutionData
 };
 
 /** Signature hash sizes */
-static constexpr size_t WITNESS_V0_SCRIPTHASH_SIZE = 32;
-static constexpr size_t WITNESS_V0_KEYHASH_SIZE = 20;
-static constexpr size_t WITNESS_V1_TAPROOT_SIZE = 32;
+inline constexpr size_t WITNESS_V0_SCRIPTHASH_SIZE = 32;
+inline constexpr size_t WITNESS_V0_KEYHASH_SIZE = 20;
+inline constexpr size_t WITNESS_V1_TAPROOT_SIZE = 32;
 
-static constexpr uint8_t TAPROOT_LEAF_MASK = 0xfe;
-static constexpr uint8_t TAPROOT_LEAF_TAPSCRIPT = 0xc0;
-static constexpr size_t TAPROOT_CONTROL_BASE_SIZE = 33;
-static constexpr size_t TAPROOT_CONTROL_NODE_SIZE = 32;
-static constexpr size_t TAPROOT_CONTROL_MAX_NODE_COUNT = 128;
-static constexpr size_t TAPROOT_CONTROL_MAX_SIZE = TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT;
+inline constexpr uint8_t TAPROOT_LEAF_MASK = 0xfe;
+inline constexpr uint8_t TAPROOT_LEAF_TAPSCRIPT = 0xc0;
+inline constexpr uint8_t TAPROOT_LEAF_TAPSCRIPT_V2 = 0xc2;
+inline constexpr size_t TAPROOT_CONTROL_BASE_SIZE = 33;
+inline constexpr size_t TAPROOT_CONTROL_NODE_SIZE = 32;
+inline constexpr size_t TAPROOT_CONTROL_MAX_NODE_COUNT = 128;
+inline constexpr size_t TAPROOT_CONTROL_MAX_SIZE = TAPROOT_CONTROL_BASE_SIZE + TAPROOT_CONTROL_NODE_SIZE * TAPROOT_CONTROL_MAX_NODE_COUNT;
 
 extern const HashWriter HASHER_TAPSIGHASH; //!< Hasher with tag "TapSighash" pre-fed to it.
 extern const HashWriter HASHER_TAPLEAF;    //!< Hasher with tag "TapLeaf" pre-fed to it.
@@ -373,10 +376,25 @@ uint256 ComputeTapbranchHash(std::span<const unsigned char> a, std::span<const u
 /** Compute the BIP341 taproot script tree Merkle root from control block and leaf hash.
  *  Requires control block to have valid length (33 + k*32, with k in {0,1,..,128}). */
 uint256 ComputeTaprootMerkleRoot(std::span<const unsigned char> control, const uint256& tapleaf_hash);
-
 bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptExecutionData& execdata, ScriptError* error = nullptr);
 bool EvalScript(std::vector<std::vector<unsigned char> >& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, SigVersion sigversion, ScriptError* error = nullptr);
+bool EvalTapscriptV2(ValtypeStack& stack, const CScript& script, script_verify_flags flags, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, varops::Budget& varops_budget, ScriptError* error = nullptr);
+/** Check Tapscript v2 cleanstack and truthiness after execution. Consumes the final stack element. */
+bool CheckTapscriptV2ScriptResult(ValtypeStack& stack, varops::Budget& varops_budget, ScriptError* error = nullptr);
+/** Execute a Tapscript v2 leaf script against an initial stack.
+ *
+ *  This is the complete consensus entry path for a leaf with version
+ *  TAPROOT_LEAF_TAPSCRIPT_V2: OP_SUCCESSx handling, the initial stack limits,
+ *  evaluation, and the cleanstack/truthiness check. It does not verify the
+ *  taproot commitment, and does not itself check that SCRIPT_VERIFY_SCRIPT_RESTORATION
+ *  is set; callers reaching a v2 leaf from a witness program must do both first.
+ *
+ *  execdata must have m_annex_init set, and m_tapleaf_hash_init set if the
+ *  checker may be asked for a signature check. */
+bool ExecuteTapscriptV2(std::span<const std::vector<unsigned char>> stack_span, const CScript& exec_script, script_verify_flags flags, const BaseSignatureChecker& checker, ScriptExecutionData& execdata, varops::Budget& varops_budget, ScriptError* error = nullptr);
+/** Use only when transaction-wide varops budget context is unavailable. */
 bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CScriptWitness* witness, script_verify_flags flags, const BaseSignatureChecker& checker, ScriptError* serror = nullptr);
+bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CScriptWitness* witness, script_verify_flags flags, const BaseSignatureChecker& checker, ScriptError* serror, varops::Budget& varops_budget);
 
 size_t CountWitnessSigOps(const CScript& scriptSig, const CScript& scriptPubKey, const CScriptWitness& witness, script_verify_flags flags);
 
@@ -385,5 +403,7 @@ int FindAndDelete(CScript& script, const CScript& b);
 const std::map<std::string, script_verify_flag_name>& ScriptFlagNamesToEnum();
 
 std::vector<std::string> GetScriptFlagNames(script_verify_flags flags);
+bool CastToBool(const std::vector<unsigned char>& vch);
+std::optional<bool> CheckTapscriptOpSuccess(const CScript& exec_script, script_verify_flags flags, SigVersion sigversion, ScriptError* serror);
 
 #endif // BITCOIN_SCRIPT_INTERPRETER_H

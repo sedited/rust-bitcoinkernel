@@ -179,6 +179,8 @@
 //!
 //! - Silent Payment Scanning
 
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
 use std::ffi::NulError;
 use std::{fmt, panic};
 
@@ -243,6 +245,7 @@ pub enum KernelError {
     InvalidOptions(String),
     OutOfBounds,
     ScriptVerify(ScriptVerifyError),
+    TapscriptV2Eval(TapscriptV2EvalError),
     SerializationFailed,
     MismatchedOutputsSize,
     InvalidLength { expected: usize, actual: usize },
@@ -264,6 +267,7 @@ impl fmt::Display for KernelError {
             KernelError::InvalidOptions(msg) => write!(f, "Invalid options: {}", msg),
             KernelError::OutOfBounds => write!(f, "Out of bounds"),
             KernelError::ScriptVerify(err) => write!(f, "Script verification error: {}", err),
+            KernelError::TapscriptV2Eval(err) => write!(f, "Tapscript v2 evaluation error: {}", err),
             KernelError::SerializationFailed => write!(f, "Serialization failed"),
             KernelError::MismatchedOutputsSize => write!(f, "Number of outputs size does not correspond to the number of inputs of the transaction."),
             KernelError::InvalidLength { expected, actual } => {
@@ -283,14 +287,23 @@ impl std::error::Error for KernelError {
 }
 
 pub use crate::core::{
-    verify, Block, BlockCheckFlags, BlockCheckResult, BlockHash, BlockHeader, BlockSpentOutputs,
-    BlockSpentOutputsRef, BlockTreeEntry, Coin, CoinRef, PrecomputedTransactionData, ScriptPubkey,
-    ScriptPubkeyRef, ScriptVerificationFlags, ScriptVerifyError, Transaction, TransactionRef,
-    TransactionSpentOutputs, TransactionSpentOutputsRef, TxCheckResult, TxIn, TxInRef, TxOut,
-    TxOutPoint, TxOutPointRef, TxOutRef, Txid, TxidRef, WitnessStack, WitnessStackRef,
+    eval_tapscript_v2, verify, Block, BlockCheckFlags, BlockCheckResult, BlockHash, BlockHeader,
+    BlockSpentOutputs, BlockSpentOutputsRef, BlockTreeEntry, Coin, CoinRef,
+    PrecomputedTransactionData, ScriptPubkey, ScriptPubkeyRef, ScriptStack,
+    ScriptVerificationFlags, ScriptVerifyError, TapscriptV2EvalError, TapscriptV2Result,
+    TapscriptV2SpendContext, Transaction, TransactionRef, TransactionSpentOutputs,
+    TransactionSpentOutputsRef, TxCheckResult, TxIn, TxInRef, TxOut, TxOutPoint, TxOutPointRef,
+    TxOutRef, Txid, TxidRef, WitnessStack, WitnessStackRef,
 };
 
 pub use crate::log::{disable_logging, Log, LogCategory, LogLevel, Logger};
+
+#[cfg(feature = "script-trace")]
+pub use crate::log::{
+    ScriptEvalStackItemRef, ScriptEvalStackIter, ScriptEvalStackRef, ScriptTraceCallback,
+    ScriptTraceCollector, ScriptTraceFrame, ScriptTraceFrameKind, ScriptTraceFrameRef,
+    ScriptTracer, SigVersion,
+};
 
 pub use crate::notifications::{
     BlockCheckedCallback, BlockTipCallback, BlockValidationResult, BlockValidationStateRef,
@@ -310,7 +323,8 @@ pub use crate::core::block_check_flags::{
 
 pub use crate::core::verify_flags::{
     VERIFY_ALL, VERIFY_ALL_PRE_TAPROOT, VERIFY_CHECKLOCKTIMEVERIFY, VERIFY_CHECKSEQUENCEVERIFY,
-    VERIFY_DERSIG, VERIFY_NONE, VERIFY_NULLDUMMY, VERIFY_P2SH, VERIFY_TAPROOT, VERIFY_WITNESS,
+    VERIFY_DERSIG, VERIFY_NONE, VERIFY_NULLDUMMY, VERIFY_P2SH, VERIFY_SCRIPT_RESTORATION,
+    VERIFY_TAPROOT, VERIFY_WITNESS,
 };
 
 pub mod prelude {

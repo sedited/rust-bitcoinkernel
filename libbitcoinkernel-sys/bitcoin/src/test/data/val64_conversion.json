@@ -1,0 +1,29 @@
+[
+    ["Empty test",
+     [], []
+    ],
+    ["Single zero unit (final 0)",
+     [0], [0]
+    ],
+    ["Single unit",
+     [1], [1]
+    ],
+    ["Little endian",
+     [1, 2], [513]
+    ],
+    ["Little endian, redundant zeroes",
+     [1, 2, 0], [513]
+    ],
+    ["Little endian 8 chars",
+     [1, 0, 0, 0, 0, 0, 0, 2], [144115188075855873]
+    ],
+    ["Little endian becomes little-wordian",
+     [1, 0, 0, 0, 0, 0, 0, 2, 7], [144115188075855873, 7]
+    ],
+    ["Don't trim zeroes on conversion to 64",
+     [1, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0], [144115188075855873, 0]
+    ],
+    ["Two full words",
+     [1, 0, 0, 0, 0, 0, 0, 2, 3, 0, 0, 0, 0, 0, 0, 2], [144115188075855873, 144115188075855875]
+    ]
+]

@@ -1,0 +1,271 @@
+[
+  {
+    "category": "OP_VERIFY tests",
+    "tests": [
+      {"name":"OP_VERIFY simple success (non-zero)","initial stack":["01"],"opcodes":["69"],"final stack":[],"varops cost":16,"description":"COMPARINGZERO: W(len(A)=1)*2 = 8*2 = 16"},
+      {"name":"OP_VERIFY success (only last byte non-zero)","initial stack":["00{3999999}01"],"opcodes":["69"],"final stack":[],"varops cost":8000000,"description":"COMPARINGZERO: W(len(A)=4000000)*2 = 4000000*2 = 8000000"},
+      {"name":"OP_VERIFY stack presence test (zero followed by 01)","initial stack":["00","01"],"opcodes":["69"],"final stack":["00"],"varops cost":16,"description":"COMPARINGZERO: W(len(A)=1)*2 = 8*2 = 16"}
+    ]
+  },
+  {
+    "category": "OP_NOT tests",
+    "tests": [
+      {"name":"OP_NOT success (non-zero becomes empty string)","initial stack":["01"],"opcodes":["91"],"final stack":[""],"varops cost":16,"description":"COMPARINGZERO: W(len(A)=1)*2 = 8*2 = 16"},
+      {"name":"OP_NOT success (single zero byte)","initial stack":["00"],"opcodes":["91"],"final stack":["01"],"varops cost":16,"description":"COMPARINGZERO: W(len(A)=1)*2 = 8*2 = 16"},
+      {"name":"OP_NOT success (multi-byte all zero)","initial stack":["00{4000000}"],"opcodes":["91"],"final stack":["01"],"varops cost":8000000,"description":"COMPARINGZERO: W(len(A)=4000000)*2 = 4000000*2 = 8000000"},
+      {"name":"OP_NOT success (explicit empty string)","initial stack":[""],"opcodes":["91"],"final stack":["01"],"varops cost":0,"description":"COMPARINGZERO: W(len(A)=0)*2 = 0*2 = 0"},
+      {"name":"OP_NOT success (only last byte non-zero)","initial stack":["00{3999999}01"],"opcodes":["91"],"final stack":[""],"varops cost":8000000,"description":"COMPARINGZERO: W(len(A)=4000000)*2 = 4000000*2 = 8000000"}
+    ]
+  },
+  {
+    "category": "OP_0NOTEQUAL tests",
+    "tests": [
+      {"name":"OP_0NOTEQUAL success (non-zero becomes 01)","initial stack":["01"],"opcodes":["92"],"final stack":["01"],"varops cost":16,"description":"COMPARINGZERO: W(len(A)=1)*2 = 8*2 = 16"},
+      {"name":"OP_0NOTEQUAL success (single zero becomes empty)","initial stack":["00"],"opcodes":["92"],"final stack":[""],"varops cost":16,"description":"COMPARINGZERO: W(len(A)=1)*2 = 8*2 = 16"},
+      {"name":"OP_0NOTEQUAL success (explicit empty string becomes empty)","initial stack":[""],"opcodes":["92"],"final stack":[""],"varops cost":0,"description":"COMPARINGZERO: W(len(A)=0)*2 = 0*2 = 0"},
+      {"name":"OP_0NOTEQUAL success (multi-byte zero becomes empty)","initial stack":["00{4000000}"],"opcodes":["92"],"final stack":[""],"varops cost":8000000,"description":"COMPARINGZERO: W(len(A)=4000000)*2 = 4000000*2 = 8000000"},
+      {"name":"OP_0NOTEQUAL success (only last byte non-zero becomes 01)","initial stack":["00{3999999}01"],"opcodes":["92"],"final stack":["01"],"varops cost":8000000,"description":"COMPARINGZERO: W(len(A)=4000000)*2 = 4000000*2 = 8000000"}
+    ]
+  },
+  {
+    "category": "OP_EQUAL tests",
+    "tests": [
+      {"name":"OP_EQUAL success (equal non-empty strings)","initial stack":["abcd","abcd"],"opcodes":["87"],"final stack":["01"],"varops cost":4,"description":"COMPARING: len(A) = 2 (same length, so compare)"},
+      {"name":"OP_EQUAL success (equal empty strings)","initial stack":["",""],"opcodes":["87"],"final stack":["01"],"varops cost":0,"description":"COMPARING: len(A) = 0 (both empty)"},
+      {"name":"OP_EQUAL fail (non-equal same length)","initial stack":["abcd","abce"],"opcodes":["87"],"final stack":[""],"varops cost":4,"description":"COMPARING: len(A) = 2 (same length, so compare)"},
+      {"name":"OP_EQUAL fail (different lengths)","initial stack":["abcd","ab"],"opcodes":["87"],"final stack":[""],"varops cost":0,"description":"COMPARING: 0 (different lengths, no comparison needed)"}
+    ]
+  },
+  {
+    "category": "OP_EQUALVERIFY tests",
+    "tests": [
+      {"name":"OP_EQUALVERIFY success (equal non-empty strings)","initial stack":["abcd","abcd"],"opcodes":["88"],"final stack":[],"varops cost":4,"description":"COMPARING: len(A) = 2 (same length, so compare)"},
+      {"name":"OP_EQUALVERIFY success (equal empty strings)","initial stack":["",""],"opcodes":["88"],"final stack":[],"varops cost":0,"description":"COMPARING: len(A) = 0 (both empty)"}
+    ]
+  },
+  {
+    "category": "OP_2DUP tests",
+    "tests": [
+      {"name":"OP_2DUP success (two small items)","initial stack":["01","02"],"opcodes":["6e"],"final stack":["01","02","01","02"],"varops cost":6,"description":"COPYING: len(A) + len(B) = 1 + 1 = 2"},
+      {"name":"OP_2DUP success (stack total size exactly 8000000)","initial stack":["aa","ff{3999999}"],"opcodes":["6e"],"final stack":["aa","ff{3999999}","aa","ff{3999999}"],"varops cost":12000000,"description":"COPYING: len(A) + len(B) = 1 + 3999999 = 4000000"},
+      {"name":"OP_2DUP success (stack total size exactly 8000000 including altstack)","initial stack":["aa","ff{3999998}","bbcc"],"opcodes":["6b","6e","6c"],"final stack":["aa","ff{3999998}","aa","ff{3999998}","bbcc"],"varops cost":11999997,"description":"COPYING: OP_2DUP (len(A) + len(B) = 1 + 3999998) = 3999999"}
+    ]
+  },
+  {
+    "category": "OP_3DUP tests",
+    "tests": [
+      {"name":"OP_3DUP success (three small items)","initial stack":["01","02","03"],"opcodes":["6f"],"final stack":["01","02","03","01","02","03"],"varops cost":9,"description":"COPYING: len(A) + len(B) + len(C) = 1 + 1 + 1 = 3"},
+      {"name":"OP_3DUP success (stack total size exactly 8000000)","initial stack":["aa","bb","ff{3999998}"],"opcodes":["6f"],"final stack":["aa","bb","ff{3999998}","aa","bb","ff{3999998}"],"varops cost":12000000,"description":"COPYING: len(A) + len(B) + len(C) = 1 + 1 + 3999998 = 4000000"},
+      {"name":"OP_3DUP success (stack total size exactly 8000000 including altstack)","initial stack":["aa","bb","ff{3999995}","ccdd"],"opcodes":["6b","6f","6c"],"final stack":["aa","bb","ff{3999995}","aa","bb","ff{3999995}","ccdd"],"varops cost":11999991,"description":"COPYING: OP_3DUP (1 + 1 + 3999995) = 3999997"}
+    ]
+  },
+  {
+    "category": "OP_2OVER tests",
+    "tests": [
+      {"name":"OP_2OVER success (four small items)","initial stack":["a1","b2","c3","d4"],"opcodes":["70"],"final stack":["a1","b2","c3","d4","a1","b2"],"varops cost":6,"description":"COPYING: len(C) + len(D) = 1 + 1 = 2"},
+      {"name":"OP_2OVER success (stack total size exactly 8000000)","initial stack":["aa","bb","ff{3999998}","00"],"opcodes":["70"],"final stack":["aa","bb","ff{3999998}","00","aa","bb"],"varops cost":6,"description":"COPYING: len(C) + len(D) = 1 + 1 = 2"},
+      {"name":"OP_2OVER success (stack+altstack exactly 8000000)","initial stack":["aa","bb","ff{3999997}","cc","dd"],"opcodes":["6b","70","6c"],"final stack":["aa","bb","ff{3999997}","cc","aa","bb","dd"],"varops cost":6,"description":"COPYING: OP_2OVER (1 + 1) = 2"}
+    ]
+  },
+  {
+    "category": "OP_IFDUP tests",
+    "tests": [
+      {"name":"OP_IFDUP success (non-zero one-byte)","initial stack":["01"],"opcodes":["73"],"final stack":["01","01"],"varops cost":19,"description":"COMPARINGZERO + COPYING: W(len(A)=1)*2 + len(A)*3 = 8*2 + 1*3 = 19"},
+      {"name":"OP_IFDUP success (non-zero multi-byte)","initial stack":["0001"],"opcodes":["73"],"final stack":["0001","0001"],"varops cost":22,"description":"COMPARINGZERO + COPYING: W(len(A)=2)*2 + len(A)*3 = 8*2 + 2*3 = 22"},
+      {"name":"OP_IFDUP success (empty string is zero)","initial stack":[""],"opcodes":["73"],"final stack":[""],"varops cost":0,"description":"COMPARINGZERO + COPYING: W(len(A)=0)*2 + len(A)*3 = 0*2 + 0*3 = 0"},
+      {"name":"OP_IFDUP success (all-zero multi-byte is zero)","initial stack":["00{4000000}"],"opcodes":["73"],"final stack":["00{4000000}"],"varops cost":20000000,"description":"COMPARINGZERO + COPYING: W(len(A)=4000000)*2 + len(A)*3 = 4000000*2 + 4000000*3 = 20000000"},
+      {"name":"OP_IFDUP success (last byte non-zero triggers duplication)","initial stack":["00{3999999}01"],"opcodes":["73"],"final stack":["00{3999999}01","00{3999999}01"],"varops cost":20000000,"description":"COMPARINGZERO + COPYING: W(len(A)=4000000)*2 + len(A)*3 = 4000000*2 + 4000000*3 = 20000000"},
+      {"name":"OP_IFDUP success (duplication puts stack+altstack exactly at 8000000)","initial stack":["aa","ff{3999998}"],"opcodes":["6b","73","6c"],"final stack":["aa","aa","ff{3999998}"],"varops cost":19,"description":"COMPARINGZERO + COPYING: W(len(A)=1)*2 + len(A)*3 = 8*2 + 1*3 = 19"}
+    ]
+  },
+  {
+    "category": "OP_DUP tests",
+    "tests": [
+      {"name":"OP_DUP success (one-byte item)","initial stack":["ff"],"opcodes":["76"],"final stack":["ff","ff"],"varops cost":3,"description":"COPYING: len(A) = 1"},
+      {"name":"OP_DUP success (multi-byte item)","initial stack":["abcd"],"opcodes":["76"],"final stack":["abcd","abcd"],"varops cost":6,"description":"COPYING: len(A) = 2"},
+      {"name":"OP_DUP success (empty string)","initial stack":[""],"opcodes":["76"],"final stack":["",""],"varops cost":0,"description":"COPYING: len(A) = 0"},
+      {"name":"OP_DUP success (stack+altstack exactly 8000000 after dup)","initial stack":["aa","ff{3999998}"],"opcodes":["6b","76","6c"],"final stack":["aa","aa","ff{3999998}"],"varops cost":3}
+    ]
+  },
+  {
+    "category": "OP_OVER tests",
+    "tests": [
+      {"name":"OP_OVER success (two small items)","initial stack":["01","02"],"opcodes":["78"],"final stack":["01","02","01"],"varops cost":3,"description":"COPYING: len(B) = 1"},
+      {"name":"OP_OVER success (multi-byte item copied)","initial stack":["abcd","ef"],"opcodes":["78"],"final stack":["abcd","ef","abcd"],"varops cost":6,"description":"COPYING: len(B) = 2"},
+      {"name":"OP_OVER success (empty string copied)","initial stack":["","ff"],"opcodes":["78"],"final stack":["","ff",""],"varops cost":0,"description":"COPYING: len(B) = 0"},
+      {"name":"OP_OVER success (stack+altstack exactly 8000000)","initial stack":["aa","bb","ff{3999998}"],"opcodes":["6b","78","6c"],"final stack":["aa","bb","aa","ff{3999998}"],"varops cost":3,"description":"COPYING: OP_OVER (len=1) = 1"}
+    ]
+  },
+  {
+    "category": "OP_TUCK tests",
+    "tests": [
+      {"name":"OP_TUCK success (two small items)","initial stack":["01","02"],"opcodes":["7d"],"final stack":["02","01","02"],"varops cost":3,"description":"COPYING: len(A) = 1"},
+      {"name":"OP_TUCK success (multi-byte duplication)","initial stack":["a1","abcd"],"opcodes":["7d"],"final stack":["abcd","a1","abcd"],"varops cost":6,"description":"COPYING: len(A) = 2"},
+      {"name":"OP_TUCK success (empty string duplicated)","initial stack":["a1",""],"opcodes":["7d"],"final stack":["","a1",""],"varops cost":0,"description":"COPYING: len(A) = 0"},
+      {"name":"OP_TUCK success (stack+altstack exactly 8000000)","initial stack":["aa","ff{3999999}","bb"],"opcodes":["6b","7d","6c"],"final stack":["ff{3999999}","aa","ff{3999999}","bb"],"varops cost":11999997,"description":"COPYING: OP_TUCK (len=3999999) = 3999999"}
+    ]
+  },
+  {
+    "category": "OP_PICK tests",
+    "tests": [
+      {"name":"OP_PICK success (pick index 0 = top)","initial stack":["aa",""],"opcodes":["79"],"final stack":["aa","aa"],"varops cost":3,"description":"LENGTHCONV + COPYING: W(len(index)=0)*2 + len(picked)*3 = 0*2 + 1*3 = 3"},
+      {"name":"OP_PICK success (pick index 1 = second)","initial stack":["aa","bb","01"],"opcodes":["79"],"final stack":["aa","bb","aa"],"varops cost":19,"description":"LENGTHCONV + COPYING: W(len(index)=1)*2 + len(picked)*3 = 8*2 + 1*3 = 19"},
+      {"name":"OP_PICK success (multi-byte target and index)","initial stack":["ff{100}","ee","0100"],"opcodes":["79"],"final stack":["ff{100}","ee","ff{100}"],"varops cost":316,"description":"LENGTHCONV + COPYING: W(len(index)=2)*2 + len(picked)*3 = 8*2 + 100*3 = 316"},
+      {"name":"OP_PICK success (zero-length target)","initial stack":["",""],"opcodes":["79"],"final stack":["",""],"varops cost":0,"description":"LENGTHCONV + COPYING: W(len(index)=0)*2 + len(picked)*3 = 0*2 + 0*3 = 0"},
+      {"name":"OP_PICK success (non-minimal encoding of 0)","initial stack":["aa","0000"],"opcodes":["79"],"final stack":["aa","aa"],"varops cost":19,"description":"LENGTHCONV + COPYING: W(len(index)=2)*2 + len(picked)*3 = 8*2 + 1*3 = 19"},
+      {"name":"OP_PICK success (stack+altstack exactly 8000000)","initial stack":["aa","eeee","01","ff{3999999}"],"opcodes":["6b","79","6c"],"final stack":["aa","eeee","aa","ff{3999999}"],"varops cost":19,"description":"LENGTHCONV + COPYING: W(len(index)=1)*2 + len(picked)*3 = 8*2 + 1*3 = 19"}
+    ]
+  },
+  {
+    "category": "OP_ROLL tests",
+    "tests": [
+      {"name":"OP_ROLL success (roll 0 = no change)","initial stack":["aa",""],"opcodes":["7a"],"final stack":["aa"],"varops cost":0,"description":"LENGTHCONV + ROLL: W(len(index)=0)*2 + 48*value(index=0) = 0*2 + 48*0 = 0"},
+      {"name":"OP_ROLL success (roll 1 = swap)","initial stack":["aa","bb","01"],"opcodes":["7a"],"final stack":["bb","aa"],"varops cost":64,"description":"LENGTHCONV + ROLL: W(len(index)=1)*2 + 48*value(index=1) = 8*2 + 48*1 = 64"},
+      {"name":"OP_ROLL success (roll from position 2)","initial stack":["a1","b2","c3","02"],"opcodes":["7a"],"final stack":["b2","c3","a1"],"varops cost":112,"description":"LENGTHCONV + ROLL: W(len(index)=1)*2 + 48*value(index=2) = 8*2 + 48*2 = 112"},
+      {"name":"OP_ROLL success (non-minimally encoded 0)","initial stack":["aa","0000"],"opcodes":["7a"],"final stack":["aa"],"varops cost":16,"description":"LENGTHCONV + ROLL: W(len(index)=2)*2 + 48*value(index=0) = 8*2 + 48*0 = 16"}
+    ]
+  },
+  {
+    "category": "OP_BOOLAND tests",
+    "tests": [
+      {"name":"OP_BOOLAND success (both one-byte non-zero)","initial stack":["01","02"],"opcodes":["9a"],"final stack":["01"],"varops cost":32,"description":"COMPARINGZERO: (W(len(A)=1) + W(len(B)=1))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_BOOLAND success (multi-byte non-zero + single byte)","initial stack":["00000001","01"],"opcodes":["9a"],"final stack":["01"],"varops cost":32,"description":"COMPARINGZERO: (W(len(A)=4) + W(len(B)=1))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_BOOLAND success (first zero)","initial stack":["00","01"],"opcodes":["9a"],"final stack":[""],"varops cost":32,"description":"COMPARINGZERO: (W(len(A)=1) + W(len(B)=1))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_BOOLAND success (both empty)","initial stack":["",""],"opcodes":["9a"],"final stack":[""],"varops cost":0,"description":"COMPARINGZERO: (W(len(A)=0) + W(len(B)=0))*2 = (0 + 0)*2 = 0"},
+      {"name":"OP_BOOLAND success (both multi-byte zero)","initial stack":["00{4000000}","00{4000000}"],"opcodes":["9a"],"final stack":[""],"varops cost":16000000,"description":"COMPARINGZERO: (W(len(A)=4000000) + W(len(B)=4000000))*2 = (4000000 + 4000000)*2 = 16000000"},
+      {"name":"OP_BOOLAND success (one non-zero at the end)","initial stack":["00{3999999}01","00{3999999}01"],"opcodes":["9a"],"final stack":["01"],"varops cost":16000000,"description":"COMPARINGZERO: (W(len(A)=4000000) + W(len(B)=4000000))*2 = (4000000 + 4000000)*2 = 16000000"}
+    ]
+  },
+  {
+    "category": "OP_BOOLOR tests",
+    "tests": [
+      {"name":"OP_BOOLOR success (both one-byte non-zero)","initial stack":["01","02"],"opcodes":["9b"],"final stack":["01"],"varops cost":32,"description":"COMPARINGZERO: (W(len(A)=1) + W(len(B)=1))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_BOOLOR success (one zero, one non-zero)","initial stack":["00","01"],"opcodes":["9b"],"final stack":["01"],"varops cost":32,"description":"COMPARINGZERO: (W(len(A)=1) + W(len(B)=1))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_BOOLOR success (one empty, one non-zero)","initial stack":["","01"],"opcodes":["9b"],"final stack":["01"],"varops cost":16,"description":"COMPARINGZERO: (W(len(A)=0) + W(len(B)=1))*2 = (0 + 8)*2 = 16"},
+      {"name":"OP_BOOLOR success (both empty)","initial stack":["",""],"opcodes":["9b"],"final stack":[""],"varops cost":0,"description":"COMPARINGZERO: (W(len(A)=0) + W(len(B)=0))*2 = (0 + 0)*2 = 0"},
+      {"name":"OP_BOOLOR success (both multi-byte zero)","initial stack":["00{4000000}","00{4000000}"],"opcodes":["9b"],"final stack":[""],"varops cost":16000000,"description":"COMPARINGZERO: (W(len(A)=4000000) + W(len(B)=4000000))*2 = (4000000 + 4000000)*2 = 16000000"},
+      {"name":"OP_BOOLOR success (one long non-zero)","initial stack":["00{3999999}01","00{4000000}"],"opcodes":["9b"],"final stack":["01"],"varops cost":16000000,"description":"COMPARINGZERO: (W(len(A)=4000000) + W(len(B)=4000000))*2 = (4000000 + 4000000)*2 = 16000000"}
+    ]
+  },
+  {
+    "category": "OP_NUMEQUAL tests",
+    "tests": [
+      {"name":"OP_NUMEQUAL success (equal one-byte numbers)","initial stack":["01","01"],"opcodes":["9c"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_NUMEQUAL success (equal numbers, padded)","initial stack":["01","010000"],"opcodes":["9c"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=3))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_NUMEQUAL success (both zero)","initial stack":["00",""],"opcodes":["9c"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=0))*2 = max(8, 0)*2 = 16"},
+      {"name":"OP_NUMEQUAL fail (different values)","initial stack":["01","02"],"opcodes":["9c"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_NUMEQUAL success (equal long values with trailing zeros)","initial stack":["ff{3999999}01","ff{3999999}01"],"opcodes":["9c"],"final stack":["01"],"varops cost":8000000,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=4000000), W(len(B)=4000000))*2 = max(4000000, 4000000)*2 = 8000000"},
+      {"name":"OP_NUMEQUAL fail (different lengths, same prefix)","initial stack":["01","0101"],"opcodes":["9c"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=2))*2 = max(8, 8)*2 = 16"}
+    ]
+  },
+  {
+    "category": "OP_NUMEQUALVERIFY tests",
+    "tests": [
+      {"name":"OP_NUMEQUALVERIFY success (equal one-byte)","initial stack":["01","01"],"opcodes":["9d"],"final stack":[],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_NUMEQUALVERIFY success (equal with trailing zeros)","initial stack":["01","010000"],"opcodes":["9d"],"final stack":[],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=3))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_NUMEQUALVERIFY success (both zero)","initial stack":["","00"],"opcodes":["9d"],"final stack":[],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=0), W(len(B)=1))*2 = max(0, 8)*2 = 16"},
+      {"name":"OP_NUMEQUALVERIFY success (long equal with trailing zeros)","initial stack":["ff{3999999}01","ff{3999999}01"],"opcodes":["9d"],"final stack":[],"varops cost":8000000,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=4000000), W(len(B)=4000000))*2 = max(4000000, 4000000)*2 = 8000000"}
+    ]
+  },
+  {
+    "category": "OP_NUMNOTEQUAL tests",
+    "tests": [
+      {"name":"OP_NUMNOTEQUAL success (different one-byte values)","initial stack":["01","02"],"opcodes":["9e"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_NUMNOTEQUAL success (equal with padding)","initial stack":["01","010000"],"opcodes":["9e"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=3))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_NUMNOTEQUAL success (both empty = equal)","initial stack":["",""],"opcodes":["9e"],"final stack":[""],"varops cost":0,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=0), W(len(B)=0))*2 = max(0, 0)*2 = 0"},
+      {"name":"OP_NUMNOTEQUAL success (one empty, one padded zero = equal)","initial stack":["","000000"],"opcodes":["9e"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=0), W(len(B)=3))*2 = max(0, 8)*2 = 16"},
+      {"name":"OP_NUMNOTEQUAL success (long unequal values)","initial stack":["ff{3999999}01","ff{3999999}02"],"opcodes":["9e"],"final stack":["01"],"varops cost":8000000,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=4000000), W(len(B)=4000000))*2 = max(4000000, 4000000)*2 = 8000000"}
+    ]
+  },
+  {
+    "category": "OP_LESSTHAN tests",
+    "tests": [
+      {"name":"OP_LESSTHAN success (1 < 2)","initial stack":["01","02"],"opcodes":["9f"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_LESSTHAN success (2 < 1 is false)","initial stack":["02","01"],"opcodes":["9f"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_LESSTHAN success (trailing zeros ignored)","initial stack":["01","01000000"],"opcodes":["9f"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=4))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_LESSTHAN success (empty < 01)","initial stack":["","01"],"opcodes":["9f"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=0), W(len(B)=1))*2 = max(0, 8)*2 = 16"},
+      {"name":"OP_LESSTHAN success (01 < empty is false)","initial stack":["01",""],"opcodes":["9f"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=0))*2 = max(8, 0)*2 = 16"}
+    ]
+  },
+  {
+    "category": "OP_GREATERTHAN tests",
+    "tests": [
+      {"name":"OP_GREATERTHAN success (2 > 1)","initial stack":["02","01"],"opcodes":["a0"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_GREATERTHAN success (1 > 2 is false)","initial stack":["01","02"],"opcodes":["a0"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_GREATERTHAN success (trailing zeros ignored)","initial stack":["010000","01"],"opcodes":["a0"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=3), W(len(B)=1))*2 = max(8, 8)*2 = 16"}
+    ]
+  },
+  {
+    "category": "OP_LESSTHANOREQUAL tests",
+    "tests": [
+      {"name":"OP_LESSTHANOREQUAL success (1 <= 2)","initial stack":["01","02"],"opcodes":["a1"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_LESSTHANOREQUAL success (2 <= 2)","initial stack":["02","02"],"opcodes":["a1"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_LESSTHANOREQUAL success (3 <= 2 is false)","initial stack":["03","02"],"opcodes":["a1"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"}
+    ]
+  },
+  {
+    "category": "OP_GREATERTHANOREQUAL tests",
+    "tests": [
+      {"name":"OP_GREATERTHANOREQUAL success (3 >= 2)","initial stack":["03","02"],"opcodes":["a2"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_GREATERTHANOREQUAL success (2 >= 2)","initial stack":["02","02"],"opcodes":["a2"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"},
+      {"name":"OP_GREATERTHANOREQUAL success (1 >= 2 is false)","initial stack":["01","02"],"opcodes":["a2"],"final stack":[""],"varops cost":16,"description":"COMPARING + COMPARINGZERO: max(W(len(A)=1), W(len(B)=1))*2 = max(8, 8)*2 = 16"}
+    ]
+  },
+  {
+    "category": "OP_MIN tests",
+    "tests": [
+      {"name":"OP_MIN success (1 vs 2)","initial stack":["01","02"],"opcodes":["a3"],"final stack":["01"],"varops cost":32,"description":"OTHER: max(W(len(A)=1), W(len(B)=1))*4 = max(8, 8)*4 = 32"},
+      {"name":"OP_MIN success (3 vs 2)","initial stack":["03","02"],"opcodes":["a3"],"final stack":["02"],"varops cost":32,"description":"OTHER: max(W(len(A)=1), W(len(B)=1))*4 = max(8, 8)*4 = 32"},
+      {"name":"OP_MIN success (equal values)","initial stack":["05","050000"],"opcodes":["a3"],"final stack":["05"],"varops cost":32,"description":"OTHER: max(W(len(A)=1), W(len(B)=3))*4 = max(8, 8)*4 = 32"},
+      {"name":"OP_MIN success (empty and 01)","initial stack":["","01"],"opcodes":["a3"],"final stack":[""],"varops cost":32,"description":"OTHER: max(W(len(A)=0), W(len(B)=1))*4 = max(0, 8)*4 = 32"},
+      {"name":"OP_MIN success (empty and empty)","initial stack":["",""],"opcodes":["a3"],"final stack":[""],"varops cost":0,"description":"OTHER: max(W(len(A)=0), W(len(B)=0))*4 = max(0, 0)*4 = 0"},
+      {"name":"OP_MIN success (normalizes selected result)","initial stack":["020000","01"],"opcodes":["a3"],"final stack":["01"],"varops cost":32,"description":"OTHER: max(W(len(A)=3), W(len(B)=1))*4 = max(8, 8)*4 = 32"}
+    ]
+  },
+  {
+    "category": "OP_MAX tests",
+    "tests": [
+      {"name":"OP_MAX success (1 vs 2)","initial stack":["01","02"],"opcodes":["a4"],"final stack":["02"],"varops cost":32,"description":"OTHER: max(W(len(A)=1), W(len(B)=1))*4 = max(8, 8)*4 = 32"},
+      {"name":"OP_MAX success (3 vs 2)","initial stack":["03","02"],"opcodes":["a4"],"final stack":["03"],"varops cost":32,"description":"OTHER: max(W(len(A)=1), W(len(B)=1))*4 = max(8, 8)*4 = 32"},
+      {"name":"OP_MAX success (equal values)","initial stack":["050000","05"],"opcodes":["a4"],"final stack":["05"],"varops cost":32,"description":"OTHER: max(W(len(A)=3), W(len(B)=1))*4 = max(8, 8)*4 = 32"},
+      {"name":"OP_MAX success (empty and 01)","initial stack":["","01"],"opcodes":["a4"],"final stack":["01"],"varops cost":32,"description":"OTHER: max(W(len(A)=0), W(len(B)=1))*4 = max(0, 8)*4 = 32"},
+      {"name":"OP_MAX success (empty and empty)","initial stack":["",""],"opcodes":["a4"],"final stack":[""],"varops cost":0,"description":"OTHER: max(W(len(A)=0), W(len(B)=0))*4 = max(0, 0)*4 = 0"},
+      {"name":"OP_MAX success (normalizes selected result)","initial stack":["01","020000"],"opcodes":["a4"],"final stack":["02"],"varops cost":32,"description":"OTHER: max(W(len(A)=1), W(len(B)=3))*4 = max(8, 8)*4 = 32"}
+    ]
+  },
+  {
+    "category": "OP_WITHIN tests",
+    "tests": [
+      {"name":"OP_WITHIN success (2 in [1, 3))","initial stack":["02","01","03"],"opcodes":["a5"],"final stack":["01"],"varops cost":32,"description":"COMPARING + COMPARINGZERO: (max(W(len(x)=1), W(len(min)=1)) + max(W(len(x)=1), W(len(max)=1)))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_WITHIN success (1 in [1, 3))","initial stack":["01","01","03"],"opcodes":["a5"],"final stack":["01"],"varops cost":32,"description":"COMPARING + COMPARINGZERO: (max(W(len(x)=1), W(len(min)=1)) + max(W(len(x)=1), W(len(max)=1)))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_WITHIN success (3 not in [1, 3))","initial stack":["03","01","03"],"opcodes":["a5"],"final stack":[""],"varops cost":32,"description":"COMPARING + COMPARINGZERO: (max(W(len(x)=1), W(len(min)=1)) + max(W(len(x)=1), W(len(max)=1)))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_WITHIN success (0 not in [1, 3))","initial stack":["00","01","03"],"opcodes":["a5"],"final stack":[""],"varops cost":32,"description":"COMPARING + COMPARINGZERO: (max(W(len(x)=1), W(len(min)=1)) + max(W(len(x)=1), W(len(max)=1)))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_WITHIN success (trailing zeros ignored)","initial stack":["01","01000000","0300"],"opcodes":["a5"],"final stack":["01"],"varops cost":32,"description":"COMPARING + COMPARINGZERO: (max(W(len(x)=1), W(len(min)=4)) + max(W(len(x)=1), W(len(max)=2)))*2 = (8 + 8)*2 = 32"},
+      {"name":"OP_WITHIN success (empty values treated as 0)","initial stack":["","","01"],"opcodes":["a5"],"final stack":["01"],"varops cost":16,"description":"COMPARING + COMPARINGZERO: (max(W(len(x)=0), W(len(min)=0)) + max(W(len(x)=0), W(len(max)=1)))*2 = (0 + 8)*2 = 16"}
+    ]
+  },
+  {
+    "category": "OP_SHA256 tests",
+    "tests": [
+      {"name":"OP_SHA256 success (empty string)","initial stack":[""],"opcodes":["a8"],"final stack":["e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"],"varops cost":0,"description":"HASH: len(operand) * 50 = 0 * 50 = 0"},
+      {"name":"OP_SHA256 success (short string)","initial stack":["61"],"opcodes":["a8"],"final stack":["ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"],"varops cost":50,"description":"HASH: len(operand) * 50 = 1 * 50 = 50"},
+      {"name":"OP_SHA256 success (long input)","initial stack":["ff{4000000}"],"opcodes":["a8"],"final stack":["1627b4013371d63d947eb27740be7cf32aad311c0116e854bbe6ec89e7185e09"],"varops cost":200000000,"description":"HASH: len(operand) * 50 = 4000000 * 50 = 200000000"}
+    ]
+  },
+  {
+    "category": "OP_HASH160 tests",
+    "tests": [
+      {"name":"OP_HASH160 success (empty string)","initial stack":[""],"opcodes":["a9"],"final stack":["b472a266d0bd89c13706a4132ccfb16f7c3b9fcb"],"varops cost":0,"description":"HASH: len(operand) * 50 = 0 * 50 = 0"},
+      {"name":"OP_HASH160 success (short string)","initial stack":["61"],"opcodes":["a9"],"final stack":["994355199e516ff76c4fa4aab39337b9d84cf12b"],"varops cost":50,"description":"HASH: len(operand) * 50 = 1 * 50 = 50"},
+      {"name":"OP_HASH160 success (long input)","initial stack":["ff{4000000}"],"opcodes":["a9"],"final stack":["3eb2aeb1e4836781864294138e5592505ca08d70"],"varops cost":200000000,"description":"HASH: len(operand) * 50 = 4000000 * 50 = 200000000"}
+    ]
+  },
+  {
+    "category": "OP_HASH256 tests",
+    "tests": [
+      {"name":"OP_HASH256 success (empty string)","initial stack":[""],"opcodes":["aa"],"final stack":["5df6e0e2761359d30a8275058e299fcc0381534545f55cf43e41983f5d4c9456"],"varops cost":0,"description":"HASH: len(operand) * 50 = 0 * 50 = 0"},
+      {"name":"OP_HASH256 success (short string)","initial stack":["61"],"opcodes":["aa"],"final stack":["bf5d3affb73efd2ec6c36ad3112dd933efed63c4e1cbffcfa88e2759c144f2d8"],"varops cost":50,"description":"HASH: len(operand) * 50 = 1 * 50 = 50"},
+      {"name":"OP_HASH256 success (long input)","initial stack":["ff{4000000}"],"opcodes":["aa"],"final stack":["2c410c77ea4a4d13d84cdd813370d9ab4fd9dcdc5397b40b5531e792d4ad504e"],"varops cost":200000000,"description":"HASH: len(operand) * 50 = 4000000 * 50 = 200000000"}
+    ]
+  }
+]
