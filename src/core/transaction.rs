@@ -144,6 +144,7 @@
 use std::{
     ffi::c_void,
     fmt::{self, Debug, Display, Formatter},
+    iter::FusedIterator,
     marker::PhantomData,
 };
 
@@ -734,6 +735,8 @@ impl<'a> Iterator for TxInIter<'a> {
 
 impl<'a> ExactSizeIterator for TxInIter<'a> {}
 
+impl<'a> FusedIterator for TxInIter<'a> {}
+
 /// Iterator over transaction outputs.
 ///
 /// This iterator yields [`TxOutRef`] items for each output in the transaction,
@@ -800,6 +803,8 @@ impl<'a> Iterator for TxOutIter<'a> {
 }
 
 impl<'a> ExactSizeIterator for TxOutIter<'a> {}
+
+impl<'a> FusedIterator for TxOutIter<'a> {}
 
 /// Common operations for transaction outputs, implemented by both owned and borrowed types.
 ///
@@ -1433,6 +1438,8 @@ impl<'a> Iterator for WitnessStackIter<'a> {
 }
 
 impl<'a> ExactSizeIterator for WitnessStackIter<'a> {}
+
+impl<'a> FusedIterator for WitnessStackIter<'a> {}
 
 /// Common operations for transaction outpoints, implemented by both owned and borrowed types.
 ///

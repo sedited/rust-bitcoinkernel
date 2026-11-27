@@ -1,10 +1,10 @@
+use std::iter::FusedIterator;
+
 /// Iterator over a parent that exposes an item count and an index-based getter.
 ///
 /// The item count is read once at construction, since the underlying C objects
-/// are immutable.
-// TODO: consider implementing `std::iter::FusedIterator`. That requires `next()`
-// to stay exhausted (e.g. jump `index` to `len`) when `get` returns `None`
-// mid-iteration, which differs from the current hand-written iterators.
+/// are immutable. If `get` returns `None`, the iterator ends early and stays
+/// exhausted.
 pub(crate) struct IndexedIter<P, T> {
     parent: P,
     index: usize,
@@ -31,9 +31,13 @@ impl<P, T> Iterator for IndexedIter<P, T> {
             return None;
         }
 
-        let index = self.index;
-        self.index += 1;
-        (self.get)(&self.parent, index)
+        let item = (self.get)(&self.parent, self.index);
+        if item.is_some() {
+            self.index += 1;
+        } else {
+            self.index = self.len;
+        }
+        item
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -43,6 +47,8 @@ impl<P, T> Iterator for IndexedIter<P, T> {
 }
 
 impl<P, T> ExactSizeIterator for IndexedIter<P, T> {}
+
+impl<P, T> FusedIterator for IndexedIter<P, T> {}
 
 #[cfg(test)]
 mod tests {
@@ -88,6 +94,17 @@ mod tests {
         let mut iter = slice_iter(&items);
         assert_eq!(iter.next(), Some(1));
         assert_eq!(iter.next(), None);
+        assert_eq!(iter.next(), None);
+    }
+
+    #[test]
+    fn getter_returning_none_ends_iteration() {
+        // The getter fails at index 1, but would succeed again at index 2.
+        let items = [Some(1), None, Some(3)];
+        let mut iter = IndexedIter::new(&items[..], items.len(), |s, i| s[i]);
+        assert_eq!(iter.next(), Some(1));
+        assert_eq!(iter.next(), None);
+        assert_eq!(iter.len(), 0);
         assert_eq!(iter.next(), None);
     }
 }

@@ -124,6 +124,7 @@
 use std::{
     ffi::c_void,
     fmt::{self, Debug, Display, Formatter},
+    iter::FusedIterator,
     marker::PhantomData,
 };
 
@@ -1142,6 +1143,8 @@ impl<'a> Iterator for BlockTransactionIter<'a> {
 
 impl<'a> ExactSizeIterator for BlockTransactionIter<'a> {}
 
+impl<'a> FusedIterator for BlockTransactionIter<'a> {}
+
 /// Common operations for block spent outputs, implemented by both owned and borrowed types.
 ///
 /// This trait provides shared functionality for [`BlockSpentOutputs`] and
@@ -1440,6 +1443,8 @@ impl<'a> Iterator for BlockSpentOutputsIter<'a> {
 
 impl<'a> ExactSizeIterator for BlockSpentOutputsIter<'a> {}
 
+impl<'a> FusedIterator for BlockSpentOutputsIter<'a> {}
+
 /// Common operations for transaction spent outputs, implemented by both owned and borrowed types.
 ///
 /// This trait provides shared functionality for [`TransactionSpentOutputs`] and
@@ -1711,6 +1716,8 @@ impl<'a> Iterator for TransactionSpentOutputsIter<'a> {
 }
 
 impl<'a> ExactSizeIterator for TransactionSpentOutputsIter<'a> {}
+
+impl<'a> FusedIterator for TransactionSpentOutputsIter<'a> {}
 
 /// Common operations for coins, implemented by both owned and borrowed types.
 ///
